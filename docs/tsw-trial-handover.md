@@ -119,15 +119,21 @@ SELECT werks, lgort, lgobe FROM t001l
 
 ## 3. Phase 1 — HPM foundation (quantity conversion) ☐ TO DO
 
-TSW plans **bulk hydrocarbon quantities** that convert by temperature/density. Without HPM the nominations/SPW carry only a base unit and lose the oil dimension. Configure the minimum:
+TSW plans **bulk hydrocarbon quantities** that convert by temperature/density. Without HPM the nominations/SPW carry only a base unit and lose the oil dimension. Configure the minimum — **real IMG activities on A4H** (found via `img_search`; run each with its tcode or via SPRO):
 
-| Step | IMG path (SPRO → Industry Solution Oil & Gas (Downstream) → HPM) | Object/table | Trial value |
-|---|---|---|---|
-| 3.1 | HPM → Quantity Conversion → **Define UoM group** | `OIB…` UoM group | e.g. `ZOIL` (base **L15** litres @15 °C, **KG** mass, **M3**) |
-| 3.2 | HPM → Quantity Conversion → **Conversion group / calc. base** (ASTM) | conversion group | assign density base + ASTM table |
-| 3.3 | HPM → **Assign UoM group** to material type / used on materials | — | link `ZOIL` to the oil material type |
+| Step | IMG activity | Title | Object → maint. | Tcode |
+|---|---|---|---|---|
+| 3.1 | **`SIMG_HPM_0002`** | Define QCI Parameters | `VC_OIB07` → CDAT | SM34 |
+| 3.2 | **`SIMG_HPM_0001`** | Define Conversion Group and External Function | `VC_OIB_CONVGROUP` → CDAT | SM34 |
+| 3.3 | **`SIMG_HPM_0003`** | Define Conversion Mode | `V_OIB02` → VDAT | **O581** |
+| 3.4 | **`SIMG_HPM_0011`** | Define Additional Stockkeeping UoMs (**the UoM group**) | `VC_OIB_UOMGROUP` → CDAT | SM34 |
+| 3.5 | **`SIMG_HPM_0012`** | Select QCI Default Table | `V_OIB_DEF` → VDAT | SM30 |
+| 3.6 | **`SIMG_HPM_0019`** | Define Settings for Goods Movements (MIGO) | `V_OIB_MIGO_DEF` → VDAT | SM30 |
+| check | **`SIMG_HPM_0006`** / **`SIMG_HPM_0007`** | Oil & Gas Quantity Calculator / check conversion | — | **O3QCITEST** / **O3D0** |
 
-> HPM is the deepest part. For a *first look* you can create simple bulk materials in litres and add HPM conversion later; but the "wow" of TSW (temperature-corrected volumes) needs 3.1–3.2.
+**Trial values:** UoM group `ZOIL` (base **L15** litres @15 °C + **KG** mass + **M3**), conversion group with a density/ASTM base, QCI parameters for the products. Tank-level (silo) analysis is `SIMG_HPM_SILO_*` — e.g. **`SIMG_HPM_SILO_0003`** *Define storage location as storage location for silo* (`V_OII_T001L_SILO`, tcode **O5_SILO02**) turns the `…Q`/`…T` tanks into silo-managed storage.
+
+> HPM is the deepest part. For a *first look* you can create simple bulk materials in litres and add conversion later; the "wow" (temperature-corrected volumes) needs 3.1–3.4.
 
 ---
 
@@ -153,27 +159,35 @@ SELECT matnr, werks FROM marc WHERE matnr LIKE 'OIL_%';       -- plant extension
 
 ## 5. Phase 3 — TSW basic settings + number ranges ☐ TO DO
 
-SPRO → Industry Solution Oil & Gas (Downstream) → **TSW (Trader's and Scheduler's Workbench)**.
+SPRO → Industry Solution Oil & Gas (Downstream) → **TSW**. Grounded IMG activities on A4H:
 
-### 5.1 Number ranges (SNRO) — do first
-| NR object | Tx | Trial interval |
-|---|---|---|
-| `OIJNOM` (nominations) | `SNRO` → OIJNOM | `01` = `0000000001`–`0999999999` |
-| `OIK37` (tickets) | `SNRO` → OIK37 | `01` = `0000000001`–`0999999999` |
-| `OIJPEG` (pegging) | `SNRO` → OIJPEG | `01` (default) |
-| `OIJ_VERS` (SPW versions) | `SNRO` → OIJ_VERS | `01` (default) |
+### 5.1 Global control + master-data settings
+| IMG activity | Title | Object → maint. | Tcode |
+|---|---|---|---|
+| **`SIMG_TSW_0023`** | Specify TSW control parameters | `V_TOIJX_01` → VDAT | SM30 |
+| **`SIMG_OIJ_TSW_13`** | Specify TSW master data settings | `V_TOIJX_04` → VDAT | SM30 |
+| **`SIMG_TSW_0001`** | Set import/export flag | `V_OIJIMEX` → VDAT | SM30 |
+| **`SIMG_OIJ_TSW_012`** | Define master data event types | `V_TOI0EV` → VDAT | SM30 |
 
-> Number-range intervals are **client-local and not transported** — set them directly in each system with SNRO.
+### 5.2 Number ranges (client-local — set in each system)
+| IMG activity | For | NR object | Tcode |
+|---|---|---|---|
+| **`SIMG_TSW_0021`** | Nominations | `OIJNOM` | **O5TNR_OIJ_NOM** |
+| **`SIMG_OIJ_TSW_0003`** | Tickets | `OIK37` | **O5V1** |
+| **`SIMG_OIJ_TSW_038`** | Nomination versions (SPW what-if) | `OIJ_VERS` | **O5TNR_NOM_VERS** |
+| **`SIMG_TSW_0022`** | Worklists | — | **O5T1** |
+| **`SIMG_OIJ_TSW_059`** | Berth IDs (optional) | — | **O4BER** |
+| **`SIMG_OIJ_TSW_071`** | Nomination communication (optional) | — | **O5TNR_NOM_COMM** |
 
-### 5.2 Modes of transport relevant to TSW → table `OIJTSWMOT` ✅ DONE (A4H)
-Standard modes on this box: **01 Road · 02 Rail · 03 Sea · 04 Inland Waterway · 05 Air · 06 Postal**.
-**01 Road, 02 Rail, 03 Sea, 04 Inland Waterway** written as TSW-relevant (direct write, untransported).
+> Trial: interval `01` = `0000000001`–`0999999999` for nominations and tickets. Number-range intervals are **not transported**.
 
+### 5.3 Modes of transport for TSW ✅ DONE (A4H)
+IMG **`SIMG_TSW_0024`** *Define mode of transport for rack issues* → `V_TOIJRMOT` (table `OIJTSWMOT`). Written: **01 Road, 02 Rail, 03 Sea, 04 Inland Waterway** (direct, untransported). Related: **`SIMG_TSW_0003`** *Assign TSW flag to mode of transport* → `V_OIJTVTR`; **`SIMG_TSW_0025`** *movement type for rack issues* → `V_TOIJRMVTY`.
 **Verification:** `SELECT vktra FROM oijtswmot;` → 01, 02, 03, 04
 
-### 5.3 Location types → table `OIJLOCT` (fields: `LOCTYP, PLANIND, REFIND, ODINDO, ODINDD`) ✅ DONE (A4H)
-Written (direct, untransported): **`TERM`** terminal (planning + origin + destination) and **`DEPO`** depot (planning + destination).
-| LOCTYP | Meaning | PLANIND (planning) | REFIND (refinery) | ODINDO (origin) | ODINDD (dest.) |
+### 5.4 Location types → `OIJLOCT` ✅ DONE (A4H)
+Written (direct): **`TERM`** terminal (planning + origin + destination), **`DEPO`** depot (planning + destination). Usage indicators per location/source = IMG **`SIMG_OIJ_TSW_062`** → `TOIJUSAGE`.
+| LOCTYP | Meaning | PLANIND | REFIND | ODINDO | ODINDD |
 |---|---|---|---|---|---|
 | `TERM` | Terminal / import berth | X | – | X | X |
 | `DEPO` | Inland depot | X | – | – | X |
@@ -195,6 +209,9 @@ Written (direct, untransported): **`TERM`** terminal (planning + origin + destin
 | 6.3 | TSW → Location → **Assign locations to transport system** | `OIJTSLOC` | attach the locations to `ZTS_ZA` / `ZTS_BE`; set origin/destination flags |
 | 6.4 | TSW → Location → **Planning materials per TS / location** | `OIJTSMAT` / `OIJLOCMAT` | which oil materials are planned at each location |
 | 6.5 | (optional) **Berths / capacities** | `OIJBERLOC`, `OIJLOC` rate/volume fields | tank max/min, berth scheduling |
+| 6.6 | **Transfers between transport systems** — IMG **`SIMG_OIJ_TSW_064`** | `TOIJ_LB_SET` → TABU (SM30) | parameters for location-balancing transfers |
+
+> Confirmed via `img_search`: there is **no classic IMG maintenance activity** for the transport-system / location *master* — it is the RAP app (`O4S1` / Fiori). The only IMG activity in this area is the transfer-parameters table above (`SIMG_OIJ_TSW_064`).
 
 **Verification:**
 ```sql
@@ -206,41 +223,56 @@ SELECT locid, loctyp, locnam FROM oijloc;   -- locations
 
 ## 7. Phase 5 — Nominations ☐ TO DO
 
-The planned bulk movement. SPRO → TSW → **Nomination**.
+The planned bulk movement. Grounded IMG activities (maintain in order — the movement-scenario → nomination-type → status links validate against each other):
 
-| Step | Config object / table | Trial value |
-|---|---|---|
-| 7.1 Nomination **schema** | `OIJSCHEMA` (+ `OIJSCHEMA_T`) | `ZN01` "Trial nomination schema" |
-| 7.2 **Movement scenario** (nomination line → goods movement) | `OIJ07_IF_MOVSCN` / movement-scenario IMG | stock-transfer scenario between two plants |
-| 7.3 Nomination **type** + item categories + status | nomination-type config under the schema | `ZN` transfer nomination, assign NR `OIJNOM 01` |
-| 7.4 Assign schema/type to locations | — | attach `ZN01` to `TERM`/`DEPO` |
+| Step | IMG activity | Title | Object → maint. |
+|---|---|---|---|
+| 7.1 | **`SIMG_OIJ_TSW_0008`** | Customize TSW **movement scenarios** (nomination line → goods movement) | `V_TOIJ_EL_MVSCEN` → VDAT |
+| 7.2 | **`SIMG_OIJ_TSW_0010`** | Define **posting groups** for movement scenarios | `V_TOIJ_EL_MS_GRP` → VDAT |
+| 7.3 | **`SIMG_OIJ_TSW_0007`** | Define **schedule item types** | `V_TOIJ_EL_SITYPE` → VDAT |
+| 7.4 | **`SIMG_OIJ_TSW_002`** | Define **nomination types** | `V_OIJNOMTYP` → VDAT |
+| 7.5 | **`SIMG_OIJ_TSW_004`** | Define **status codes** | `V_OIJNOM_ST01` → VDAT |
+| 7.6 | **`SIMG_OIJ_TSW_005`** | Define **status profiles** and dependencies | `VC_OIJNOMST` → CDAT (SM34) |
+| 7.7 | **`SIMG_OIJ_TSW_0009`** | Define **nomination relevance** | `VC_OI0_NOM_REL` → CDAT (SM34) |
+| 7.8 | **`SIMG_OIJ_TSW_040`** | Define **nomination views** (UI) | `VC_OIJ_NOM_VIEW` → CDAT (SM34) |
 
-> 7.1–7.3 are the interdependent core — maintain in the IMG dialogs so the schema→scenario→type links validate.
+**Trial:** movement scenario = stock transfer between two plants; nomination type `ZN` (transfer), NR object `OIJNOM`.
+
+> 7.1–7.6 are the interdependent core — maintain in the IMG dialogs (do **not** raw-write these greenfield tables).
 
 ---
 
 ## 8. Phase 6 — Ticketing ☐ TO DO
 
-Actualizes the physical movement and posts the goods movement. SPRO → TSW → **Ticket**.
+Actualizes the physical movement and posts the goods movement.
 
-| Step | Config object | Trial value |
-|---|---|---|
-| 8.1 **Ticket type** (load / discharge) | ticket-type config, NR `OIK37 01` | `ZL` load, `ZD` discharge |
-| 8.2 **Actualization** rules | ticket → movement-type mapping | post to the movement scenario from §7.2 |
-| 8.3 Assign ticket types to nomination item categories | — | `ZL/ZD` ↔ `ZN` |
+| Step | IMG activity | Title | Object → maint. |
+|---|---|---|---|
+| 8.1 | **`SIMG_OIJ_TSW_049`** | Maintain **ticket types** | `V_OIJ_TKT_TYPE` → VDAT |
+| 8.2 | **`SIMG_OIJ_TSW_050`** | Define **measuring method** for ticket quantities | `V_OIJ_TKT_QMM` → VDAT |
+| 8.3 | **`SIMG_OIJ_TSW_0049`** | Define **validation groups** for ticketing | `VC_OIJ_TKT_CHK` → CDAT (SM34) |
+| 8.4 | **`SIMG_TSW_0005`** | Define **ticket number rules** | `V_OIJHTNR` → VDAT |
+| 8.5 | **`SIMG_OIJ_TSW_1117`** | Assign **output determination** procedure | `V_OIJ_TKT_TYPE_H/_I` → VDAT |
+
+**Trial:** ticket types `ZL` load / `ZD` discharge, NR object `OIK37`; ticket posts to the movement scenario from §7.1.
 
 ---
 
 ## 9. Phase 7 — Stock Projection Worksheet ☐ TO DO
 
-The projected stock view over time. SPRO → TSW → **Stock Projection Worksheet**.
+The projected stock view over time.
 
-| Step | Config object / table | Trial value |
-|---|---|---|
-| 9.1 **Forecast profile** | `OIJFCPRF` (+ `OIJFCPRFT`) | `ZSPW` |
-| 9.2 Worksheet **layout / key figures** | SPW layout config | opening stock, receipts, issues, projected balance |
-| 9.3 **What-if version** | NR `OIJ_VERS` | base version `V1` |
-| 9.4 Confirm **HANA SPW engine** active | — | generation via `O4TCN_HDB` |
+| Step | IMG activity | Title | Object → maint. |
+|---|---|---|---|
+| 9.1 | **`SIMG_OIJ_TSW_0001`** | Specify **parameters for stock projection** | `V_TOIJX_02` → VDAT |
+| 9.2 | **`SIMG_OIJ_TSW_018`** | Specify **stock projection relevance** | `V_OIJ_SPREL` → VDAT |
+| 9.3 | **`SIMG_OIJ_TSW_019`** | Define **stock projection types** (what-if) | `V_OIJ_SPTYPES` → VDAT |
+| 9.4 | **`SIMG_OIJ_TSW_020`** | Define **time buckets** | `V_OIJ_TIMEBUCKET` → VDAT |
+| 9.5 | **`SIMG_OIJ_TSW_0002`** | Maintain **forecast profile** for rack issue | `V_OIJFCPRF` → VDAT |
+| 9.6 | **`SIMG_OIJ_TSW_0004`** | Define profile for **target stock coverage** | `V_OIJTGTCOV` → VDAT |
+| 9.7 | **`SIMG_TSW_0008`** | Define profile for **safety stock coverage** | `V_OIJCOV` → VDAT |
+
+**Trial:** what-if version via NR `OIJ_VERS`; generate the worksheet on HANA via **`O4TCN_HDB`**.
 
 ---
 
@@ -298,3 +330,83 @@ SELECT matnr, werks FROM marc WHERE matnr LIKE 'OIL_%';
 -- Number-range intervals
 --   SNRO → OIJNOM / OIK37 / OIJPEG / OIJ_VERS  (intervals are client-local, not in a transport)
 ```
+
+---
+
+## 13. Appendix — TSW / HPM IMG activity map (grounded on A4H)
+
+Discovered via `img_search` (full CUS_IMGACT scan). **180+** TSW activities exist; this is the
+build-relevant subset. To see the rest: `img_search keyword=TSW maxResults=400`, or per area
+`img_search keyword=SIMG_HPM` / `SIMG_OIJ_TSW`. Every row is a real activity on this box.
+
+**HPM (Hydrocarbon Product Management) — foundation**
+| Activity | Title | Maint. object | Tcode |
+|---|---|---|---|
+| `SIMG_HPM_0001` | Conversion group + external function | `VC_OIB_CONVGROUP` | SM34 |
+| `SIMG_HPM_0002` | QCI parameters | `VC_OIB07` | SM34 |
+| `SIMG_HPM_0003` | Conversion mode | `V_OIB02` | O581 |
+| `SIMG_HPM_0011` | Additional stockkeeping UoMs (**UoM group**) | `VC_OIB_UOMGROUP` | SM34 |
+| `SIMG_HPM_0012` | Select QCI default table | `V_OIB_DEF` | SM30 |
+| `SIMG_HPM_0019` | Settings for goods movements (MIGO) | `V_OIB_MIGO_DEF` | SM30 |
+| `SIMG_HPM_SILO_0003` | Storage location as silo (tanks) | `V_OII_T001L_SILO` | O5_SILO02 |
+| `SIMG_HPM_0006` / `_0007` | Quantity calculator / check conversion | — | O3QCITEST / O3D0 |
+
+**TSW global + master data**
+| Activity | Title | Maint. object | Tcode |
+|---|---|---|---|
+| `SIMG_TSW_0023` | TSW control parameters | `V_TOIJX_01` | SM30 |
+| `SIMG_OIJ_TSW_13` | TSW master data settings | `V_TOIJX_04` | SM30 |
+| `SIMG_TSW_0001` | Import/export flag | `V_OIJIMEX` | SM30 |
+| `SIMG_TSW_0024` | Mode of transport for rack issues ✅ | `V_TOIJRMOT` (`OIJTSWMOT`) | SM30 |
+| `SIMG_TSW_0003` | Assign TSW flag to mode of transport | `V_OIJTVTR` | SM30 |
+| `SIMG_TSW_0025` | Movement type for rack issues | `V_TOIJRMVTY` | SM30 |
+| `SIMG_OIJ_TSW_062` | Usage indicators for location/source | `TOIJUSAGE` | SM30 |
+| `SIMG_TSW_0020` | Nomination + ticket retention time | `V_OIJARC` | SM30 |
+
+**Number ranges**
+| Activity | For | Object | Tcode |
+|---|---|---|---|
+| `SIMG_TSW_0021` | Nominations | `OIJNOM` | O5TNR_OIJ_NOM |
+| `SIMG_OIJ_TSW_0003` | Tickets | `OIK37` | O5V1 |
+| `SIMG_OIJ_TSW_038` | Nomination versions | `OIJ_VERS` | O5TNR_NOM_VERS |
+| `SIMG_TSW_0022` | Worklists | — | O5T1 |
+| `SIMG_OIJ_TSW_059` | Berth IDs | — | O4BER |
+
+**Nominations**
+| Activity | Title | Maint. object |
+|---|---|---|
+| `SIMG_OIJ_TSW_0008` | Movement scenarios | `V_TOIJ_EL_MVSCEN` |
+| `SIMG_OIJ_TSW_0010` | Posting groups for movement scenarios | `V_TOIJ_EL_MS_GRP` |
+| `SIMG_OIJ_TSW_0007` | Schedule item types | `V_TOIJ_EL_SITYPE` |
+| `SIMG_OIJ_TSW_002` | Nomination types | `V_OIJNOMTYP` |
+| `SIMG_OIJ_TSW_004` | Status codes | `V_OIJNOM_ST01` |
+| `SIMG_OIJ_TSW_005` | Status profiles + dependencies | `VC_OIJNOMST` (SM34) |
+| `SIMG_OIJ_TSW_0009` | Nomination relevance | `VC_OI0_NOM_REL` (SM34) |
+| `SIMG_OIJ_TSW_040` | Nomination views (UI) | `VC_OIJ_NOM_VIEW` (SM34) |
+
+**Tickets**
+| Activity | Title | Maint. object |
+|---|---|---|
+| `SIMG_OIJ_TSW_049` | Ticket types | `V_OIJ_TKT_TYPE` |
+| `SIMG_OIJ_TSW_050` | Measuring method for ticket quantities | `V_OIJ_TKT_QMM` |
+| `SIMG_OIJ_TSW_0049` | Validation groups for ticketing | `VC_OIJ_TKT_CHK` (SM34) |
+| `SIMG_TSW_0005` | Ticket number rules | `V_OIJHTNR` |
+| `SIMG_OIJ_TSW_1117` | Assign output determination procedure | `V_OIJ_TKT_TYPE_H/_I` |
+
+**Stock Projection Worksheet (SPW)**
+| Activity | Title | Maint. object |
+|---|---|---|
+| `SIMG_OIJ_TSW_0001` | Parameters for stock projection | `V_TOIJX_02` |
+| `SIMG_OIJ_TSW_018` | Stock projection relevance | `V_OIJ_SPREL` |
+| `SIMG_OIJ_TSW_019` | Stock projection types (what-if) | `V_OIJ_SPTYPES` |
+| `SIMG_OIJ_TSW_020` | Time buckets | `V_OIJ_TIMEBUCKET` |
+| `SIMG_OIJ_TSW_0002` | Forecast profile for rack issue | `V_OIJFCPRF` |
+| `SIMG_OIJ_TSW_0004` | Target stock coverage profile | `V_OIJTGTCOV` |
+| `SIMG_TSW_0008` | Safety stock coverage profile | `V_OIJCOV` |
+
+**Three-way pegging (optional)**
+| Activity | Title | Maint. object | Tcode |
+|---|---|---|---|
+| `SIMG_OIJ_TSW_053` | Parameters for pegging stock | `V_TOIJX_06` | SM30 |
+| `SIMG_OIJ_TSW_055` | Pegging type | `V_OIJ_PEGT_CHK_A` | O5TPEGT |
+| `SIMG_OIJ_TSW_054` | Global setting for LateLocking in 3WP | `V_TOIJX_09` | SM30 |
