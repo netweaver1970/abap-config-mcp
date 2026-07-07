@@ -7,11 +7,11 @@ CLASS zcl_mcp_diag DEFINITION
 * basis objects (T000, CVERS, TSTC, TFDIR, SYS.M_* via ADBC, C_SAPGPARAM,
 * SAPTUNE). NO repository or customizing writes — safe to transport to and run
 * in Production independently of the MCP. Operations: ping, hana_memory,
-* abap_memory. Companion endpoint /sap/bc/zmcp_diag.
+* abap_memory, wp_detail. Companion endpoint /sap/bc/zmcp_diag.
 
   PUBLIC SECTION.
     INTERFACES if_http_extension.
-    CONSTANTS c_version TYPE string VALUE 'diag-0.9.19'.
+    CONSTANTS c_version TYPE string VALUE 'diag-0.9.20'.
 
   PRIVATE SECTION.
     TYPES: BEGIN OF ty_request,
@@ -57,6 +57,7 @@ CLASS zcl_mcp_diag DEFINITION
     METHODS handle_ping        RETURNING VALUE(rs_resp) TYPE ty_response.
     METHODS handle_hana_memory RETURNING VALUE(rs_resp) TYPE ty_response.
     METHODS handle_abap_memory RETURNING VALUE(rs_resp) TYPE ty_response.
+    METHODS handle_wp_detail   RETURNING VALUE(rs_resp) TYPE ty_response.
     METHODS run_hana_sql IMPORTING iv_tag TYPE string iv_sql TYPE string
                          CHANGING  ct_lines TYPE stringtab.
     METHODS client_caps       RETURNING VALUE(rs_caps) TYPE ty_client_caps.
@@ -98,9 +99,10 @@ CLASS zcl_mcp_diag IMPLEMENTATION.
             WHEN 'ping'.        ls_resp = handle_ping( ).
             WHEN 'hana_memory'. ls_resp = handle_hana_memory( ).
             WHEN 'abap_memory'. ls_resp = handle_abap_memory( ).
+            WHEN 'wp_detail'.   ls_resp = handle_wp_detail( ).
             WHEN OTHERS.
               ls_resp-status = 'error'.
-              APPEND |Unknown operation '{ ls_req-operation }' (read-only DIAG engine: ping/hana_memory/abap_memory)| TO ls_resp-messages.
+              APPEND |Unknown operation '{ ls_req-operation }' (read-only DIAG engine: ping/hana_memory/abap_memory/wp_detail)| TO ls_resp-messages.
           ENDCASE.
         ENDIF.
         ls_resp-version = c_version.
@@ -297,6 +299,34 @@ CLASS zcl_mcp_diag IMPLEMENTATION.
     APPEND |Read { lines( lt_p ) } ABAP memory parameters + live usage| TO rs_resp-messages.
     /ui2/cl_json=>serialize(
       EXPORTING data        = lt_p
+                pretty_name = /ui2/cl_json=>pretty_mode-none
+      RECEIVING r_json      = rs_resp-data_json ).
+  ENDMETHOD.
+
+
+  METHOD handle_wp_detail.
+    " Headless SM50: full TH_WPINFO rows for the local app server — per-WP
+    " type/status/wait-reason/semaphore/user/report/action/table. The decisive
+    " view when a background job hangs: WP_STATUS + WP_WAITING + WP_SEM +
+    " WP_TABLE show WHAT the process is blocked on (enqueue, RFC, DB, update).
+    " Read-only kernel FM, portable.
+    DATA: lt_wp TYPE STANDARD TABLE OF wpinfo.
+    rs_resp-operation = 'wp_detail'.
+    rs_resp-version   = c_version.
+    CALL FUNCTION 'TH_WPINFO'
+      TABLES
+        wplist = lt_wp
+      EXCEPTIONS
+        OTHERS = 1.
+    IF sy-subrc <> 0.
+      rs_resp-status = 'error'.
+      APPEND |TH_WPINFO unavailable (subrc { sy-subrc })| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    rs_resp-status = 'ok'.
+    APPEND |{ lines( lt_wp ) } work processes on { sy-host }| TO rs_resp-messages.
+    /ui2/cl_json=>serialize(
+      EXPORTING data        = lt_wp
                 pretty_name = /ui2/cl_json=>pretty_mode-none
       RECEIVING r_json      = rs_resp-data_json ).
   ENDMETHOD.

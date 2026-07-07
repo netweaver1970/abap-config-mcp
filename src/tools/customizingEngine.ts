@@ -34,7 +34,7 @@ import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
 interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "hana_memory" | "abap_memory" | "org_copy"
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy"
   table?: string
   key_field?: string
   source_key?: string
@@ -213,6 +213,10 @@ async function callEngine(
 const pingEngine = (connectionId?: string): Promise<PingResponse> =>
   callEngine(connectionId, { operation: "ping" }) as Promise<PingResponse>
 
+/** A background run that is still going: 'pending' (queued) or 'running' (active).
+ *  Terminal states — 'ok' / 'error' / 'aborted' / 'unknown' — stop the poll. */
+const isRunStillGoing = (s?: string): boolean => s === "pending" || s === "running"
+
 // ─── IMG search-index read (STREE/SHI HSRCH cluster) ─────────────────────────────
 // Calls the engine's img_index_read op for one IMG structure. The engine IMPORTs
 // the INDX_HSRCH cluster (built by RS_SHI10_TEXTINDEX_UPDATE), keyword-filters node
@@ -225,6 +229,43 @@ export interface ImgIndexHit {
   EXTENSION: string
   STRUCTURE_ID: string
   PATH: string
+}
+
+export interface ImgSearchHit {
+  ACTIVITY: string
+  TEXT: string
+  OBJECTTYPE: string
+  OBJECTNAME: string
+  TCODE: string
+}
+
+// Engine-side img_search: a full CUS_IMGACT scan with a server-side LIKE over the
+// title TEXT *and* the activity id — no ADT Data-Preview 200-row alphabetical
+// window, and it finds component-acronym hits (TSW → SIMG_OIJ_TSW_*) whose
+// functional titles never contain the acronym. Returns null when the engine is
+// unreachable or the op is unknown on an older engine → caller falls back to raw.
+export async function imgSearchViaEngine(
+  connectionId: string | undefined,
+  args: { keyword: string; language?: string; maxRows?: number; icfPath?: string },
+): Promise<{ hits: ImgSearchHit[]; messages: string[]; capped: boolean } | null> {
+  let r: EngineResponse
+  try {
+    r = await callEngine(connectionId, {
+      operation: "img_search",
+      keyword:   args.keyword,
+      language:  args.language,
+      max_rows:  args.maxRows,
+    }, args.icfPath)
+  } catch {
+    return null   // engine unreachable → fall back to the raw ADT path
+  }
+  if (r.STATUS !== "ok") return null   // unknown op on an older engine, or an error
+  let hits: ImgSearchHit[] = []
+  if (r.DATA_JSON) {
+    try { hits = JSON.parse(r.DATA_JSON) as ImgSearchHit[] } catch { hits = [] }
+  }
+  const capped = (r.MESSAGES ?? []).some(m => /capped/i.test(m))
+  return { hits, messages: r.MESSAGES ?? [], capped }
 }
 
 export async function imgIndexRead(
@@ -566,22 +607,17 @@ export async function handleOrgCopy(args: {
     return { content: [{ type: "text" as const, text: `❌ org_copy ${capErr}.` }] }
   }
 
-  // Governed transport selection (shared interactive flow). The entity copier
-  // records into a Customizing request (W). With no explicit transport and no
-  // create opt-in we always present the choice — never silently pick one.
-  const reqType: "W" = "W"
-  const transport = args.transport
-  if (commit && !transport && !args.createTransport) {
-    const owner = args.showAllTransports ? undefined : getConnectionConfig(args.connectionId).username
-    const open = await listOpenRequests(args.connectionId, reqType, owner)
-    return { content: [{ type: "text" as const, text: buildTransportPrompt({
-      candidates: open,
-      ctsFunction: reqType,
-      contextLabel: `the entity copier (${orgUnit} ${args.sourceKey}${isDelete ? " delete" : ` → ${args.targetKey}`})`,
-      canName: false,   // ECOP mints its own request with a fixed text
-      scopeNote: owner ? `your requests — pass showAllTransports: true for everyone's` : `all users`,
-      prefix: deployNote,
-    }) }] }
+  // The entity copier ALWAYS records onto a Customizing request it mints ITSELF —
+  // a caller-supplied request is not honored (ECOP's IMPORT_TR_REQUEST is a
+  // different, import-only input). So there is no "pick an existing request"
+  // choice; the only decision is whether to let it create one. Require the
+  // explicit opt-in instead of pretending a supplied transport will be used.
+  if (commit && !args.createTransport) {
+    return { content: [{ type: "text" as const, text:
+      `${deployNote}⚠️  org_copy records onto a Customizing request the entity copier mints ITSELF — ` +
+      `it cannot record into a request you supply (a passed transport is ignored). Re-run with ` +
+      `createTransport: true to acknowledge and let it create one; the new request number is ` +
+      `reported on completion.` }] }
   }
 
   let r: EngineResponse
@@ -592,7 +628,6 @@ export async function handleOrgCopy(args: {
       source_key: args.sourceKey,
       target_key: args.targetKey ?? "",
       action: isDelete ? "DELE" : "COPY",
-      transport,
       commit: commit ? "X" : "",
       create_transport: args.createTransport === true ? "X" : "",
     }, args.icfPath)
@@ -617,34 +652,46 @@ export async function handleOrgCopy(args: {
       } catch {
         continue   // transient read failure — keep polling within budget
       }
-      if (s.STATUS && s.STATUS !== "pending") {
+      if (s.STATUS && !isRunStillGoing(s.STATUS)) {          // terminal → stop
         r = { ...r, STATUS: s.STATUS, ROWS_WRITTEN: s.ROWS_WRITTEN ?? r.ROWS_WRITTEN,
+              ROWS_PLANNED: s.ROWS_PLANNED ?? r.ROWS_PLANNED,
               TRANSPORT: s.TRANSPORT ?? r.TRANSPORT, MESSAGES: s.MESSAGES ?? r.MESSAGES, RUN_ID: undefined }
         break
+      }
+      if (s.STATUS === "running") {                          // still active → refresh progress, keep polling
+        r = { ...r, STATUS: "running", MESSAGES: s.MESSAGES ?? r.MESSAGES }
       }
     }
   }
 
-  if (commit && r.STATUS === "ok" && r.TRANSPORT) {
-    rememberTransport(reqType, r.TRANSPORT)
-  }
+  // NB: the entity copier records onto a request it mints ITSELF; that request is
+  // not a user-chosen one, so we do NOT rememberTransport() it — doing so would
+  // offer it as "continue on …" for unrelated later writes (session poisoning).
 
   const isDry = !commit
   const unitDesc = ORG_UNIT_DOMAINS[orgUnit] ?? orgUnit
+  const stillGoing = isRunStillGoing(r.STATUS)
   const lines: string[] = [
     ...(deployNote ? [deployNote.trimEnd()] : []),
     isDry ? `📋 DRY RUN — nothing copied`
       : r.STATUS === "ok" ? `✏️  ${isDelete ? "DELETED" : "COPIED"}`
-      : r.STATUS === "pending" ? `⏳ RUNNING in a background job`
+      : stillGoing ? `⚙️  RUNNING in a background job`
       : `❌ FAILED`,
     `   Status:     ${r.STATUS}`,
     `   Org unit:   ${orgUnit} — ${unitDesc}`,
     isDelete
       ? `   Delete:     ${args.sourceKey}`
       : `   Copy:       ${args.sourceKey} → ${args.targetKey}`,
-    `   Tables:     ${r.ROWS_PLANNED ?? 0} dependent tables in scope`,
+    // The copier does not enumerate its dependent-table set on a dry run; on commit
+    // ROWS_WRITTEN is the E071K object-key count, NOT a table count (the real
+    // dependent-table count is in the messages, e.g. "91 dependent tables processed").
+    ...(isDry
+      ? [`   Dependent tables: not enumerated on dry run (resolved by the copier at commit)`]
+      : r.STATUS === "ok"
+        ? [`   Object keys recorded: ${r.ROWS_WRITTEN ?? 0}  (on the transport task; see messages for the table count)`]
+        : []),
     ...(commit && r.STATUS === "ok" ? [`   Transport:  ${r.TRANSPORT ?? "(none)"}`] : []),
-    ...(r.STATUS === "pending" && r.RUN_ID
+    ...(stillGoing && r.RUN_ID
       ? [`   Run id:     ${r.RUN_ID}  — still running; poll with customizing_status (run_id above)`]
       : []),
     ...(r.MESSAGES?.length ? ["", "   Messages:", ...r.MESSAGES.map(m => `     • ${m}`)] : []),
@@ -738,8 +785,9 @@ export async function handleCustomizingApply(args: {
         // No generated SM30/SM34 maintenance — a transported write isn't possible.
         if (commit) {
           return { content: [{ type: "text" as const, text:
-            `❌ ${args.table} has no generated SM30/SM34 maintenance object, so a transport-recorded ` +
-            `write isn't possible (object type ${maint.objectType ?? "?"}). ` +
+            `❌ ${args.table} has no generated SM30/SM34 maintenance view` +
+            `${maint.objectType ? ` (CUS_ACTOBJ object type '${maint.objectType}')` : " (it is maintained by a dedicated transaction, not a view)"}, ` +
+            `so a transport-recorded write through the view runtime isn't possible. ` +
             `Use recordTransport: false for a direct (untransported) write, or maintain it in SPRO.` }] }
         }
         resolveNote = `(no generated maintenance for ${args.table}; dry-run only)\n`
@@ -815,16 +863,20 @@ export async function handleCustomizingApply(args: {
       } catch {
         continue   // transient read failure — keep polling within budget
       }
-      if (s.STATUS && s.STATUS !== "pending") {
+      if (s.STATUS && !isRunStillGoing(s.STATUS)) {           // terminal → stop
         // Keep plan/table/transport context from the write; overlay the outcome.
         r = { ...r, STATUS: s.STATUS, ROWS_WRITTEN: s.ROWS_WRITTEN ?? r.ROWS_WRITTEN,
               MESSAGES: s.MESSAGES ?? r.MESSAGES, RUN_ID: undefined }
         break
       }
+      if (s.STATUS === "running") {                            // still active → refresh progress, keep polling
+        r = { ...r, STATUS: "running", MESSAGES: s.MESSAGES ?? r.MESSAGES }
+      }
     }
   }
 
   const isDry = r.DRY_RUN === "X" || !commit
+  const stillGoing = isRunStillGoing(r.STATUS)
 
   // Remember the request actually used so the next recorded write this session
   // can offer "continue on ${trkorr}" instead of re-prompting.
@@ -835,13 +887,15 @@ export async function handleCustomizingApply(args: {
   const lines: string[] = [
     ...(deployNote ? [deployNote.trimEnd()] : []),
     ...(resolveNote ? [resolveNote.trimEnd()] : []),
-    isDry ? `📋 DRY RUN — nothing written` : `✏️  COMMIT`,
+    isDry ? `📋 DRY RUN — nothing written` : stillGoing ? `⚙️  COMMIT — running in a background job` : `✏️  COMMIT`,
     `   Status:       ${r.STATUS}`,
     isDelete
       ? `   Table:        ${r.TABLE}  (delete ${args.keyField} = ${args.targetKey})`
       : `   Table:        ${r.TABLE}  (${args.keyField}: ${args.sourceKey} → ${args.targetKey})`,
     `   Rows planned: ${r.ROWS_PLANNED ?? 0}`,
-    ...(commit ? [`   Rows written: ${r.ROWS_WRITTEN ?? 0}`, `   Transport:    ${r.TRANSPORT ?? "(none)"}`] : []),
+    // Don't print "Rows written: 0 / Transport: (none)" as if final while the job
+    // is still going — that reads as "wrote nothing" when it simply hasn't finished.
+    ...(commit && !stillGoing ? [`   Rows written: ${r.ROWS_WRITTEN ?? 0}`, `   Transport:    ${r.TRANSPORT ?? "(none)"}`] : []),
     ...(r.MESSAGES?.length ? ["", "   Messages:", ...r.MESSAGES.map(m => `     • ${m}`)] : []),
   ]
 
@@ -854,10 +908,12 @@ export async function handleCustomizingApply(args: {
     lines.push("", `   To apply: re-run with commit: true and transport: <request>`)
   }
 
-  if (r.STATUS === "pending" && r.RUN_ID) {
+  if (stillGoing && r.RUN_ID) {
     lines.push(
       "",
-      `   ⏳ Job still running. Poll the result with:`,
+      r.STATUS === "running"
+        ? `   ⚙️  Job RUNNING (active — see message above for its current phase). Poll with:`
+        : `   ⏳ Job still running. Poll the result with:`,
       `      customizing_status  runId: ${r.RUN_ID}`,
     )
   }
@@ -927,8 +983,9 @@ export async function handleCustomizingCreate(args: {
       } else {
         if (commit) {
           return { content: [{ type: "text" as const, text:
-            `❌ ${args.table} has no generated SM30/SM34 maintenance object, so a transport-recorded ` +
-            `write isn't possible (object type ${maint.objectType ?? "?"}). ` +
+            `❌ ${args.table} has no generated SM30/SM34 maintenance view` +
+            `${maint.objectType ? ` (CUS_ACTOBJ object type '${maint.objectType}')` : " (it is maintained by a dedicated transaction, not a view)"}, ` +
+            `so a transport-recorded write through the view runtime isn't possible. ` +
             `Use recordTransport: false for a direct (untransported) write, or maintain it in SPRO.` }] }
         }
         resolveNote = `(no generated maintenance for ${args.table}; dry-run only)\n`
@@ -992,25 +1049,29 @@ export async function handleCustomizingCreate(args: {
       try {
         s = await callEngine(args.connectionId, { operation: "status", run_id: runId }, args.icfPath)
       } catch { continue }
-      if (s.STATUS && s.STATUS !== "pending") {
+      if (s.STATUS && !isRunStillGoing(s.STATUS)) {            // terminal → stop
         r = { ...r, STATUS: s.STATUS, ROWS_WRITTEN: s.ROWS_WRITTEN ?? r.ROWS_WRITTEN,
               MESSAGES: s.MESSAGES ?? r.MESSAGES, RUN_ID: undefined }
         break
+      }
+      if (s.STATUS === "running") {                            // still active → refresh progress, keep polling
+        r = { ...r, STATUS: "running", MESSAGES: s.MESSAGES ?? r.MESSAGES }
       }
     }
   }
 
   const isDry = r.DRY_RUN === "X" || !commit
+  const stillGoing = isRunStillGoing(r.STATUS)
   if (commit && r.STATUS === "ok" && r.TRANSPORT) rememberTransport(reqType, r.TRANSPORT)
 
   const lines: string[] = [
     ...(deployNote ? [deployNote.trimEnd()] : []),
     ...(resolveNote ? [resolveNote.trimEnd()] : []),
-    isDry ? `📋 DRY RUN — nothing written` : `✏️  COMMIT`,
+    isDry ? `📋 DRY RUN — nothing written` : stillGoing ? `⚙️  COMMIT — running in a background job` : `✏️  COMMIT`,
     `   Status:       ${r.STATUS}`,
     `   Table:        ${r.TABLE}  (create ${args.rows.length} row(s))`,
     `   Rows planned: ${r.ROWS_PLANNED ?? 0}`,
-    ...(commit ? [`   Rows written: ${r.ROWS_WRITTEN ?? 0}`, `   Transport:    ${r.TRANSPORT ?? "(none)"}`] : []),
+    ...(commit && !stillGoing ? [`   Rows written: ${r.ROWS_WRITTEN ?? 0}`, `   Transport:    ${r.TRANSPORT ?? "(none)"}`] : []),
     ...(r.MESSAGES?.length ? ["", "   Messages:", ...r.MESSAGES.map(m => `     • ${m}`)] : []),
   ]
   if (isDry && r.DATA_JSON) {
@@ -1021,8 +1082,10 @@ export async function handleCustomizingCreate(args: {
     } catch { /* leave raw out if unparseable */ }
     lines.push("", `   To apply: re-run with commit: true (+ transport, or recordTransport: false)`)
   }
-  if (r.STATUS === "pending" && r.RUN_ID) {
-    lines.push("", `   ⏳ Job still running. Poll with: customizing_status runId: ${r.RUN_ID}`)
+  if (stillGoing && r.RUN_ID) {
+    lines.push("", r.STATUS === "running"
+      ? `   ⚙️  Job RUNNING (active — see message above). Poll with: customizing_status runId: ${r.RUN_ID}`
+      : `   ⏳ Job still running. Poll with: customizing_status runId: ${r.RUN_ID}`)
   }
   if (r.STATUS === "error") log("WARN", `customizing_create error on ${args.table}`, r.MESSAGES)
 
@@ -1108,13 +1171,21 @@ export async function handleCustomizingStatus(args: {
       `Run customizing_engine_ping to diagnose.` }] }
   }
 
-  const pending = r.STATUS === "pending"
-  const icon = pending ? "⏳" : r.STATUS === "ok" ? "✅" : "❌"
+  // Non-terminal = the job is still going (queued or actively running) → poll again.
+  // Terminal = ok / error / aborted / unknown → stop.
+  const nonTerminal = r.STATUS === "pending" || r.STATUS === "running"
+  const icon =
+    r.STATUS === "ok"      ? "✅" :
+    r.STATUS === "running" ? "⚙️" :
+    r.STATUS === "pending" ? "⏳" :
+    r.STATUS === "aborted" ? "🛑" :
+    r.STATUS === "unknown" ? "❓" : "❌"
   const lines: string[] = [
     `${icon} Run ${args.runId} — ${r.STATUS}`,
-    ...(r.ROWS_WRITTEN !== undefined && !pending ? [`   Rows written: ${r.ROWS_WRITTEN}`] : []),
+    ...(r.STATUS === "ok" && r.ROWS_WRITTEN !== undefined ? [`   Rows written: ${r.ROWS_WRITTEN}`] : []),
+    ...(r.TRANSPORT ? [`   Transport:    ${r.TRANSPORT}`] : []),
     ...(r.MESSAGES?.length ? ["", "   Messages:", ...r.MESSAGES.map(m => `     • ${m}`)] : []),
-    ...(pending ? ["", `   Job hasn't finished yet — re-run customizing_status with the same runId.`] : []),
+    ...(nonTerminal ? ["", `   Not finished yet — re-run customizing_status with the same runId${r.STATUS === "running" ? " (it IS progressing — see the message above)" : ""}.`] : []),
   ]
   return { content: [{ type: "text" as const, text: lines.join("\n") }] }
 }
@@ -1291,9 +1362,12 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         "CACCD controlling area (EC03), VKORG sales org (EC04), VTWEG distribution channel (EC05), " +
         "SPART division (EC06), VSTEL shipping point (EC07), LGNUM warehouse no. (EC09), " +
         "EKORG purchasing org (EC13), LGORT storage location (EC14), MTART material type (EC15).\n\n" +
-        "DRY RUN by default — lists the dependent-table set. commit: true performs the copy, " +
-        "records every changed table key onto a Customizing transport, and commits. " +
-        "The copier never overwrites: it fails if the target unit already exists. " +
+        "DRY RUN by default (the dependent-table set is resolved by the copier at commit, " +
+        "not enumerated on the dry run). commit: true performs the copy and commits.\n\n" +
+        "TRANSPORT: the entity copier records onto a Customizing request it MINTS ITSELF and " +
+        "reports back — it cannot record into a request you supply (a passed transport is " +
+        "ignored). On commit set createTransport: true to acknowledge that; the copier names " +
+        "the request. The copier never overwrites: it fails if the target unit already exists. " +
         "After the copy, patch unit-specific values (name, currency, country, …) with " +
         "customizing_apply using values + onlyMissing: false. Needs engine v0.9.9+.",
       inputSchema: {
@@ -1301,10 +1375,8 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         sourceKey:   z.string().describe("Source unit to copy from (e.g. company code 2510). For action: \"delete\" — the unit to remove."),
         targetKey:   z.string().optional().describe("New unit to create (e.g. Z100). Not used for delete."),
         action:      z.enum(["copy", "delete"]).optional().describe("\"copy\" (default) duplicates source→target; \"delete\" removes sourceKey's unit with all dependent entries"),
-        transport:        z.string().optional().describe("Existing open Customizing request to record into (used as-is, no prompt). If omitted on commit and createTransport is not set, the tool returns an interactive prompt: open requests to pick from PLUS the create options."),
-        commit:           z.boolean().optional().describe("Actually copy (default: false = dry run listing the dependent tables)"),
-        createTransport:  z.boolean().optional().describe("Opt in to letting the entity copier mint a NEW Customizing request when none supplied (default: false — the tool first prompts). The copier names the request itself; transportText is not applied here."),
-        showAllTransports: z.boolean().optional().describe("When prompting for a transport, list ALL users' open requests instead of only your own (default: false = your own)."),
+        commit:           z.boolean().optional().describe("Actually copy (default: false = dry run)"),
+        createTransport:  z.boolean().optional().describe("Required on commit in a recording client: acknowledge that the copier mints its OWN Customizing request (a supplied transport is not honored). The copier names the request; transportText is not applied. The new request number is reported on completion."),
         autoDeploy:       z.boolean().optional().describe("Auto-deploy/update the engine class if missing or outdated (default: true)"),
         icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),
         connectionId: z.string().optional().describe("SAP system connection ID"),

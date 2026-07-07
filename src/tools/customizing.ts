@@ -16,7 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { ensureConnected, forceReconnect, log } from "../connections"
 import { formatQueryResult } from "./data"
-import { imgIndexRead, type ImgIndexHit } from "./customizingEngine"
+import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import type { ADTClient, QueryResult } from "abap-adt-api"
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -178,8 +178,11 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     cluster = col(vcl[0] ?? {}, "VCLNAME") || undefined
   }
 
-  // IMG activity wiring (CUS_ACTOBJ) — object type V/S/C/T/D, IMG activity, tcode
-  const actName = cluster ?? maintName ?? rootTable
+  // IMG activity wiring (CUS_ACTOBJ) — object type V/S/C/T/D, IMG activity, tcode.
+  // Use || (not ??): maintName is "" (empty, not null) when the table has no
+  // maintenance view, and must fall through to rootTable — otherwise the lookup
+  // runs on '' and objectType comes back undefined ("object type ?" in errors).
+  const actName = cluster || maintName || rootTable
   const actObj = await sql1(client,
     `SELECT ACT_ID, OBJECTTYPE, OBJECTNAME, TCODE FROM CUS_ACTOBJ WHERE OBJECTNAME = '${actName}'`)
   const imgActivity = col(actObj[0] ?? {}, "ACT_ID") || undefined
@@ -239,7 +242,25 @@ export async function handleImgSearch(args: {
 }) {
   const client = await ensureConnected(args.connectionId)
 
-  // Prefer the STREE/SHI text search index when one exists (built by
+  // Preferred: the in-system engine's img_search op — a full CUS_IMGACT scan with
+  // a server-side LIKE over title AND activity id. No 200-row alphabetical window,
+  // and it finds component-acronym hits (TSW → SIMG_OIJ_TSW_*). Falls through to
+  // the STREE index / raw ADT paths when the engine is unreachable or too old.
+  if (args.keyword.trim()) {
+    try {
+      const viaEngine = await imgSearchViaEngine(args.connectionId, {
+        keyword: args.keyword.trim(), language: args.language, maxRows: args.maxResults,
+      })
+      if (viaEngine) {
+        const out = formatImgSearchHits(args.keyword, viaEngine, args.namespace)
+        return { content: [{ type: "text" as const, text: out }] }
+      }
+    } catch (err) {
+      log("DEBUG", "img_search: engine op unavailable, trying index/raw", err)
+    }
+  }
+
+  // Next: the STREE/SHI text search index when one exists (built by
   // RS_SHI10_TEXTINDEX_UPDATE). It covers the whole IMG in one cluster read and
   // gives breadcrumb-aware hits. Fall back to the raw CUS_IMGACT tables when no
   // index is present — always reporting which source answered.
@@ -325,6 +346,45 @@ async function imgSearchViaIndex(
   return lines.join("\n")
 }
 
+// Format engine img_search hits into the same table layout as the raw path.
+function formatImgSearchHits(
+  keyword: string,
+  res: { hits: ImgSearchHit[]; messages: string[]; capped: boolean },
+  namespace?: string,
+): string {
+  const typeLabel: Record<string, string> = {
+    V: "view→VDAT", S: "table→TABU", C: "cluster→CDAT", T: "txn", D: "doc",
+  }
+  let hits = res.hits
+  if (namespace) {
+    const ns = namespace.toUpperCase()
+    hits = hits.filter(h => (h.ACTIVITY ?? "").toUpperCase().startsWith(ns))
+  }
+  const src = `source: in-system engine img_search (full CUS_IMGACT scan — title + activity id)`
+  if (hits.length === 0) {
+    return `No IMG activities matching "${keyword}"${namespace ? ` in ${namespace}` : ""}.\n${src}`
+  }
+  const scope = namespace ? ` in ${namespace}` : ""
+  const lines: string[] = [
+    `IMG activities${scope} matching "${keyword}" (${hits.length}):`,
+    "",
+    `${"IMG activity".padEnd(22)} ${"Title".padEnd(45)} ${"Type".padEnd(12)} ${"Object".padEnd(24)} Tcode`,
+    "-".repeat(120),
+  ]
+  for (const h of hits) {
+    const act   = (h.ACTIVITY ?? "").padEnd(22)
+    const title = (h.TEXT ?? "").slice(0, 45).padEnd(45)
+    const t     = h.OBJECTTYPE ?? ""
+    const type  = (typeLabel[t] ?? t).padEnd(12)
+    const obj   = (h.OBJECTNAME ?? "").padEnd(24)
+    const tc    = h.TCODE ?? ""
+    lines.push(`${act} ${title} ${type} ${obj} ${tc}`)
+  }
+  lines.push("", `Use customizing_describe <object> for the table set, key fields, and transport object.`, src)
+  if (res.capped) lines.push(`⚠️  ${res.messages.find(m => /capped/i.test(m)) ?? "result capped — raise maxResults"}`)
+  return lines.join("\n")
+}
+
 // Raw fallback: search the CUS_IMGACT / CUS_ACTOBJ tables directly. Used when no
 // STREE search index is present (or the engine isn't reachable).
 async function imgSearchRaw(client: ADTClient, args: {
@@ -366,8 +426,21 @@ async function imgSearchRaw(client: ADTClient, args: {
   try { scanned = tableRows(await runSql(client, sql, max)) }
   catch { /* CUS_IMGACT/CUS_ACTOBJ not query-accessible on this system */ }
 
-  // Keyword filter MCP-side (case-insensitive substring over the activity title).
-  let rows = kw ? scanned.filter(r => col(r, "TEXT").toUpperCase().includes(kw)) : scanned
+  // Keyword filter MCP-side (case-insensitive substring). Match the activity id,
+  // object name and tcode too — not just the title — so component-acronym searches
+  // (e.g. "TSW" → SIMG_OIJ_TSW_*, whose functional titles never say "TSW") hit.
+  let rows = kw
+    ? scanned.filter(r =>
+        col(r, "TEXT").toUpperCase().includes(kw) ||
+        col(r, "ACTIVITY").toUpperCase().includes(kw) ||
+        col(r, "OBJECTNAME").toUpperCase().includes(kw) ||
+        col(r, "TCODE").toUpperCase().includes(kw))
+    : scanned
+
+  // F3: this path fetches only the first `max` activities (ordered by ACTIVITY)
+  // then filters MCP-side — so without a namespace the scan window may not reach
+  // the keyword's activities at all. Flag a truncated scan honestly.
+  const truncated = !ns && scanned.length >= max
 
   // Optional: restrict to activities in the client's activated scope.
   // CUS_IMGACH_SCOPE is client-dependent and is empty on systems where scoping
@@ -387,9 +460,10 @@ async function imgSearchRaw(client: ADTClient, args: {
 
   if (rows.length === 0) {
     const hint = ns
-      ? `No IMG activities in ${args.namespace} with a title containing "${args.keyword}".`
-      : `No matches. This system blocks free-text SQL search, so pass a namespace ` +
-        `(e.g. namespace: "/POSDW/") to scope the IMG index, then filter by keyword.`
+      ? `No IMG activities in ${args.namespace} matching "${args.keyword}".`
+      : `No matches in the first ${max} activities scanned. This ADT path can only ` +
+        `scan a bounded window (deploy the engine for a full server-side search), so ` +
+        `pass a namespace (e.g. namespace: "/POSDW/") to scope the search, or raise maxResults.`
     return { content: [{ type: "text" as const, text: hint }] }
   }
 
@@ -414,6 +488,13 @@ async function imgSearchRaw(client: ADTClient, args: {
   }
   lines.push("", `Use customizing_describe <object> to see the table set, key fields, and transport object.`)
   lines.push(`source: CUS_IMGACT raw IMG tables (no STREE search index)`)
+  if (truncated) {
+    lines.push(
+      `⚠️  PARTIAL SCAN — only the first ${max} activities (ordered by ID) were read, so ` +
+      `matches outside that window are missing. Pass a namespace to scope, raise maxResults, ` +
+      `or deploy the engine (img_search does a full server-side scan).`,
+    )
+  }
   if (scopeNote) lines.push(scopeNote.trim())
 
   return { content: [{ type: "text" as const, text: lines.join("\n") }] }

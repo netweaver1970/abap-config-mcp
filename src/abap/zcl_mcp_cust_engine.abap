@@ -65,6 +65,20 @@ CLASS zcl_mcp_cust_engine DEFINITION
              messages     TYPE stringtab,
            END OF ty_jres.
 
+    " Job handle EXPORTed to INDX(ZJ) by every submit_* right after JOB_CLOSE, so
+    " handle_status can cross-check TBTCO and tell running / queued / aborted /
+    " unknown apart (instead of a blanket 'pending' that also means 'cancelled'
+    " and 'never existed'). cdate/ctime anchor the retention sweep.
+    TYPES: BEGIN OF ty_jhandle,
+             jobname   TYPE btcjob,
+             jobcount  TYPE btcjobcnt,
+             run_kind  TYPE string,      " 'WRITE' | 'ORGCOPY' | 'LISTING'
+             table     TYPE string,
+             transport TYPE string,
+             cdate     TYPE d,
+             ctime     TYPE t,
+           END OF ty_jhandle.
+
     TYPES: BEGIN OF ty_response,
              status       TYPE string,
              operation    TYPE string,
@@ -168,6 +182,37 @@ CLASS zcl_mcp_cust_engine DEFINITION
     METHODS handle_img_index_read
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! Server-side IMG activity search: a full CUS_IMGACT scan with LIKE over the
+    "! title TEXT *and* the activity id (so component acronyms — e.g. TSW, only
+    "! present in SIMG_OIJ_TSW_* ids, not the functional titles — are found),
+    "! joined to CUS_ACTOBJ. Open SQL LIKE has none of the ADT Data-Preview
+    "! endpoint's restrictions, so no 200-row alphabetical-window truncation.
+    METHODS handle_img_search
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! Best-effort live progress for a still-running batch job: the first BGD work
+    "! process of the job's user, with its current program/action/table (headless
+    "! SM50). Turns a bare 'running' into 'still working: RADBTDDF reading DD02L'.
+    METHODS job_progress_note
+      RETURNING VALUE(rv_note) TYPE string.
+
+    "! Age out finished/aborted run artifacts (INDX ZJ/ZR/ZP) whose job handle is
+    "! older than the retention window — results stay re-readable for a while
+    "! (a lost HTTP response must not destroy the outcome) but don't accumulate.
+    METHODS cleanup_stale_runs.
+
+    "! EXPORT the job handle (name/count/kind/timestamp) to INDX(ZJ) keyed by
+    "! run_id, so handle_status can cross-check TBTCO. Called by every submit_*
+    "! right after JOB_CLOSE succeeds.
+    METHODS write_job_handle
+      IMPORTING iv_run_id    TYPE c
+                iv_jobname   TYPE btcjob
+                iv_jobcount  TYPE btcjobcnt
+                iv_kind      TYPE string
+                iv_table     TYPE string OPTIONAL
+                iv_transport TYPE string OPTIONAL.
 
     METHODS handle_hana_memory
       RETURNING VALUE(rs_resp) TYPE ty_response.
@@ -353,6 +398,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
             WHEN 'selftest'. ls_resp = handle_selftest( ls_req ).
             WHEN 'status'.   ls_resp = handle_status( ls_req ).
             WHEN 'img_index_read'. ls_resp = handle_img_index_read( ls_req ).
+            WHEN 'img_search'.     ls_resp = handle_img_search( ls_req ).
             WHEN 'hana_memory'.    ls_resp = handle_hana_memory( ).
             WHEN 'abap_memory'.    ls_resp = handle_abap_memory( ).
             WHEN 'org_copy'.       ls_resp = handle_org_copy( ls_req ).
@@ -721,13 +767,15 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    " ── Governance: in a recording client the dark copier would silently mint
-    " a transport when none is passed — require an explicit request or opt-in.
+    " ── Governance: the entity copier ALWAYS records onto a request it determines
+    " itself (ECOP's own export request) — it cannot be told to record into a
+    " caller-supplied request (IMPORT_TR_REQUEST is a different, import-scenario
+    " input). So in a recording client it will mint a fresh Customizing request;
+    " require the CREATE_TRANSPORT opt-in as an explicit acknowledgment of that.
     DATA(ls_caps) = client_caps( ).
-    IF ls_caps-records = abap_true AND is_req-transport IS INITIAL
-       AND is_req-create_transport = abap_false.
+    IF ls_caps-records = abap_true AND is_req-create_transport = abap_false.
       rs_resp-status = 'error'.
-      APPEND `No TRANSPORT supplied. Record into an existing open Customizing request (preferred), or set CREATE_TRANSPORT=X to let the copier mint one.`
+      APPEND `The org copier mints its OWN Customizing request (it cannot record into a request you supply). Set CREATE_TRANSPORT=X to acknowledge and let it create one.`
         TO rs_resp-messages.
       RETURN.
     ENDIF.
@@ -1936,11 +1984,17 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
 
 
   METHOD handle_status.
-    " Poll the result of a prior async write by run_id.  The batch writer
-    " EXPORTs its result to INDX(ZR) when it finishes; until then there is no
-    " entry and we report 'pending'.  On a hit we return the result and clean
-    " up the cluster entry so a run_id is consumed exactly once.
-    DATA ls_jres TYPE ty_jres.
+    " Poll a prior async write by run_id.  Honest, idempotent lifecycle:
+    "   ZR (result) present   → terminal: return it and KEEP it (a lost HTTP
+    "                            response must not destroy the outcome); drop the
+    "                            bulky ZP params only.
+    "   no ZR, ZJ handle → TBTCO: R=running, Y/P/S=queued, A=aborted,
+    "                            F-without-result=aborted (dumped mid-run).
+    "   no ZR, no ZJ          → genuinely unknown/expired (NOT 'still running').
+    " cleanup_stale_runs ages ZJ/ZR/ZP out so results stay re-readable a while
+    " without accumulating.  handle_status never deletes ZJ/ZR — only cleanup does.
+    DATA: ls_jres TYPE ty_jres,
+          ls_jh   TYPE ty_jhandle.
     rs_resp-operation = 'status'.
     rs_resp-run_id    = is_req-run_id.
 
@@ -1950,20 +2004,194 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    cleanup_stale_runs( ).
+
+    " 1) Terminal result present — return it idempotently (do NOT delete ZR).
     IMPORT data = ls_jres FROM DATABASE indx(ZR) ID is_req-run_id.
     IF sy-subrc = 0.
-      DELETE FROM DATABASE indx(ZR) ID is_req-run_id.
       rs_resp-status       = ls_jres-status.
       rs_resp-rows_written = ls_jres-rows_written.
       rs_resp-transport    = ls_jres-transport.   " org copy reports its export request
       LOOP AT ls_jres-messages INTO DATA(lv_m).
         APPEND lv_m TO rs_resp-messages.
       ENDLOOP.
-    ELSE.
+      DELETE FROM DATABASE indx(ZP) ID is_req-run_id.   " params no longer needed
+      RETURN.
+    ENDIF.
+
+    " 2) No result yet — consult the job handle + TBTCO.
+    IMPORT data = ls_jh FROM DATABASE indx(ZJ) ID is_req-run_id.
+    IF sy-subrc <> 0.
+      rs_resp-status = 'unknown'.
+      APPEND |run_id { is_req-run_id } is unknown or expired — no job handle and no result. | &&
+             |If it finished long ago its result may have aged out; otherwise the run_id is wrong.|
+        TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    DATA lv_jstat TYPE btcstatus.
+    SELECT SINGLE status FROM tbtco INTO @lv_jstat
+      WHERE jobname = @ls_jh-jobname AND jobcount = @ls_jh-jobcount.
+    IF sy-subrc <> 0.
       rs_resp-status = 'pending'.
-      APPEND |No result yet for run_id { is_req-run_id } — job still running, or run_id unknown/expired|
+      APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } is scheduled (not yet in TBTCO)|
+        TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    CASE lv_jstat.
+      WHEN 'R'.                       " active / running
+        rs_resp-status = 'running'.
+        APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } is RUNNING (active, TBTCO 'R'). | &&
+               |{ job_progress_note( ) }| TO rs_resp-messages.
+      WHEN 'Y' OR 'P' OR 'S'.         " ready / scheduled / released → waiting for a WP
+        rs_resp-status = 'pending'.
+        APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } is queued (TBTCO '{ lv_jstat }'), | &&
+               |waiting for a free background work process| TO rs_resp-messages.
+      WHEN 'A'.                       " aborted / cancelled
+        rs_resp-status = 'aborted'.
+        APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } was ABORTED (cancelled or failed, | &&
+               |TBTCO 'A') — no result was written. Check SM37 job log / ST22.| TO rs_resp-messages.
+      WHEN 'F'.                       " finished but wrote no ZR result → dumped mid-run
+        rs_resp-status = 'aborted'.
+        APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } FINISHED (TBTCO 'F') but produced no | &&
+               |result — it likely dumped mid-run. Check ST22 / SM37 job log.| TO rs_resp-messages.
+      WHEN OTHERS.
+        rs_resp-status = 'pending'.
+        APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } TBTCO status '{ lv_jstat }'|
+          TO rs_resp-messages.
+    ENDCASE.
+  ENDMETHOD.
+
+
+  METHOD job_progress_note.
+    " Best-effort: the current program/action/table of the job's background WP,
+    " so a long 'running' shows it is progressing (a different program each poll)
+    " rather than wedged.  WP_REPORT reflects the *currently executing* unit
+    " (often a called SAP program, not ZMCP_CUST_WRITE), so match by user+type.
+    DATA lt_wp TYPE STANDARD TABLE OF wpinfo.
+    CALL FUNCTION 'TH_WPINFO'
+      TABLES     wplist = lt_wp
+      EXCEPTIONS OTHERS = 1.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+    DATA lv_rep TYPE string.
+    LOOP AT lt_wp INTO DATA(ls_wp)
+        WHERE wp_typ = 'BGD' AND wp_bname = sy-uname AND wp_istatus = 4.  " 4 = running
+      lv_rep = ls_wp-wp_report.
+      REPLACE ALL OCCURRENCES OF '=' IN lv_rep WITH ''.   " CL_...===CP → CL_...CP
+      rv_note = |Progressing — currently { lv_rep } | &&
+                COND string( WHEN ls_wp-wp_action IS NOT INITIAL
+                             THEN |({ ls_wp-wp_action }{ COND string( WHEN ls_wp-wp_table IS NOT INITIAL
+                                                                      THEN | { ls_wp-wp_table }| ) }) | )
+                && |after { ls_wp-wp_eltime }s|.
+      RETURN.
+    ENDLOOP.
+  ENDMETHOD.
+
+
+  METHOD cleanup_stale_runs.
+    " Sweep INDX ZJ (job handles) — the age anchor — and drop the run's ZJ/ZR/ZP
+    " once its handle is older than the retention window (6 h same day, or any
+    " earlier day). Handful of runs per session, so this is cheap.
+    DATA: lt_srt TYPE STANDARD TABLE OF indx-srtfd,
+          ls_jh  TYPE ty_jhandle.
+    SELECT srtfd FROM indx INTO TABLE @lt_srt WHERE relid = 'ZJ'.
+    LOOP AT lt_srt INTO DATA(lv_srt).
+      IMPORT data = ls_jh FROM DATABASE indx(ZJ) ID lv_srt.
+      IF sy-subrc <> 0.
+        CONTINUE.
+      ENDIF.
+      IF ls_jh-cdate < sy-datum
+         OR ( ls_jh-cdate = sy-datum AND ( sy-uzeit - ls_jh-ctime ) > 21600 ).
+        DELETE FROM DATABASE indx(ZJ) ID lv_srt.
+        DELETE FROM DATABASE indx(ZR) ID lv_srt.
+        DELETE FROM DATABASE indx(ZP) ID lv_srt.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+
+
+  METHOD write_job_handle.
+    DATA ls_jh TYPE ty_jhandle.
+    ls_jh-jobname   = iv_jobname.
+    ls_jh-jobcount  = iv_jobcount.
+    ls_jh-run_kind  = iv_kind.
+    ls_jh-table     = iv_table.
+    ls_jh-transport = iv_transport.
+    ls_jh-cdate     = sy-datum.
+    ls_jh-ctime     = sy-uzeit.
+    EXPORT data = ls_jh TO DATABASE indx(ZJ) ID iv_run_id.
+  ENDMETHOD.
+
+
+  METHOD handle_img_search.
+    " Full CUS_IMGACT scan with a server-side LIKE over BOTH the title TEXT and
+    " the activity id, joined to CUS_ACTOBJ for the maintenance object. Open SQL
+    " LIKE is unrestricted here (the ADT Data-Preview endpoint's LIKE ban and its
+    " 200-row alphabetical window do not apply), so component-acronym searches
+    " (e.g. 'TSW' → SIMG_OIJ_TSW_*, whose functional titles never say 'TSW') work.
+    DATA: lv_lang TYPE spras,
+          lv_pat  TYPE string,
+          lv_kw   TYPE string,
+          lv_max  TYPE i.
+    rs_resp-operation = 'img_search'.
+    rs_resp-version   = c_version.
+
+    lv_kw = to_upper( is_req-keyword ).
+    IF lv_kw IS INITIAL.
+      rs_resp-status = 'error'.
+      APPEND 'img_search needs a keyword' TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    lv_lang = COND #( WHEN is_req-language IS NOT INITIAL THEN is_req-language(1) ELSE 'E' ).
+    lv_max  = COND #( WHEN is_req-max_rows > 0 THEN is_req-max_rows ELSE 200 ).
+
+    " Escape LIKE metacharacters in the keyword (ESCAPE '#'), then wrap with %.
+    lv_pat = lv_kw.
+    REPLACE ALL OCCURRENCES OF '#' IN lv_pat WITH '##'.
+    REPLACE ALL OCCURRENCES OF '%' IN lv_pat WITH '#%'.
+    REPLACE ALL OCCURRENCES OF '_' IN lv_pat WITH '#_'.
+    CONCATENATE '%' lv_pat '%' INTO lv_pat.
+
+    TYPES: BEGIN OF ty_hit,
+             activity   TYPE cus_imgact-activity,
+             text       TYPE cus_imgact-text,
+             objecttype TYPE cus_actobj-objecttype,
+             objectname TYPE cus_actobj-objectname,
+             tcode      TYPE cus_actobj-tcode,
+           END OF ty_hit.
+    DATA lt_hit TYPE STANDARD TABLE OF ty_hit.
+
+    TRY.
+        SELECT a~activity, a~text, o~objecttype, o~objectname, o~tcode
+          FROM cus_imgact AS a
+          LEFT OUTER JOIN cus_actobj AS o ON o~act_id = a~activity
+          WHERE a~spras = @lv_lang
+            AND ( upper( a~text ) LIKE @lv_pat ESCAPE '#'
+               OR a~activity      LIKE @lv_pat ESCAPE '#' )
+          ORDER BY a~activity
+          INTO CORRESPONDING FIELDS OF TABLE @lt_hit
+          UP TO @lv_max ROWS.
+      CATCH cx_sy_open_sql_db INTO DATA(lx_sql).
+        rs_resp-status = 'error'.
+        APPEND |img_search SQL failed: { lx_sql->get_text( ) }| TO rs_resp-messages.
+        RETURN.
+    ENDTRY.
+
+    rs_resp-status       = 'ok'.
+    rs_resp-rows_planned = lines( lt_hit ).
+    APPEND |Found { lines( lt_hit ) } IMG activit{ COND string( WHEN lines( lt_hit ) = 1 THEN 'y' ELSE 'ies' ) }| &&
+           | matching '{ lv_kw }' (title or activity id, full CUS_IMGACT scan)|
+      TO rs_resp-messages.
+    IF lines( lt_hit ) >= lv_max.
+      APPEND |Result capped at { lv_max } rows — raise max_rows or narrow the keyword for the rest|
         TO rs_resp-messages.
     ENDIF.
+    rs_resp-data_json = /ui2/cl_json=>serialize(
+      data        = lt_hit
+      pretty_name = /ui2/cl_json=>pretty_mode-none ).
   ENDMETHOD.
 
 
@@ -2213,6 +2441,15 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    " Record the job handle so handle_status can cross-check TBTCO (running /
+    " queued / aborted) rather than reporting a blanket 'pending'.
+    write_job_handle( iv_run_id    = lv_run_id
+                      iv_jobname   = lv_jobname
+                      iv_jobcount  = lv_jobcount
+                      iv_kind      = 'WRITE'
+                      iv_table     = is_req-table
+                      iv_transport = is_req-transport ).
+
     " Short initial poll (catches the common fast-job case without a second
     " round-trip).  If the job isn't done in time, return pending + run_id and
     " let the caller poll via operation 'status' — this keeps the write call
@@ -2322,6 +2559,12 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    write_job_handle( iv_run_id    = lv_run_id
+                      iv_jobname   = lv_jobname
+                      iv_jobcount  = lv_jobcount
+                      iv_kind      = 'ORGCOPY'
+                      iv_transport = is_req-transport ).
+
     " A whole-org-unit copy can run for a while; poll briefly, else hand back the
     " run_id so the caller polls via operation 'status' (keeps us under timeouts).
     DATA lv_done TYPE abap_bool VALUE abap_false.
@@ -2422,6 +2665,11 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       DELETE FROM DATABASE indx(ZP) ID lv_run_id.
       RETURN.
     ENDIF.
+
+    write_job_handle( iv_run_id   = lv_run_id
+                      iv_jobname  = lv_jobname
+                      iv_jobcount = lv_jobcount
+                      iv_kind     = 'LISTING' ).
 
     DATA lv_done TYPE abap_bool VALUE abap_false.
     DO 8 TIMES.

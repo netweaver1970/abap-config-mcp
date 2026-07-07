@@ -142,7 +142,7 @@ FORM run_org_copy
       OTHERS                     = 19.
   IF sy-subrc <> 0.
     lv_exc = SWITCH string( sy-subrc
-      WHEN 6  THEN `no_tr_request — supply a transport (the dark copier won't mint one in a recording client)`
+      WHEN 6  THEN `no_tr_request — the entity copier could not obtain a transport request to record onto (set createTransport)`
       WHEN 8  THEN `no_authorization`
       WHEN 10 THEN `locking_error — org unit locked by another user`
       WHEN 12 THEN `source_unit_does_not_exist`
