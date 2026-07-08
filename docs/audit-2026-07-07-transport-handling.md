@@ -46,14 +46,17 @@ unlocked): same signature. Live WP tracing (`wp_detail`, TH_WPINFO) then showed 
 | ~20.5 min | `SAPLSLGO` / `RADBTDDF` | application log + more DDIC |
 | ~24–70+ min | `CL_BCFG_BCSET_DS_HELPER`, `SAPLSCTS_REQUEST_CHECK/SELECTION` (E070), `CL_CTS_GTO_RULE_LAYER`, `CL_BCTOOLS_FEATURE_CONTROL`, `CL_SSCUI_ADAPTATION`, `SAPLSDVI` (DD29L), repeat DDIC cycles | BC-Set capture, CTS request checks, GTO rules, SSCUI adaptation — the full S/4 config-change hook chain, cycling |
 
-**Empirical runtime:** the controlled repro (4 rows) was still progressing at **3 h 10 min**
-(11 373 s) — always a different program per sample (never stuck): cycling Switch-Framework
-evaluation (`CL_ABAP_SWITCH`), DDIC scans (`RADBTDDF` over DD02L/DD25L/DD27S, `SAPLSDVI` DD29L),
-CTS checks (`SAPLSCTS_REQUEST_CHECK`, `SAPLCTS_CUS_ORIG`), BC-Set capture
+**Empirical runtime:** the controlled repro (4 rows) ran **~12 hours and still had not finished**
+(WP elapsed 43 210 s at the last sample) — always a different program per sample (never stuck):
+cycling Switch-Framework evaluation (`CL_ABAP_SWITCH`), DDIC scans (`RADBTDDF` over
+DD02L/DD25L/DD27S/DD08L, `SAPLSDVI` DD29L, `CL_DD_FORKEY_READER` DD05S), CTS checks
+(`SAPLSCTS_REQUEST_CHECK/SELECTION`, `SAPLSTRD` over E070), BC-Set capture
 (`CL_BCFG_BCSET_DS_HELPER` reading OBJS), lifecycle/landscape hooks (`CL_SBLM_KERNEL_API`,
-`/SDF/CL_TMW_TRANS_CHECK`). Whether or not it eventually completes, the transported VMSE path on
-cold IS-Oil views is **operationally unusable on this box**; the fixes below (honest status, no
-premature cancel, direct+record alternatives) are required regardless.
+`/SDF/CL_TMW_TRANS_CHECK`). **Verdict: the transported VMSE path on a cold IS-Oil view is
+effectively non-terminating on this box** (12 h+ for 4 rows, holding the V_TOIJRMOT enqueue and a
+BGD work process the whole time). The fixes below (honest status, no premature cancel,
+direct+record alternatives) are required regardless — and for cold greenfield views the direct
+`recordTransport:false` path is the only practical option.
 
 **Root cause:** the first transported `VIEW_MAINTENANCE_SINGLE_ENTRY` on a **cold, never-touched
 maintenance view** (greenfield IS-Oil: FG `OIJI` delivered but never loaded/generated on this
