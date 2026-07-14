@@ -188,7 +188,6 @@ FORM run_listing
   DATA: lr_all    TYPE REF TO data,
         lr_sub    TYPE REF TO data,
         lt_prods  TYPE STANDARD TABLE OF matnr,
-        lr_prod   TYPE RANGE OF matnr,
         lv_prod   TYPE matnr,
         lv_total  TYPE i,
         lv_fmfail TYPE i,
@@ -242,12 +241,11 @@ FORM run_listing
     IF sy-subrc = 0. APPEND <pf> TO lt_prods. ENDIF.
   ENDLOOP.
   SORT lt_prods. DELETE ADJACENT DUPLICATES FROM lt_prods.
-  lr_prod = VALUE #( FOR p IN lt_prods ( sign = 'I' option = 'EQ' low = p ) ).
 
   " Truthful outcome: count the listing conditions (WLK1) BEFORE, so we can report
   " how many were actually written — the FM returns subrc 0 even when every item is
   " rejected (it logs the reason to the application log instead of failing).
-  SELECT COUNT(*) FROM wlk1 INTO @lv_before WHERE artnr IN @lr_prod.
+  PERFORM count_wlk1 USING lt_prods CHANGING lv_before.
 
   LOOP AT lt_prods INTO lv_prod.
     CLEAR <sub>.
@@ -279,7 +277,7 @@ FORM run_listing
 
   COMMIT WORK AND WAIT.
 
-  SELECT COUNT(*) FROM wlk1 INTO @lv_after WHERE artnr IN @lr_prod.
+  PERFORM count_wlk1 USING lt_prods CHANGING lv_after.
   lv_delta = lv_after - lv_before.
 
   " Surface the per-item messages the listing engine wrote to its application log
@@ -295,6 +293,46 @@ FORM run_listing
          COND string( WHEN lv_fmfail > 0 THEN |; { lv_fmfail } article(s) hit a fatal FM error| ELSE `` ) &&
          COND string( WHEN lv_delta = 0 THEN ` — NOTHING listed; see listing-log messages above` ELSE `` )
     TO cs_result-messages.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&  Count retail listing conditions (WLK1) for the given articles.
+*&
+*&  WLK1 exists only on an ERP/Retail box.  It is accessed DYNAMICALLY (and
+*&  guarded) so this report still COMPILES on systems that don't have it in the
+*&  ABAP Dictionary — e.g. SAP CAR, where WLK1 is replicated in by SLT into a
+*&  separate DB schema and is not a DDIC table.  A static `FROM wlk1` made the
+*&  whole report unactivatable there, taking the customizing writer down with
+*&  the retail-listing feature.  On a box without WLK1 the count stays 0 and the
+*&  listing op simply reports nothing written (it is never invoked there anyway).
+*&---------------------------------------------------------------------*
+FORM count_wlk1
+  USING    it_prods TYPE STANDARD TABLE
+  CHANGING cv_count TYPE i.
+
+  DATA: lv_list  TYPE string,
+        lv_where TYPE string.
+  FIELD-SYMBOLS <p> TYPE any.
+
+  CLEAR cv_count.
+  IF it_prods IS INITIAL.
+    RETURN.
+  ENDIF.
+
+  LOOP AT it_prods ASSIGNING <p>.
+    IF lv_list IS INITIAL.
+      lv_list = |'{ <p> }'|.
+    ELSE.
+      lv_list = |{ lv_list }, '{ <p> }'|.
+    ENDIF.
+  ENDLOOP.
+  lv_where = |ARTNR IN ( { lv_list } )|.
+
+  TRY.
+      SELECT COUNT(*) FROM ('WLK1') INTO @cv_count WHERE (lv_where).
+    CATCH cx_root.
+      CLEAR cv_count.   " table absent on this box (e.g. CAR) — nothing to count
+  ENDTRY.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
