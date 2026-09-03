@@ -93,7 +93,13 @@ export interface ResolvedMaint {
   imgActivityText?: string    // CUS_IMGACT TEXT — the SPRO activity title (the "area")
   authGroup?: string          // TDDAT CCLASS of the root table
   objectType?: string         // CUS_ACTOBJ OBJECTTYPE: V view / S table / C cluster / T txn / D dummy
-  cluster?: string            // VCLSTRUC: the view cluster this view belongs to (if any)
+  cluster?: string            // VCLSTRUC: the view cluster this view belongs to (if any) — NOT the
+                               // non-termination trigger (see switchId); kept for messaging only.
+  devclass?: string           // TVDIR DEVCLASS: the maintenance object's own package
+  switchId?: string           // SFW_PACKAGE SWITCH_ID for devclass, if that package is switch-gated
+                               // at all — regardless of the switch's current on/off/standby state.
+                               // THIS is the debugger-verified trigger for a headless commit
+                               // effectively never terminating on a cold view in that package.
   // maintObject = what VIEW_MAINTENANCE_SINGLE_ENTRY is driven on (a maintenance
   // view for VDAT, or the table itself for single-table TABU maintenance).
   // "" ⇒ no generated SM30/SM34 maintenance → only a direct (untransported) write is possible.
@@ -162,13 +168,32 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     textTable = langFields.map(r => col(r, "TABNAME")).find(Boolean)
   }
 
-  // TVDIR (function group / maint type) of the maintenance object (view or self-table)
+  // TVDIR (function group / maint type / package) of the maintenance object
   const maintName = view ?? (singleTable ? obj : "")
-  let funcGroup: string | undefined, maintType: string | undefined
+  let funcGroup: string | undefined, maintType: string | undefined, devclass: string | undefined
   if (maintName) {
-    const tvdir = await sql1(client, `SELECT AREA, TYPE FROM TVDIR WHERE TABNAME = '${maintName}'`)
+    const tvdir = await sql1(client, `SELECT AREA, TYPE, DEVCLASS FROM TVDIR WHERE TABNAME = '${maintName}'`)
     funcGroup = col(tvdir[0] ?? {}, "AREA") || undefined
     maintType = col(tvdir[0] ?? {}, "TYPE") || undefined
+    devclass  = col(tvdir[0] ?? {}, "DEVCLASS") || undefined
+  }
+
+  // Switch Framework gating of that package (SFW_PACKAGE): the DEBUGGER-VERIFIED
+  // trigger (docs/audit-2026-07-07-transport-handling.md, wp_detail live WP
+  // tracing) for a headless VIEW_MAINTENANCE_SINGLE_ENTRY commit effectively
+  // never terminating — 12h+ for 4 rows into V_TOIJRMOT, a PLAIN view, not a
+  // cluster member. The runtime grinds per-DDIC-object through Switch Framework
+  // evaluation (CL_ABAP_SWITCH) plus first-load module-pool generation on a
+  // view that has never been touched via SM30/SM34 on this box, plus the ST-PI
+  // TMWFLOW CTS hook. Confirmed a second time 2026-09-03 (same module sequence)
+  // on V_OIJNOM_ST03, package OIJ, switch OIJ_TSW — which is ALSO a view-cluster
+  // member, but clustering is not the trigger: /POSDW/GPAP (2026-06-10) is a
+  // cluster member in a non-switch-gated package and wrote in seconds. Package
+  // switch-gating is the property that actually discriminates the two outcomes.
+  let switchId: string | undefined
+  if (devclass) {
+    const sfw = await sql1(client, `SELECT SWITCH_ID FROM SFW_PACKAGE WHERE DEVCLASS = '${devclass}'`)
+    switchId = col(sfw[0] ?? {}, "SWITCH_ID") || undefined
   }
 
   // View-cluster membership (VCLSTRUC): does a cluster maintain this view?
@@ -224,6 +249,8 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     authGroup,
     objectType,
     cluster,
+    devclass,
+    switchId,
     maintObject,
     recordObject,
     transport,

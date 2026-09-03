@@ -24,7 +24,7 @@ import {
   getEngineSource, ENGINE_VERSION, ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH,
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
-import { resolveMaint, runSql, tableRows, col } from "./customizing"
+import { resolveMaint, runSql, tableRows, col, type ResolvedMaint } from "./customizing"
 import { rememberTransport, buildTransportPrompt } from "./transportGovernance"
 import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
 
@@ -715,6 +715,59 @@ export async function handleOrgCopy(args: {
   return { content: [{ type: "text" as const, text: lines.join("\n") }] }
 }
 
+// ─── switch-gated-package guardrail ────────────────────────────────────────────
+//
+// A headless commit into a maintenance view whose PACKAGE carries a Switch
+// Framework assignment (SFW_PACKAGE has a row for that DEVCLASS) is refused
+// before it is attempted.
+//
+// This is not a guess. It is the debugger-verified conclusion of a controlled
+// repro with live work-process tracing (docs/audit-2026-07-07-transport-handling.md,
+// diag op wp_detail / TH_WPINFO): a headless VIEW_MAINTENANCE_SINGLE_ENTRY commit
+// into a view in a switch-gated package ran for 12+ HOURS and still had not
+// finished for 4 rows into V_TOIJRMOT (package OIJ, switch OIJ_TSW) — the runtime
+// grinds per-DDIC-object through Switch Framework evaluation (CL_ABAP_SWITCH),
+// full DDIC dependency scans (RADBTDDF over DD02L/DD25L/DD27S/DD08L,
+// CL_DD_FORKEY_READER over DD05S), the ST-PI TMWFLOW CTS hook, and BC-Set/SSCUI
+// adaptation checks (CL_BCFG_BCSET_DS_HELPER, CL_SSCUI_ADAPTATION) — worst on a
+// COLD view (never generated via SM30/SM34 on this box) but never proven to
+// terminate at all. "20+ min, just wait" was this investigation's premature,
+// SUPERSEDED first conclusion; the final one is "effectively non-terminating."
+//
+// Confirmed a second time 2026-09-03: an identical module sequence, this time
+// via V_OIJNOM_ST03 (package OIJ, switch OIJ_TSW) — cancelled in SM37 at 27+
+// min, zero rows written.
+//
+// IMPORTANT — this is NOT about view clusters. V_TOIJRMOT above is a plain
+// view, not a cluster member. And a cluster member in a package with NO switch
+// assignment writes fine: /POSDW/GPAP (2026-06-10, view cluster, package NOT
+// switch-gated) recorded in seconds. An earlier version of this guard checked
+// cluster membership instead of package switch-gating — that was wrong: it
+// would have missed V_TOIJRMOT's failure mode entirely (no cluster) and would
+// have needlessly blocked /POSDW/GPAP's proven-safe case (a cluster, but safe).
+// Gating on `switchId` is the property the debugger trace actually implicates.
+//
+// A dry run is unaffected — it never reaches the ABAP side. Cluster membership,
+// where present, is still named in the message for orientation, since it is
+// often true alongside the real cause without being it.
+export function riskyPackageGuard(maint: ResolvedMaint, table: string): string | undefined {
+  if (!maint.switchId) return undefined
+  const clusterNote = maint.cluster
+    ? ` It also happens to be a view-cluster member (${maint.cluster}), which is not the cause.`
+    : ""
+  return (
+    `❌ ${table} is maintained through ${maint.maintObject}, in package ${maint.devclass} — gated by ` +
+    `Switch Framework switch ${maint.switchId}. A headless commit here is refused rather than attempted.\n\n` +
+    `A commit through VIEW_MAINTENANCE_SINGLE_ENTRY into a switch-gated package's view is the debugger-verified ` +
+    `(wp_detail / TH_WPINFO live tracing, docs/audit-2026-07-07-transport-handling.md) cause of a commit that runs ` +
+    `for HOURS and may never terminate: the runtime grinds per-DDIC-object through Switch Framework evaluation, ` +
+    `full DDIC scans, the ST-PI TMWFLOW CTS hook, and BC-Set/SSCUI checks. Confirmed twice on this box: 12+ hours ` +
+    `on V_TOIJRMOT (2026-07-07) and 27+ minutes cancelled with zero rows on V_OIJNOM_ST03 (2026-09-03).${clusterNote}\n\n` +
+    `Maintain ${table} through its own transaction (SM30/SM34/SPRO) instead. This guard exists so the next ` +
+    `attempt fails in under a second rather than after hours.`
+  )
+}
+
 // ─── customizing_apply ──────────────────────────────────────────────────────────
 
 export async function handleCustomizingApply(args: {
@@ -770,6 +823,10 @@ export async function handleCustomizingApply(args: {
     try {
       const client = await ensureConnected(args.connectionId)
       const maint = await resolveMaint(client, args.table)
+      if (commit) {
+        const guard = riskyPackageGuard(maint, args.table)
+        if (guard) return { content: [{ type: "text" as const, text: guard }] }
+      }
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
         // Record the member view (VDAT) / table (TABU). Cluster members record VDAT
@@ -972,6 +1029,10 @@ export async function handleCustomizingCreate(args: {
     try {
       const client = await ensureConnected(args.connectionId)
       const maint = await resolveMaint(client, args.table)
+      if (commit) {
+        const guard = riskyPackageGuard(maint, args.table)
+        if (guard) return { content: [{ type: "text" as const, text: guard }] }
+      }
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
         transportObject = maint.recordObject

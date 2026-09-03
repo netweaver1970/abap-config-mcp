@@ -1,6 +1,70 @@
 # Customizing Engine — Handoff & Findings
 
-> ## ⏩ LATEST STATUS (2026-06-10 — all pushed to master)
+> ## ⏩ LATEST STATUS (2026-09-03 — pushed to master)
+> **Engine v1.9.2.** Read this block first, then the 2026-06-10 block below it, then
+> [`docs/customizing-engine.md`](docs/customizing-engine.md) and
+> [`docs/audit-2026-07-07-transport-handling.md`](docs/audit-2026-07-07-transport-handling.md) — that audit doc
+> already contains the debugger-verified root cause this block builds on.
+>
+> **★ Headless commits into a switch-gated package's view are now REFUSED up front
+> (`riskyPackageGuard`, `src/tools/customizingEngine.ts`; resolver support in
+> `resolveMaint`, `src/tools/customizing.ts`).**
+>
+> Incident: a commit into `TOIJNOM_ST03` (view `V_OIJNOM_ST03`, package `OIJ`, switch
+> `OIJ_TSW`) ran `ZMCP_CUST_WRITE` for 27+ minutes on S4 — SM50 cycling the same module
+> sequence documented in the 2026-07-07 audit (`CL_BCFG_BCSET_DS_HELPER` →
+> `CL_DD_FORKEY_READER`/DD05S → `CL_ABAP_SWITCH` → `SAPLSENA` → `CL_SSCUI_ADAPTATION` →
+> `SAPLSVIM` → `RADBTDDF`/DD02L, repeating) — and was cancelled in SM37 with zero rows
+> written.
+>
+> **This is the SAME failure mode as 2026-07-07's `V_TOIJRMOT` (12+ hours, still not
+> finished for 4 rows), already root-caused with a debugger** (`wp_detail` / `TH_WPINFO`
+> live WP tracing): a headless `VIEW_MAINTENANCE_SINGLE_ENTRY` commit into a view whose
+> **package carries a Switch Framework assignment** grinds per-DDIC-object through switch
+> evaluation, full DDIC scans, the ST-PI TMWFLOW CTS hook, and BC-Set/SSCUI checks —
+> worst on a cold (never-generated) view, never proven to terminate at all. The 2026-06-15
+> auto-memory note "20+min SLOW not stuck" was that investigation's premature *first*
+> conclusion at the ~20-minute mark; the audit doc's own final verdict, reached hours later
+> the same night, supersedes it: "effectively non-terminating." Anything still citing
+> "just wait, it's progressing" for this class of write is citing the superseded finding.
+>
+> **A first version of this guard, built and tested the same evening before this one, gated
+> on view-cluster membership instead of package switch-gating — and was wrong.** `V_TOIJRMOT`
+> (12h+, the worse of the two hangs) is *not* a cluster member, so a cluster-only guard would
+> have missed its entire failure mode. And `/POSDW/GPAP` (2026-06-10) *is* a cluster member,
+> in a package with no switch assignment, and recorded in seconds — a cluster-only guard would
+> have refused it for nothing. Caught and corrected before that version was ever committed,
+> by re-reading this file's own 2026-07-07/07-08 findings instead of trusting a code comment's
+> unverified explanation. `resolveMaint` now resolves `TVDIR.DEVCLASS` for the maintenance
+> object and cross-checks `SFW_PACKAGE` for a switch assignment on that package — regardless of
+> the switch's current on/off/standby state, since the July finding shows the grind happens
+> per-DDIC-object either way. Cluster membership, where present, is still named in the refusal
+> message for orientation, explicitly marked as not the cause.
+>
+> Confirmed live on S4 the same night: the guard refuses `TOIJNOM_ST03` in under a second, no
+> job spawned, no orphan row (re-queried after refusal: unchanged); a plain non-switch-gated
+> view (`V_TVTR`) dry-run is unaffected. `TOIJNOM_ST03`'s actual profile (`BM01`) was built by
+> hand in SM34 in the meantime, proving the manual path is reliable for exactly the object that
+> hung. 206/206 tests pass (`tests/riskyPackageGuard.test.ts`), covering all four combinations
+> of {cluster member, switch-gated package} × {yes, no} against real object names from both
+> incidents plus both proven-safe cases.
+>
+> **STILL OPEN — the deep fix, not attempted tonight:** a genuinely headless CDAT recorder
+> *and/or* a way to make the switch-gated-view commit itself terminate reliably, so this class
+> of object stops needing a hand-maintained fallback at all. Two named approaches for the CDAT
+> half, already scoped in `docs/customizing-engine.md` and `record_cdat`'s own ABAP comment
+> (`src/abap/zmcp_cust_write.ts`) — neither addresses the switch-grind directly, so either would
+> still need `riskyPackageGuard`'s condition (or a narrower, debugger-confirmed one) until the
+> grind itself is understood well enough to route around:
+>   1. A direct `TRINT` call with `iv_with_dialog='D'` + `is_api_call-request`, instead of
+>      `TR_OBJECTS_INSERT`'s hardcoded `iv_with_dialog='X'` (→ TK495).
+>   2. `VIEWCLUSTER_IMPORT` with staged `SLCTR` content.
+> The July audit's own fix directions (its §"Fix directions (task #22)") are still open too:
+> honest live status via `wp_detail` inside `customizing_status` itself (not just the manual
+> diag op), no consume-on-read on the INDX(ZR) result, and evaluating whether the `/SDF/TMWFLOW`
+> CTS hook can be disabled on a standalone box with no SolMan attached (pure overhead there).
+
+> ## ⏩ PRIOR STATUS (2026-06-10 — all pushed to master)
 > **Engine v0.9.7.** Canonical reference: **[`docs/customizing-engine.md`](docs/customizing-engine.md)** — read
 > that first; this file is the debugging saga / findings history. After any TS/ABAP change: rebuild + restart the
 > server + **reconnect the MCP client** (catalog is snapshotted at session start; a restart reconnects the
