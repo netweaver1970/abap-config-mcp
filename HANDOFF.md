@@ -1,5 +1,25 @@
 # Customizing Engine — Handoff & Findings
 
+> ## ⏩ ALSO 2026-09-17 (later): text elements, and tables without a view
+> **`set_text_elements` rewritten (it could not write text symbols at all).** Verified on S4 against a
+> throwaway program, class and function group:
+> - Every text symbol needs an `@MaxLength:<n>` line before it, or SAP rejects the whole write. The tool
+>   now always sends one (default: the text's length).
+> - A dictionary-referenced selection text is a bare `@DDICReference` line before the element, sent with an
+>   empty text; SAP fills the text from the data element. abap-adt-api expects `@DDICReference:<x>` and could
+>   neither read nor write it, so the tool now reads and writes ADT's text format itself.
+> - The ADT PUT replaces the whole category — a partial list deleted every other text. Writes now merge by id
+>   (`remove` deletes, `replace: true` writes exactly the list).
+> - Activating the program does not activate its text elements (they stay as `PROG/PX` in the inactive
+>   worklist). The tool now activates the text-element resource itself (`activate: false` to skip).
+> - Headings are `LISTHEADER` and `COLUMNHEADER_1..4` (SAP returns them camel-cased); the old description
+>   said S/M/L/H.
+>
+> **`customizing_create` `recordTableKeys: true`** — for a table with no maintenance view (units: T006,
+> T006A/B/C, T006_OIB, normally CUNI): writes directly and records the row keys as `R3TR TABU` on the
+> transport with the same headless recorder. Opt-in, because it skips the dedicated transaction's checks.
+> Note CUNI itself records under `R3TR TDAT CUNI`; the imported keys are the same.
+
 > ## ⏩ LATEST STATUS (2026-09-17)
 > **Server v1.9.3 / ABAP engine 0.9.26. Commits into switch-gated IS-Oil views work, recorded,
 > in seconds. The refusal (`riskyPackageGuard`) is removed.** The 2026-09-03 block below and
