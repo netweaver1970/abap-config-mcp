@@ -964,6 +964,7 @@ export async function handleCustomizingCreate(args: {
   onlyMissing?: boolean
   commit?: boolean
   recordTransport?: boolean
+  recordTableKeys?: boolean
   createTransport?: boolean
   transportText?: string
   showAllTransports?: boolean
@@ -1007,13 +1008,20 @@ export async function handleCustomizingCreate(args: {
           ? ` — in view cluster ${maint.cluster} (records the member view ${maintObject} as R3TR VDAT)`
           : ""
         resolveNote = `(maint object ${maintObject} → R3TR ${transportObject}; table set ${maint.tables.join(" + ")}${clusterNote})\n`
+      } else if (args.recordTableKeys === true) {
+        // No view: write the table directly and record its row keys as R3TR TABU,
+        // which is what the dedicated transaction (e.g. CUNI for T006*) records.
+        // Opt-in, because it skips whatever checks that transaction makes.
+        transportObject = "TABU"
+        resolveNote = `(no maintenance view for ${args.table}; direct write, keys recorded as R3TR TABU ${args.table})\n`
       } else {
         if (commit) {
           return { content: [{ type: "text" as const, text:
             `❌ ${args.table} has no generated SM30/SM34 maintenance view` +
             `${maint.objectType ? ` (CUS_ACTOBJ object type '${maint.objectType}')` : " (it is maintained by a dedicated transaction, not a view)"}, ` +
             `so a transport-recorded write through the view runtime isn't possible. ` +
-            `Use recordTransport: false for a direct (untransported) write, or maintain it in SPRO.` }] }
+            `Use recordTransport: false for a direct (untransported) write, recordTableKeys: true for a direct write ` +
+            `recorded as R3TR TABU, or maintain it in SPRO.` }] }
         }
         resolveNote = `(no generated maintenance for ${args.table}; dry-run only)\n`
       }
@@ -1477,6 +1485,7 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         onlyMissing:      z.boolean().optional().describe("Only create rows whose key is absent (default: true = idempotent). false also updates existing rows."),
         commit:           z.boolean().optional().describe("Actually write (default: false = dry run returning the planned rows)"),
         recordTransport:  z.boolean().optional().describe("Record the write on a transport (default: true for C/G/E). Set false for a direct, untransported sandbox write — transport must be omitted then."),
+        recordTableKeys:  z.boolean().optional().describe("For a table with no maintenance view (e.g. T006/T006A, normally CUNI): write it directly and record the row keys as R3TR TABU on the transport. Skips the dedicated transaction's checks — supply complete rows."),
         createTransport:  z.boolean().optional().describe("Opt in to having the engine create a NEW Customizing request when none supplied (default: false — the tool first prompts). Combine with transportText to name it."),
         transportText:    z.string().optional().describe("Short description for the engine-created Customizing request (only used with createTransport: true)."),
         showAllTransports: z.boolean().optional().describe("When prompting for a transport, list ALL users' open requests instead of only your own (default: false)."),

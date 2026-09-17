@@ -30,7 +30,7 @@
  */
 import { readAbap, applyPlaceholders } from "./loadSource"
 
-export const ENGINE_VERSION = "0.9.26"
+export const ENGINE_VERSION = "0.9.27"
 
 export const ENGINE_CLASS_NAME = "ZCL_MCP_CUST_ENGINE"
 export const ENGINE_CLASS_URL = `/sap/bc/adt/oo/classes/${ENGINE_CLASS_NAME.toLowerCase()}`

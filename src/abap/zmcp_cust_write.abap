@@ -885,8 +885,12 @@ FORM write_direct
   DATA: lr_plan    TYPE REF TO data,
         lv_tabname TYPE e071-obj_name,
         lv_enq     TYPE rstable-tabname,
-        lv_msg     TYPE string.
-  FIELD-SYMBOLS <plan> TYPE STANDARD TABLE.
+        lv_msg     TYPE string,
+        lt_written TYPE ty_refs,
+        lv_trkorr  TYPE trkorr,
+        lv_noview  TYPE dd02v-tabname.
+  FIELD-SYMBOLS: <plan> TYPE STANDARD TABLE,
+                 <prow> TYPE any.
 
   lv_tabname = to_upper( is_params-table_name ).
   lv_enq     = lv_tabname.
@@ -921,9 +925,27 @@ FORM write_direct
   TRY.
       MODIFY (is_params-table_name) FROM TABLE <plan>.
       cs_result-rows_written = sy-dbcnt.
+      " A table with no maintenance view, written with a transport: record its
+      " row keys as R3TR TABU, as the dedicated transaction would (CUNI: T006*).
+      IF is_params-transport IS NOT INITIAL.
+        LOOP AT <plan> ASSIGNING <prow>.
+          PERFORM keep_entry USING <prow> CHANGING lt_written.
+        ENDLOOP.
+        lv_trkorr = is_params-transport.
+        PERFORM record_headless USING is_params lv_trkorr lv_noview lt_written CHANGING cs_result.
+        IF cs_result-status = 'error'.
+          ROLLBACK WORK.
+          cs_result-rows_written = 0.
+          CALL FUNCTION 'DEQUEUE_E_TABLE'
+            EXPORTING mode_rstable = 'E' tabname = lv_enq.
+          RETURN.
+        ENDIF.
+      ENDIF.
       COMMIT WORK AND WAIT.
       cs_result-status = 'ok'.
-      lv_msg = |Wrote { cs_result-rows_written } row(s) to { lv_tabname } (direct, no transport)|.
+      lv_msg = COND #( WHEN is_params-transport IS INITIAL
+                       THEN |Wrote { cs_result-rows_written } row(s) to { lv_tabname } (direct, no transport)|
+                       ELSE |Wrote { cs_result-rows_written } row(s) to { lv_tabname } (direct) → { is_params-transport }| ).
       APPEND lv_msg TO cs_result-messages.
     CATCH cx_root INTO DATA(lx_wr).
       ROLLBACK WORK.
