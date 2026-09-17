@@ -6,6 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
 import { registerAllTools } from "./tools/index"
+import { installParamGuard } from "./tools/paramGuard"
 import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
 import { version as SERVER_VERSION } from "../package.json"
@@ -82,6 +83,7 @@ function describeRequest(body: unknown): string {
 
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: "abap-config-mcp", version: SERVER_VERSION })
+  installParamGuard(server)
   registerAllTools(server)
   return server
 }

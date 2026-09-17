@@ -66,17 +66,38 @@ export async function handleGetAbapBatchLines(args: { urls: string[]; connection
   return { content: [{ type: "text" as const, text: parts.join("\n\n") }] }
 }
 
+/**
+ * The main URL a syntax check needs is the object itself (its URL without
+ * /source/...) — verified on S4 for a function module, a function group include
+ * and a class. A function group or its SAPL main program as main URL makes SAP
+ * check the source in the wrong frame and report errors that are not there
+ * ("FUNCTION cannot be used in the current environment", "REPORT/PROGRAM
+ * statement is missing").
+ */
+export function syntaxMainUrl(url: string, mainUrl?: string): { mainUrl: string; note?: string } {
+  const own = url.replace(/\/source\/[^/]*$/, "").replace(/\/$/, "")
+  if (!mainUrl) return { mainUrl: own }
+  const m = own.match(/^(\/sap\/bc\/adt\/functions\/groups\/[^/]+)\/(fmodules|includes)\/[^/]+$/)
+  const given = mainUrl.replace(/\/source\/[^/]*$/, "").replace(/\/$/, "")
+  if (m && (given === m[1] || given.startsWith(`${m[1]}/includes/sapl`))) {
+    return { mainUrl: own, note: `(main URL ${mainUrl} replaced by the object's own URL — the group frame reports errors that are not there)` }
+  }
+  return { mainUrl }
+}
+
 export async function handleSyntaxCheck(args: {
   url: string
-  mainUrl: string
+  mainUrl?: string
   source: string
   connectionId?: string
 }) {
   const client = await ensureConnected(args.connectionId)
-  const results = await client.syntaxCheck(args.url, args.mainUrl, args.source)
+  const main = syntaxMainUrl(args.url, args.mainUrl)
+  const results = await client.syntaxCheck(args.url, main.mainUrl, args.source)
+  const note = main.note ? `\n${main.note}` : ""
 
   if (!results || results.length === 0) {
-    return { content: [{ type: "text" as const, text: "✅ No syntax errors found." }] }
+    return { content: [{ type: "text" as const, text: `✅ No syntax errors found.${note}` }] }
   }
 
   const lines = results.map(r =>
@@ -85,7 +106,7 @@ export async function handleSyntaxCheck(args: {
   return {
     content: [{
       type: "text" as const,
-      text: `Syntax check results (${results.length} message(s)):\n${lines.join("\n")}`
+      text: `Syntax check results (${results.length} message(s)):\n${lines.join("\n")}${note}`
     }]
   }
 }
@@ -138,7 +159,7 @@ export function registerSourceTools(server: McpServer): void {
       description: "Check syntax of ABAP source code against the server without saving",
       inputSchema: {
         url: z.string().describe("ADT source URL of the object"),
-        mainUrl: z.string().describe("ADT URL of the main object (same as url for standalone programs)"),
+        mainUrl: z.string().optional().describe("ADT URL of the main object. Default and almost always right: the object itself (url without /source/main) — also for function modules, includes and classes."),
         source: z.string().describe("ABAP source code to check"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }

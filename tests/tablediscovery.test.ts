@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { handleSearchTables, handleDescribeTable } from "../src/tools/tablediscovery"
 
-vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn() }))
+vi.mock("../src/connections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/connections")>()),
+  ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn(),
+}))
+const sqlRows: Array<[RegExp, Array<Record<string, string>>]> = []
+vi.mock("../src/tools/customizing", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/tools/customizing")>()),
+  runSql: vi.fn(async (_c: unknown, sql: string) => {
+    const rows = sqlRows.find(([re]) => re.test(sql))?.[1] ?? []
+    return { columns: rows.length ? Object.keys(rows[0]).map(name => ({ name })) : [{ name: "X" }], values: rows }
+  }),
+}))
 import { ensureConnected } from "../src/connections"
 
 const mockClient = {
@@ -142,9 +153,26 @@ describe("describe_database_table", () => {
     expect(mockClient.tableContents).not.toHaveBeenCalled()
   })
 
-  it("returns informative message when no columns returned", async () => {
+  it("says the object is not in the dictionary when there is no metadata anywhere", async () => {
+    sqlRows.length = 0
     mockClient.tableContents.mockResolvedValue({ columns: [], values: [] })
     const result = await handleDescribeTable({ tableName: "ZNOTEXIST" })
-    expect(result.content[0].text).toContain("No column metadata")
+    expect(result.content[0].text).toContain("not in the data dictionary")
+  })
+
+  it("describes a structure from the dictionary when the data preview refuses it", async () => {
+    sqlRows.length = 0
+    sqlRows.push([/FROM DD02L/, [{ TABCLASS: "INTTAB", CONTFLAG: "" }]])
+    sqlRows.push([/FROM DD02T/, [{ DDTEXT: "Output parameters" }]])
+    sqlRows.push([/FROM DD03L/, [
+      { FIELDNAME: "VCF1", POSITION: "1", KEYFLAG: "", DATATYPE: "FLTP", LENG: "000016", DECIMALS: "000016", ROLLNAME: "OIB_VCF1" },
+    ]])
+    sqlRows.push([/FROM DD04T/, [{ ROLLNAME: "OIB_VCF1", DDTEXT: "Volume correction factor" }]])
+    mockClient.tableContents.mockRejectedValue(new Error("Error while processing authorization checks"))
+    const text = (await handleDescribeTable({ tableName: "OIB_A02" })).content[0].text
+    expect(text).toContain("Structure: OIB_A02 — Output parameters")
+    expect(text).toContain("VCF1")
+    expect(text).toContain("Volume correction factor")
+    expect(text).toContain("holds no rows")
   })
 })

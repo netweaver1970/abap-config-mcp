@@ -1,6 +1,25 @@
 # Customizing Engine — Handoff & Findings
 
-> ## ⏩ LATEST (2026-09-18) — v1.11.0: one SAP session per conversation
+> ## ⏩ LATEST (2026-09-18) — v1.12.0: the rest of the review
+> - **No blind retries of writes.** After a degraded-session reconnect only read-only (tier 0) and repeatable
+>   tools (activation, unit tests, ATC, syntax check) run again; any other tool reports that the session was
+>   renewed and that it was not re-run because the failed call may already have been applied.
+> - **`syntax_check` main URL** is optional and defaults to the object's own URL — verified on S4 as the right
+>   frame for a function module, a function group include and a class. A function group / SAPL main URL, which
+>   produced false errors, is replaced with a note.
+> - **Direct table writes (`recordTableKeys`)** count the keys they recorded (engine 0.9.28).
+> - **`describe_database_table`** reads the data dictionary first (DD02L/DD03L/DD04T): real key flags (the data
+>   preview showed T000 with no key), data elements, and structures, which the preview refused with an
+>   "authorization" error. The preview remains the fallback.
+> - **Parameter guard** (`paramGuard.ts`, hooks `McpServer.validateToolInput` for every tool): common aliases
+>   are accepted (name/objectName/table, url/objectUrl, sql/query, keyword/query, package/packageName,
+>   transportNumber/transport, connection/connectionId …); an unknown parameter is refused with a suggestion
+>   instead of being silently dropped; missing or mistyped parameters come back as one sentence each plus the
+>   tool's parameter list — no raw zod dump.
+> - **Not fixable server-side:** a running MCP client keeps the tool list it loaded when it connected, and strips
+>   parameters that list does not know before sending. Reconnect the client after a server upgrade.
+
+> ## ⏪ v1.11.0 (2026-09-18): one SAP session per conversation
 > **Every MCP session now has its own stateful ADT session per SAP connection**, so its SAP locks are its
 > own. Before, one shared session meant `force_relogin` or a reconnect in one conversation released the locks
 > of all others. The MCP session id travels by AsyncLocalStorage (`runInSession`, set around every tool
@@ -38,19 +57,9 @@
 > - `write_abap_object_source` could report success for a write SAP did not apply → reads back and warns.
 > - `unlock_abap_object` required a handle the caller rarely still has → defaults to the held lock.
 >
-> **Found, not fixed (worth a decision):**
-> - ~~One stateful ADT session per SAP connection is shared by every MCP session~~ — fixed in v1.11.0.
-> - Session recovery retries *mutating* tools after a reconnect; a write that failed after SAP applied it
->   could be re-sent.
-> - `syntax_check` on a function module or include needs the right `mainUrl` and reports false errors
->   otherwise; it is not derived.
-> - `customizing_create` direct (`recordTableKeys`) writes report "0 E071K entries" — the writer does not
->   count keys on that path (the keys are recorded; see E071K).
-> - `describe_database_table` on a structure answers "Error while processing authorization checks".
-> - Parameter names differ between tools for the same thing (`name`/`objectName`/`table`, `url`/`objectUrl`),
->   and a wrong name returns a raw validation dump.
-> - A running MCP client keeps the tool schemas it loaded at start: new parameters are invisible until the
->   client reconnects.
+> **Found at the time, since fixed:** the shared ADT session (v1.11.0); retries of writes, syntax-check main URL,
+> direct-write key count, structure description, parameter names and validation dumps (v1.12.0). A client's
+> stale tool list after a server upgrade is the client's cache and cannot be fixed in the server.
 
 > ## ⏩ ALSO 2026-09-17 (later): text elements, and tables without a view
 > **`set_text_elements` rewritten (it could not write text symbols at all).** Verified on S4 against a

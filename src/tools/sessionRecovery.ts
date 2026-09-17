@@ -13,6 +13,18 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { forceReconnect, isSessionDegradedError, log, runInSession } from "../connections"
+import { tierOf } from "./riskTiers"
+
+/**
+ * Tools that may simply run again after a reconnect: they read, or repeating them
+ * lands in the same state. Everything else changes SAP, and a call that failed on
+ * the wire may still have been applied — re-sending it could apply it twice.
+ */
+const REPEATABLE_WRITES = new Set(["abap_activate", "abap_activate_multiple", "run_unit_tests", "run_atc_analysis", "syntax_check"])
+
+export function isRetryable(toolName: string): boolean {
+  return tierOf(toolName) === 0 || REPEATABLE_WRITES.has(toolName)
+}
 
 const RETRY_DELAY_MS = 300
 
@@ -36,12 +48,21 @@ export function withSessionRecovery<H extends AnyToolHandler>(toolName: string, 
       // is on the first argument.
       const first = handlerArgs[0] as { connectionId?: unknown } | undefined
       const connectionId = typeof first?.connectionId === "string" ? first.connectionId : undefined
-      log("WARN", `${toolName} failed with a session-type error — forcing reconnect and retrying once`, err)
+      const retry = isRetryable(toolName)
+      log("WARN", `${toolName} failed with a session-type error — forcing reconnect${retry ? " and retrying once" : " (not retried: it changes SAP)"}`, err)
       try {
         await forceReconnect(connectionId)
       } catch (reconnectErr) {
-        log("ERROR", `Reconnect during ${toolName} retry failed — surfacing original error`, reconnectErr)
+        log("ERROR", `Reconnect during ${toolName} recovery failed — surfacing original error`, reconnectErr)
         throw err
+      }
+      if (!retry) {
+        const original = String((err as { message?: unknown })?.message ?? err)
+        throw new Error(
+          `${toolName} failed because the SAP session had degraded (${original}). The session has been renewed, ` +
+          `but ${toolName} was not run again: it changes SAP, and the failed call may already have been applied. ` +
+          `Check the current state (read the object, table or transport) before running it again. ` +
+          `Locks held by this conversation were released by the renewal.`)
       }
       await sleep(RETRY_DELAY_MS)
       return handler(...handlerArgs)

@@ -943,6 +943,19 @@ FORM write_direct
       ENDIF.
       COMMIT WORK AND WAIT.
       cs_result-status = 'ok'.
+      " Count the keys now on the request and its tasks, as the view path does.
+      IF is_params-transport IS NOT INITIAL.
+        DATA: lt_dkorr TYPE RANGE OF trkorr,
+              lv_dkeys TYPE i.
+        APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_trkorr ) TO lt_dkorr.
+        SELECT trkorr FROM e070 WHERE strkorr = @lv_trkorr INTO TABLE @DATA(lt_dtasks).
+        LOOP AT lt_dtasks INTO DATA(ls_dtask).
+          APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_dtask-trkorr ) TO lt_dkorr.
+        ENDLOOP.
+        SELECT COUNT(*) INTO @lv_dkeys FROM e071k
+          WHERE trkorr IN @lt_dkorr AND pgmid = 'R3TR' AND object = 'TABU' AND objname = @lv_tabname.
+        cs_result-e071k_count = lv_dkeys.
+      ENDIF.
       lv_msg = COND #( WHEN is_params-transport IS INITIAL
                        THEN |Wrote { cs_result-rows_written } row(s) to { lv_tabname } (direct, no transport)|
                        ELSE |Wrote { cs_result-rows_written } row(s) to { lv_tabname } (direct) → { is_params-transport }| ).

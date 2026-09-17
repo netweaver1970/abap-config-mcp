@@ -52,7 +52,7 @@ describe("isSessionDegradedError", () => {
 describe("withSessionRecovery", () => {
   it("passes through a successful call without reconnecting", async () => {
     const handler = vi.fn().mockResolvedValue("ok")
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     expect(await wrapped({ connectionId: "DEV" })).toBe("ok")
     expect(handler).toHaveBeenCalledTimes(1)
     expect(forceReconnect).not.toHaveBeenCalled()
@@ -62,7 +62,7 @@ describe("withSessionRecovery", () => {
     const handler = vi.fn()
       .mockRejectedValueOnce(http400())
       .mockResolvedValueOnce("recovered")
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     expect(await wrapped({ connectionId: "DEV" })).toBe("recovered")
     expect(forceReconnect).toHaveBeenCalledTimes(1)
     expect(forceReconnect).toHaveBeenCalledWith("DEV")
@@ -73,14 +73,14 @@ describe("withSessionRecovery", () => {
     const handler = vi.fn()
       .mockRejectedValueOnce(http400())
       .mockResolvedValueOnce("recovered")
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     await wrapped({ sql: "SELECT * FROM T000" })
     expect(forceReconnect).toHaveBeenCalledWith(undefined)
   })
 
   it("does not retry non-session errors", async () => {
     const handler = vi.fn().mockRejectedValue(new Error("Query must start with SELECT"))
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     await expect(wrapped({})).rejects.toThrow("Query must start with SELECT")
     expect(handler).toHaveBeenCalledTimes(1)
     expect(forceReconnect).not.toHaveBeenCalled()
@@ -88,7 +88,7 @@ describe("withSessionRecovery", () => {
 
   it("gives up after the second attempt (max 2 attempts)", async () => {
     const handler = vi.fn().mockRejectedValue(http400())
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     await expect(wrapped({})).rejects.toThrow("Bad request")
     expect(handler).toHaveBeenCalledTimes(2)
     expect(forceReconnect).toHaveBeenCalledTimes(1)
@@ -97,8 +97,26 @@ describe("withSessionRecovery", () => {
   it("surfaces the original error when the reconnect itself fails", async () => {
     vi.mocked(forceReconnect).mockRejectedValue(new Error("login failed"))
     const handler = vi.fn().mockRejectedValue(http400())
-    const wrapped = withSessionRecovery("my_tool", handler)
+    const wrapped = withSessionRecovery("execute_data_query", handler)
     await expect(wrapped({})).rejects.toThrow("Bad request")
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("withSessionRecovery — tools that change SAP", () => {
+  it("renews the session but does not run a writing tool again", async () => {
+    const err = Object.assign(new Error("Bad Request"), { status: 400 })
+    const handler = vi.fn().mockRejectedValue(err)
+    const wrapped = withSessionRecovery("write_abap_object_source", handler)
+    await expect(wrapped({ connectionId: "S4" })).rejects.toThrow(/was not run again/)
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it("does retry activation, which is safe to repeat", async () => {
+    const err = Object.assign(new Error("Bad Request"), { status: 400 })
+    const handler = vi.fn().mockRejectedValueOnce(err).mockResolvedValueOnce("ok")
+    const wrapped = withSessionRecovery("abap_activate", handler)
+    await expect(wrapped({})).resolves.toBe("ok")
+    expect(handler).toHaveBeenCalledTimes(2)
   })
 })

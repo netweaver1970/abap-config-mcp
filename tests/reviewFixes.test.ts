@@ -92,3 +92,23 @@ describe("run_unit_tests", () => {
     expect(client.unitTestRun).toHaveBeenCalledWith("/c", { harmless: true, dangerous: false, critical: false, short: true, medium: false, long: false })
   })
 })
+
+import { syntaxMainUrl } from "../src/tools/source"
+
+describe("syntax check main URL", () => {
+  const fm = "/sap/bc/adt/functions/groups/zg/fmodules/z_fm/source/main"
+  it("defaults to the object itself", () => {
+    expect(syntaxMainUrl(fm).mainUrl).toBe("/sap/bc/adt/functions/groups/zg/fmodules/z_fm")
+    expect(syntaxMainUrl("/sap/bc/adt/oo/classes/zcl_x/source/main").mainUrl).toBe("/sap/bc/adt/oo/classes/zcl_x")
+  })
+  it("replaces a function group frame, which reports errors that are not there", () => {
+    for (const given of ["/sap/bc/adt/functions/groups/zg", "/sap/bc/adt/functions/groups/zg/source/main", "/sap/bc/adt/functions/groups/zg/includes/saplzg"]) {
+      const r = syntaxMainUrl("/sap/bc/adt/functions/groups/zg/includes/lzgf01/source/main", given)
+      expect(r.mainUrl).toBe("/sap/bc/adt/functions/groups/zg/includes/lzgf01")
+      expect(r.note).toBeDefined()
+    }
+  })
+  it("keeps any other main URL as given", () => {
+    expect(syntaxMainUrl("/sap/bc/adt/programs/includes/zinc/source/main", "/sap/bc/adt/programs/programs/zmain")).toEqual({ mainUrl: "/sap/bc/adt/programs/programs/zmain" })
+  })
+})
