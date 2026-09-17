@@ -14,7 +14,7 @@ import { registerTableDiscoveryTools } from "./tablediscovery"
 import { registerCustomizingTools } from "./customizing"
 import { registerCustomizingEngineTools } from "./customizingEngine"
 import { registerEngineDeployTools } from "./engineDeploy"
-import { wrapServerWithSessionRecovery } from "./sessionRecovery"
+import { wrapServerWithSessionRecovery, wrapServerWithSessionScope } from "./sessionRecovery"
 import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
 import { log } from "../connections"
 
@@ -22,7 +22,10 @@ export function registerAllTools(server: McpServer): void {
   // Every handler registered below gets automatic forceReconnect-and-retry
   // on session-degradation errors (HTTP 400 after heavy use) — see
   // sessionRecovery.ts.
-  const guarded = wrapServerWithSessionRecovery(server)
+  //
+  // Innermost: bind each call to its MCP session, so the recovery retry (which
+  // reconnects) also acts on that session's own ADT session only.
+  const guarded = wrapServerWithSessionRecovery(wrapServerWithSessionScope(server))
 
   // Risk-tier gating: ABAP_MCP_MAX_TIER caps which tools are exposed (0 = read-
   // only/diagnostics, 1 = + customizing writes, 2/unset = full incl. code

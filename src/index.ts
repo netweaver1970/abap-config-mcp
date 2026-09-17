@@ -6,7 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
 import { registerAllTools } from "./tools/index"
-import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive } from "./connections"
+import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
 import { version as SERVER_VERSION } from "../package.json"
 
@@ -165,6 +165,8 @@ async function start(): Promise<void> {
             if (sid) {
               delete transports[sid]
               log("INFO", `Session closed  ${sid.slice(0, 8)}… (active: ${Object.keys(transports).length})`)
+              // Its SAP ADT sessions end with it, releasing its locks.
+              closeSessionConnections(sid).catch(err => log("WARN", `Closing ADT sessions of ${sid.slice(0, 8)} failed`, err))
             }
           }
           const mcpServer = createMcpServer()

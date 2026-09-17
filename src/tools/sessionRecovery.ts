@@ -12,7 +12,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { forceReconnect, isSessionDegradedError, log } from "../connections"
+import { forceReconnect, isSessionDegradedError, log, runInSession } from "../connections"
 
 const RETRY_DELAY_MS = 300
 
@@ -48,6 +48,34 @@ export function withSessionRecovery<H extends AnyToolHandler>(toolName: string, 
     }
   }
   return wrapped as unknown as H
+}
+
+/**
+ * Bind a tool handler to its MCP session: every ensureConnected() inside it then
+ * uses that session's own ADT session (and locks). MCP handlers receive
+ * (args, extra); extra.sessionId is the MCP session.
+ */
+export function withSessionScope<H extends AnyToolHandler>(handler: H): H {
+  const wrapped = (...handlerArgs: unknown[]) => {
+    const extra = handlerArgs[1] as { sessionId?: unknown } | undefined
+    const sessionId = typeof extra?.sessionId === "string" ? extra.sessionId : undefined
+    return runInSession(sessionId, () => handler(...handlerArgs))
+  }
+  return wrapped as unknown as H
+}
+
+export function wrapServerWithSessionScope(server: McpServer): McpServer {
+  return new Proxy(server, {
+    get(target, prop) {
+      if (prop === "registerTool") {
+        const original = (target.registerTool as AnyToolHandler).bind(target)
+        return (name: string, config: unknown, handler: AnyToolHandler) =>
+          original(name, config, withSessionScope(handler))
+      }
+      const value = Reflect.get(target, prop, target)
+      return typeof value === "function" ? (value as AnyToolHandler).bind(target) : value
+    }
+  })
 }
 
 /**

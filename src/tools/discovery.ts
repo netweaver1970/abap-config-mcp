@@ -130,8 +130,9 @@ export function registerDiscoveryTools(server: McpServer): void {
     {
       title: "Force Re-login",
       description:
-        "Drop the current SAP ADT session and log in again. Use when ADT calls keep failing with " +
-        "HTTP 400 (degraded stateful session) and the automatic retry has not recovered it.",
+        "Drop this conversation's SAP ADT session and log in again. Use when ADT calls keep failing with " +
+        "HTTP 400 (degraded stateful session) and the automatic retry has not recovered it. Releases this " +
+        "conversation's locks only — every conversation has its own SAP session.",
       inputSchema: {
         connectionId: z.string().optional().describe("SAP system connection ID (uses first if omitted)")
       }

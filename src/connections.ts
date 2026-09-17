@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "async_hooks"
 import { ADTClient, createSSLConfig, session_types } from "abap-adt-api"
 import { loadConfig, ConnectionConfig } from "./config"
 
@@ -33,18 +34,52 @@ const KEEPALIVE_MS = Math.max(SESSION_IDLE_MS / 2, 2 * 60_000)
 
 let _keepAliveTimer: ReturnType<typeof setInterval> | null = null
 
+// ─── Session scope ──────────────────────────────────────────────────────────
+// Every MCP session (one conversation) gets its own stateful ADT session per SAP
+// connection. SAP enqueue locks belong to the ADT session that took them, so a
+// shared session meant one conversation's force_relogin or reconnect released the
+// locks of every other conversation. The MCP session id reaches this layer through
+// AsyncLocalStorage (set around every tool handler in tools/index.ts), so tool
+// handlers keep calling ensureConnected(connectionId) unchanged.
+
+const sessionScope = new AsyncLocalStorage<{ sessionId: string }>()
+
+/** Run fn with every ensureConnected() inside it bound to this MCP session. */
+export function runInSession<T>(sessionId: string | undefined, fn: () => T): T {
+  return sessionId ? sessionScope.run({ sessionId }, fn) : fn()
+}
+
+/** The MCP session the current call belongs to; "shared" outside any (startup, tests). */
+export function currentSessionId(): string {
+  return sessionScope.getStore()?.sessionId ?? SHARED_SESSION
+}
+
+const SHARED_SESSION = "shared"
+
+// A session whose MCP client vanished without closing is closed after this long
+// unused (its locks are released with it). Keep-alive pings do not count as use.
+const SESSION_EVICT_MS =
+  parseInt(process.env.ABAP_SESSION_EVICT_MS ?? "", 10) || 60 * 60_000   // 60 min
+
 // ─── Connection state ──────────────────────────────────────────────────────
 
 interface ManagedConnection {
   config: ConnectionConfig
   client: ADTClient
+  sessionId: string
   loggedIn: boolean
+  /** last SAP round-trip, keep-alive included (drives re-login before SAP's timeout) */
   lastActivityAt: number
-  /** objectUrl → LOCK_HANDLE for locks this server currently holds */
+  /** last use by a tool call (drives eviction) */
+  lastUsedAt: number
+  /** objectUrl → LOCK_HANDLE for locks this ADT session currently holds */
   locks: Map<string, string>
 }
 
+/** Keyed by connection id + MCP session id. */
 const connections = new Map<string, ManagedConnection>()
+
+const connKey = (id: string, sessionId: string) => `${id}\u0000${sessionId}`
 
 function buildClient(cfg: ConnectionConfig): ADTClient {
   const isHttps = cfg.url.toLowerCase().startsWith("https:")
@@ -84,17 +119,20 @@ async function doLogin(managed: ManagedConnection): Promise<void> {
 
 async function getManagedConnection(connectionId?: string): Promise<ManagedConnection> {
   const id = resolveConnectionId(connectionId)
+  const sessionId = currentSessionId()
   const config = loadConfig()
 
-  let managed = connections.get(id)
+  let managed = connections.get(connKey(id, sessionId))
   if (!managed) {
     const cfg = config.connections.find(c => c.id === id)
     if (!cfg) {
       throw new Error(`Unknown connection: ${id}. Available: ${config.connections.map(c => c.id).join(", ")}`)
     }
-    managed = { config: cfg, client: buildClient(cfg), loggedIn: false, lastActivityAt: 0, locks: new Map() }
-    connections.set(id, managed)
+    managed = { config: cfg, client: buildClient(cfg), sessionId, loggedIn: false, lastActivityAt: 0, lastUsedAt: Date.now(), locks: new Map() }
+    connections.set(connKey(id, sessionId), managed)
+    log("DEBUG", `New ADT session for ${id} / MCP session ${sessionId.slice(0, 8)}`)
   }
+  managed.lastUsedAt = Date.now()
 
   // Proactively re-login before the SAP session times out
   if (managed.loggedIn && Date.now() - managed.lastActivityAt > SESSION_IDLE_MS) {
@@ -166,7 +204,9 @@ export function getConnectionConfig(connectionId?: string): ConnectionConfig {
 export function startKeepAlive(): void {
   if (_keepAliveTimer) return
   _keepAliveTimer = setInterval(async () => {
-    for (const [id, managed] of connections) {
+    await evictIdleSessions()
+    for (const managed of connections.values()) {
+      const id = `${managed.config.id}/${managed.sessionId.slice(0, 8)}`
       if (!managed.loggedIn) continue
       try {
         // Hit the same lightweight ADT endpoint login() uses.  In stateful
@@ -185,6 +225,39 @@ export function startKeepAlive(): void {
   // Don't prevent clean process exit if only this timer is running
   _keepAliveTimer.unref()
   log("INFO", `Keep-alive started (interval: ${Math.round(KEEPALIVE_MS / 60_000)} min)`)
+}
+
+async function closeManaged(key: string, managed: ManagedConnection, reason: string): Promise<void> {
+  connections.delete(key)
+  const held = managed.locks.size
+  if (!managed.loggedIn) return
+  try {
+    await managed.client.dropSession()
+  } catch (err) {
+    log("DEBUG", `dropSession while closing ${managed.config.id}/${managed.sessionId.slice(0, 8)} failed`, err)
+  }
+  log("INFO", `ADT session closed for ${managed.config.id} / MCP session ${managed.sessionId.slice(0, 8)} (${reason})` +
+    (held ? ` — ${held} lock(s) released` : ""))
+}
+
+/** Close every ADT session of one MCP session (call when the MCP session ends). Releases its locks. */
+export async function closeSessionConnections(sessionId: string): Promise<void> {
+  const mine = [...connections.entries()].filter(([, m]) => m.sessionId === sessionId)
+  await Promise.all(mine.map(([k, m]) => closeManaged(k, m, "MCP session ended")))
+}
+
+/** Close ADT sessions no tool call has used for ABAP_SESSION_EVICT_MS. */
+export async function evictIdleSessions(now = Date.now()): Promise<void> {
+  const idle = [...connections.entries()].filter(([, m]) => now - m.lastUsedAt > SESSION_EVICT_MS)
+  await Promise.all(idle.map(([k, m]) => closeManaged(k, m, `unused for ${Math.round((now - m.lastUsedAt) / 60_000)} min`)))
+}
+
+/** Open ADT sessions, for diagnostics. */
+export function listSessions(): Array<{ connectionId: string; sessionId: string; loggedIn: boolean; locks: number; idleMs: number }> {
+  const now = Date.now()
+  return [...connections.values()].map(m => ({
+    connectionId: m.config.id, sessionId: m.sessionId, loggedIn: m.loggedIn, locks: m.locks.size, idleMs: now - m.lastUsedAt,
+  }))
 }
 
 export function stopKeepAlive(): void {
@@ -230,12 +303,12 @@ function normUrl(url: string): string {
 
 export function getHeldLock(connectionId: string | undefined, objectUrl: string): string | undefined {
   const id = resolveConnectionId(connectionId)
-  return connections.get(id)?.locks.get(normUrl(objectUrl))
+  return connections.get(connKey(id, currentSessionId()))?.locks.get(normUrl(objectUrl))
 }
 
 export function trackLock(connectionId: string | undefined, objectUrl: string, handle: string): void {
   const id = resolveConnectionId(connectionId)
-  const managed = connections.get(id)
+  const managed = connections.get(connKey(id, currentSessionId()))
   if (managed) {
     managed.locks.set(normUrl(objectUrl), handle)
     log("DEBUG", `Lock tracked   ${objectUrl.split("/").pop() ?? objectUrl} → ${handle.slice(0, 8)}…`)
@@ -244,7 +317,7 @@ export function trackLock(connectionId: string | undefined, objectUrl: string, h
 
 export function forgetLock(connectionId: string | undefined, objectUrl: string): void {
   const id = resolveConnectionId(connectionId)
-  const managed = connections.get(id)
+  const managed = connections.get(connKey(id, currentSessionId()))
   const key = normUrl(objectUrl)
   if (managed?.locks.has(key)) {
     managed.locks.delete(key)
@@ -319,7 +392,7 @@ export function editingConflictHint(err: unknown, objectName?: string): string {
   const obj = objectName ?? "the object"
   return (
     `${msg}\n\n` +
-    `This is usually a lock left by a previous or parallel session.\n` +
+    `This is usually a lock held by another conversation (each has its own SAP session and locks) or left by one that ended.\n` +
     `To release it:\n` +
     `  1. Open SM12 in SAP GUI\n` +
     `  2. Find and delete the TRDIR / ${obj} entry\n` +

@@ -83,6 +83,7 @@ export async function handleWriteAbapObjectSource(args: {
   transport?: string
   createTransport?: boolean
   workItem?: string
+  keepLock?: boolean
   connectionId?: string
 }, extra?: { signal?: AbortSignal; sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
@@ -106,10 +107,17 @@ export async function handleWriteAbapObjectSource(args: {
   }
 
   let lockHandle: string | undefined
+  // A lock this conversation already holds (lock_abap_object, keepLock) is reused:
+  // locking again would be refused as "currently editing" by our own lock.
+  const heldBefore = getHeldLock(args.connectionId, objectUrl)
   try {
-    const lockResult = await client.lock(objectUrl)
-    lockHandle = lockResult.LOCK_HANDLE
-    trackLock(args.connectionId, objectUrl, lockHandle)
+    if (heldBefore) {
+      lockHandle = heldBefore
+    } else {
+      const lockResult = await client.lock(objectUrl)
+      lockHandle = lockResult.LOCK_HANDLE
+      trackLock(args.connectionId, objectUrl, lockHandle)
+    }
 
     await client.setObjectSource(sourceUrl, args.source, lockHandle, t.transport)
 
@@ -127,17 +135,32 @@ export async function handleWriteAbapObjectSource(args: {
       verify = `(Could not read the source back to verify: ${String((e as Error)?.message ?? e)})\n`
     }
 
+    // Release the lock unless asked to keep it: activation does not need it, and a
+    // lock left behind outlives mistakes (it stays until this session ends).
+    let lockText = `Lock handle: ${lockHandle}\n\nThe object is still locked (${heldBefore ? "it was locked before this write" : "keepLock"}). abap_activate releases it; unlock_abap_object keeps the inactive version and releases it.`
+    if (!args.keepLock && !heldBefore) {
+      try {
+        await client.unLock(objectUrl, lockHandle)
+        forgetLock(args.connectionId, objectUrl)
+        lockText = `Unlocked. The new source is the inactive version — abap_activate to activate it.`
+      } catch (e) {
+        lockText = `Lock handle: ${lockHandle}\n\n⚠️ Could not release the lock (${String((e as Error)?.message ?? e)}); abap_activate releases it.`
+      }
+    }
+
     return {
       content: [{
         type: "text" as const,
         text: `✅ Source written to ${objectUrl}\n` + verify +
           (t.transport ? `Transport: ${t.transport}\n` : "") +
           (t.note ? `${t.note}\n` : "") +
-          `Lock handle: ${lockHandle}\n\nThe object is still locked. Use abap_activate to compile+activate+unlock, or unlock_abap_object to discard.`
+          `\n${lockText}`
       }]
     }
   } catch (err) {
-    if (lockHandle) {
+    if (lockHandle && heldBefore) {
+      // The lock predates this call: leave it with its owner.
+    } else if (lockHandle) {
       // We have the handle — try targeted unlock first, fall back to session drop
       try {
         await client.unLock(objectUrl, lockHandle)
@@ -288,8 +311,8 @@ export async function handleDeleteAbapObject(args: {
     `deleting ${args.url.split("/").pop()}`, `MCP delete ${args.url.split("/").pop()}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
-  const lockResult = await client.lock(args.url)
-  const lockHandle = lockResult.LOCK_HANDLE
+  const held = getHeldLock(args.connectionId, args.url)
+  const lockHandle = held ?? (await client.lock(args.url)).LOCK_HANDLE
 
   try {
     await client.deleteObject(args.url, lockHandle, t.transport)
@@ -310,7 +333,7 @@ export function registerWriteTools(server: McpServer): void {
     "write_abap_object_source",
     {
       title: "Write ABAP Object Source",
-      description: "Write/update the source code of an ABAP object. Automatically locks the object, writes, and leaves it locked for activation. Use abap_activate to compile & unlock, or unlock_abap_object to discard. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
+      description: "Write/update the source code of an ABAP object: locks, writes, reads back to verify, and releases the lock (keepLock: true to keep it). The new source is the inactive version until abap_activate. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         url: z.string().describe("ADT object URL (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG)"),
         sourceUrl: z.string().optional().describe("ADT source URL — defaults to <url>/source/main"),
@@ -318,6 +341,7 @@ export function registerWriteTools(server: McpServer): void {
         transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
         createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
+        keepLock: z.boolean().optional().describe("Keep the object locked after writing (default false). A kept lock belongs to this conversation and lasts until abap_activate, unlock_abap_object or the end of the conversation."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

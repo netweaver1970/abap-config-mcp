@@ -1,6 +1,23 @@
 # Customizing Engine — Handoff & Findings
 
-> ## ⏩ LATEST (2026-09-18) — v1.10.0: predictable transports, and a tooling review
+> ## ⏩ LATEST (2026-09-18) — v1.11.0: one SAP session per conversation
+> **Every MCP session now has its own stateful ADT session per SAP connection**, so its SAP locks are its
+> own. Before, one shared session meant `force_relogin` or a reconnect in one conversation released the locks
+> of all others. The MCP session id travels by AsyncLocalStorage (`runInSession`, set around every tool
+> handler by `wrapServerWithSessionScope` in `tools/index.ts`, innermost so the recovery retry stays in scope);
+> `ensureConnected()` keys on connection + session. An ADT session is closed — its locks released — when its
+> MCP session ends (transport `onclose`), or after `ABAP_SESSION_EVICT_MS` (default 60 min) without a tool call
+> (keep-alive pings do not count). Calls outside any MCP session use a "shared" session (startup warm-up, tests).
+>
+> Also: `write_abap_object_source` releases its lock after writing (`keepLock: true` keeps it), and write and
+> delete reuse a lock the conversation already holds instead of failing "currently editing" on it.
+>
+> Verified live on S4 with two concurrent MCP sessions: B cannot lock A's object; B's `force_relogin` leaves
+> A's lock intact; A's write reuses A's lock; closing A releases the lock and B can lock and delete.
+> Consequence for clients: a lock does not carry across MCP sessions. A client that opens a new session per
+> call cannot hold a lock between calls (the write tool no longer needs it to).
+
+> ## ⏪ v1.10.0 (2026-09-18): predictable transports, and a tooling review
 > **Transport selection** is one rule for every recording write (README → *Transport selection*):
 > given transport (checked) → object already locked into a request → `createTransport` → the transport
 > already used for this piece of work (`workItem`, else the MCP session; persisted per connection in
@@ -22,8 +39,7 @@
 > - `unlock_abap_object` required a handle the caller rarely still has → defaults to the held lock.
 >
 > **Found, not fixed (worth a decision):**
-> - One stateful ADT session per SAP connection is shared by every MCP session: `force_relogin` or a
->   reconnect in one conversation releases the locks of all others.
+> - ~~One stateful ADT session per SAP connection is shared by every MCP session~~ — fixed in v1.11.0.
 > - Session recovery retries *mutating* tools after a reconnect; a write that failed after SAP applied it
 >   could be re-sent.
 > - `syntax_check` on a function module or include needs the right `mainUrl` and reports false errors

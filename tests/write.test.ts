@@ -69,8 +69,27 @@ describe("write_abap_object_source", () => {
       "LOCK_ABC123",
       undefined
     )
-    expect(result.content[0].text).toContain("LOCK_ABC123")
+    // Released after the write by default.
+    expect(mockClient.unLock).toHaveBeenCalledWith("/sap/bc/adt/programs/ZPROG", "LOCK_ABC123")
+    expect(forgetLock).toHaveBeenCalledWith(undefined, "/sap/bc/adt/programs/ZPROG")
+    expect(result.content[0].text).toContain("Unlocked")
     expect(result.content[0].text).toContain("✅")
+  })
+
+  it("reuses a lock this conversation already holds and leaves it held", async () => {
+    const { getHeldLock } = await import("../src/connections")
+    vi.mocked(getHeldLock).mockReturnValueOnce("HELD_BEFORE")
+    const result = await handleWriteAbapObjectSource({ url: "/sap/bc/adt/programs/ZPROG", source: "REPORT zprog." })
+    expect(mockClient.lock).not.toHaveBeenCalled()
+    expect(mockClient.setObjectSource).toHaveBeenCalledWith(expect.any(String), expect.any(String), "HELD_BEFORE", undefined)
+    expect(mockClient.unLock).not.toHaveBeenCalled()
+    expect(result.content[0].text).toContain("locked before this write")
+  })
+
+  it("keeps the lock when asked", async () => {
+    const result = await handleWriteAbapObjectSource({ url: "/sap/bc/adt/programs/ZPROG", source: "REPORT zprog.", keepLock: true })
+    expect(mockClient.unLock).not.toHaveBeenCalled()
+    expect(result.content[0].text).toContain("LOCK_ABC123")
   })
 
   it("registers the lock handle in the lock registry after a successful write", async () => {
