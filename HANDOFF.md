@@ -269,6 +269,21 @@ message. `lookupRequest` resolving a task to its request is therefore right, and
 
 ---
 
+## Trap: a view joins tables its customizing object does not own
+
+`VCM_T133K` (screen sequence assignment, `OMT3E`) joins `T133K`, `T133S` and
+`T133T`. Only `T133K` is maintained; the other two are read for the sequence and
+its text. Their keys are nonetheless complete in the view entry, so the headless
+recording built E071K keys for all three and CTS refused the whole recording:
+
+    TK428  Table T133S is not part of the customizing object VCM_T133K
+
+CTS names the table, so `record_headless` now drops that table's keys and tries
+again (at most five times), records what the object does own, and says which
+tables it left out rather than hiding it. Engine 0.9.29.
+
+---
+
 ## ✅ Proven WORKING end-to-end
 - Bootstrap deploy/activate with **update-in-place** (must update if class exists, not just `create`).
 - `ping` (version handshake), `selftest` (dynamic typing, sample read, DDIC-aware E071K TABKEY build —

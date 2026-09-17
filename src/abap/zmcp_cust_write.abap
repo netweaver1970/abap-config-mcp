@@ -849,25 +849,60 @@ FORM record_headless
     RETURN.
   ENDIF.
 
-  CALL FUNCTION 'TRINT_OBJECTS_CHECK_AND_INSERT'
-    EXPORTING
-      iv_order              = iv_trkorr
-      iv_with_dialog        = 'D'
-      iv_no_show_option     = 'X'
-      iv_no_standard_editor = 'X'
-      iv_no_ps              = 'X'
-    IMPORTING
-      ev_order              = lv_order
-      ev_task               = lv_task
-    CHANGING
-      ct_ko200              = lt_ko200
-      ct_e071k              = lt_e071k
-    EXCEPTIONS
-      OTHERS                = 1.
-  IF sy-subrc <> 0.
+  " A view can join a table it does not maintain and whose key the entry still
+  " completes -- T133S/T133T under VCM_T133K, joined to show the screen sequence
+  " and its text. CTS then refuses the whole recording with TK428, "Table &1 is
+  " not part of the customizing object &2". It names the table, so the keys of
+  " that table are dropped and the recording is tried again; what the object does
+  " own is recorded, and the dropped tables are reported rather than hidden.
+  DATA: lv_ok   TYPE abap_bool,
+        lv_drop TYPE tabname.
+  DO 5 TIMES.
+    CLEAR lt_ko200.
+    APPEND VALUE #( pgmid = 'R3TR' object = lv_trobj obj_name = lv_master objfunc = 'K' ) TO lt_ko200.
+
+    CALL FUNCTION 'TRINT_OBJECTS_CHECK_AND_INSERT'
+      EXPORTING
+        iv_order              = iv_trkorr
+        iv_with_dialog        = 'D'
+        iv_no_show_option     = 'X'
+        iv_no_standard_editor = 'X'
+        iv_no_ps              = 'X'
+      IMPORTING
+        ev_order              = lv_order
+        ev_task               = lv_task
+      CHANGING
+        ct_ko200              = lt_ko200
+        ct_e071k              = lt_e071k
+      EXCEPTIONS
+        OTHERS                = 1.
+    IF sy-subrc = 0.
+      lv_ok = abap_true.
+      EXIT.
+    ENDIF.
+
+    IF sy-msgid = 'TK' AND sy-msgno = '428' AND sy-msgv1 IS NOT INITIAL.
+      lv_drop = to_upper( sy-msgv1 ).
+      DELETE lt_e071k WHERE objname = lv_drop.
+      APPEND |{ lv_drop } is joined into { iv_view } but is not part of customizing object { lv_master } — its keys were left out|
+        TO cs_result-messages.
+      IF lt_e071k IS INITIAL.
+        cs_result-status = 'error'.
+        APPEND |Nothing left to record on { iv_trkorr } after dropping { lv_drop }| TO cs_result-messages.
+        RETURN.
+      ENDIF.
+      CONTINUE.
+    ENDIF.
+
     cs_result-status = 'error'.
     APPEND |Recording { lv_trobj } { lv_master } onto { iv_trkorr } refused: { sy-msgid }{ sy-msgno } { sy-msgv1 } { sy-msgv2 } { sy-msgv3 } { sy-msgv4 }|
       TO cs_result-messages.
+    RETURN.
+  ENDDO.
+
+  IF lv_ok = abap_false.
+    cs_result-status = 'error'.
+    APPEND |Recording { lv_trobj } { lv_master } onto { iv_trkorr } still refused after dropping the tables CTS named| TO cs_result-messages.
     RETURN.
   ENDIF.
   APPEND |Recorded R3TR { lv_trobj } { lv_master } + { lines( lt_e071k ) } R3TR TABU key(s) onto { lv_order } (task { lv_task })|
