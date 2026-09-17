@@ -35,6 +35,7 @@ CLASS zcl_mcp_cust_engine DEFINITION
              values_json      TYPE string,     " write: JSON array of {FIELD,VALUE} overrides applied to every planned row
              rows_json        TYPE string,     " create: JSON array of rows, each row a JSON array of {FIELD,VALUE} (full key + data)
              items_json       TYPE string,     " listing: JSON array of {PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO} listing items
+             extras_json      TYPE string,     " create (internal): JSON array of {ROW,FIELD,VALUE} — view fields outside the base table
            END OF ty_request.
 
     " Field override for handle_write: applied to each planned row after the
@@ -1278,6 +1279,30 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
     TYPES: ty_prow  TYPE STANDARD TABLE OF ty_field_value WITH DEFAULT KEY.
     DATA lt_rows TYPE STANDARD TABLE OF ty_prow WITH DEFAULT KEY.
 
+    " Fields the maintenance view has and the base table does not — a text
+    " table's description, typically. They cannot live in the base-table plan,
+    " so they travel beside it, keyed by plan row, and the writer puts them into
+    " the view entry.
+    TYPES: BEGIN OF ty_extra,
+             row   TYPE i,
+             field TYPE string,
+             value TYPE string,
+           END OF ty_extra.
+    DATA: lt_extras  TYPE STANDARD TABLE OF ty_extra WITH DEFAULT KEY,
+          lt_rowx    TYPE STANDARD TABLE OF ty_extra WITH DEFAULT KEY,
+          lr_view    TYPE REF TO data,
+          ls_req     TYPE ty_request.
+    FIELD-SYMBOLS <view> TYPE any.
+    ls_req = is_req.
+    IF is_req-view_name IS NOT INITIAL.
+      TRY.
+          CREATE DATA lr_view TYPE (is_req-view_name).
+          ASSIGN lr_view->* TO <view>.
+        CATCH cx_root.
+          CLEAR lr_view.
+      ENDTRY.
+    ENDIF.
+
     rs_resp-operation = 'create'.
     rs_resp-table     = is_req-table.
     rs_resp-transport = is_req-transport.
@@ -1327,6 +1352,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       CREATE DATA lr_new LIKE LINE OF <plan>.
       ASSIGN lr_new->* TO <new>.
       CLEAR <new>.
+      CLEAR lt_rowx.
       LOOP AT lt_fields INTO DATA(ls_fv).
         IF is_valid_name( ls_fv-field ) = abap_false.
           rs_resp-status = 'error'.
@@ -1335,8 +1361,16 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
         ENDIF.
         ASSIGN COMPONENT to_upper( ls_fv-field ) OF STRUCTURE <new> TO <fld>.
         IF sy-subrc <> 0.
+          IF lr_view IS BOUND.
+            ASSIGN COMPONENT to_upper( ls_fv-field ) OF STRUCTURE <view> TO <fld>.
+            IF sy-subrc = 0.
+              APPEND VALUE #( field = to_upper( ls_fv-field ) value = ls_fv-value ) TO lt_rowx.
+              CONTINUE.
+            ENDIF.
+          ENDIF.
           rs_resp-status = 'error'.
-          APPEND |Field { ls_fv-field } not found in { is_req-table }| TO rs_resp-messages.
+          APPEND |Field { ls_fv-field } not found in { is_req-table }| &&
+                 COND string( WHEN lr_view IS BOUND THEN | or its maintenance view { is_req-view_name }| ) TO rs_resp-messages.
           RETURN.
         ENDIF.
         TRY.
@@ -1357,9 +1391,19 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       ENDIF.
 
       APPEND <new> TO <plan>.
+      LOOP AT lt_rowx INTO DATA(ls_rx).
+        ls_rx-row = lines( <plan> ).
+        APPEND ls_rx TO lt_extras.
+      ENDLOOP.
     ENDLOOP.
 
     rs_resp-rows_planned = lines( <plan> ).
+    IF lt_extras IS NOT INITIAL.
+      /ui2/cl_json=>serialize(
+        EXPORTING data        = lt_extras
+                  pretty_name = /ui2/cl_json=>pretty_mode-none
+        RECEIVING r_json      = ls_req-extras_json ).
+    ENDIF.
     lv_flag = delivery_class( is_req-table ).
 
     " ── Dry run ───────────────────────────────────────────────────────────────
@@ -1379,7 +1423,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    commit_plan( EXPORTING is_req  = is_req
+    commit_plan( EXPORTING is_req  = ls_req
                            ir_plan = lr_plan
                  CHANGING  cs_resp = rs_resp ).
   ENDMETHOD.
@@ -2373,6 +2417,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
              org_unit         TYPE string,   " org-copy only
              source_orgunit   TYPE string,
              target_orgunit   TYPE string,
+             extras_json      TYPE string,   " view fields outside the base table, per plan row (appended: layout is positional)
            END OF ty_params.
 
     DATA: ls_params   TYPE ty_params,
@@ -2399,6 +2444,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       EXPORTING data        = it_keys
                 pretty_name = /ui2/cl_json=>pretty_mode-none
       RECEIVING r_json      = ls_params-tabkeys_json ).
+    ls_params-extras_json = is_req-extras_json.
     ls_params-op               = ''.   " write path (≠ 'ORGCOPY')
     ls_params-table_name       = is_req-table.
     ls_params-view_name        = is_req-view_name.
@@ -2505,6 +2551,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
              org_unit         TYPE string,
              source_orgunit   TYPE string,
              target_orgunit   TYPE string,
+             extras_json      TYPE string,   " view fields outside the base table, per plan row (appended: layout is positional)
            END OF ty_params.
 
     DATA: ls_params   TYPE ty_params,
@@ -2617,6 +2664,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
              org_unit         TYPE string,
              source_orgunit   TYPE string,
              target_orgunit   TYPE string,
+             extras_json      TYPE string,   " view fields outside the base table, per plan row (appended: layout is positional)
            END OF ty_params.
 
     DATA: ls_params   TYPE ty_params,

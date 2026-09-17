@@ -20,7 +20,16 @@ TYPES: BEGIN OF ty_params,
          org_unit         TYPE string,   " ECOP org-unit type (BUKRS/WERKS/VKORG/…)
          source_orgunit   TYPE string,
          target_orgunit   TYPE string,
+         extras_json      TYPE string,   " view fields outside the base table: [{ROW,FIELD,VALUE}] (appended: layout is positional)
        END OF ty_params.
+
+TYPES ty_refs TYPE STANDARD TABLE OF REF TO data WITH DEFAULT KEY.
+TYPES: BEGIN OF ty_extra,
+         row   TYPE i,
+         field TYPE string,
+         value TYPE string,
+       END OF ty_extra,
+       ty_extras TYPE STANDARD TABLE OF ty_extra WITH DEFAULT KEY.
 
 TYPES: BEGIN OF ty_result,
          status       TYPE string,
@@ -431,6 +440,16 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&  Proper customizing write through the maintenance view runtime.
 *&  Records R3TR VDAT <view> (base + text table) on the transport.
+*&
+*&  The view runtime writes WITHOUT transport (no_transport='X'); the keys
+*&  are then recorded by record_headless. Never hand corr_number to the view
+*&  runtime: it records through TR_OBJECTS_INSERT, which hardcodes
+*&  iv_with_dialog='X', and in dialog mode CTS also runs switch-BC-set
+*&  recording (TRINT_OBJECTS_CHECK_AND_INSERT, "call_scpr_transport") on any
+*&  client with an active switch. On an industry-solution system that is
+*&  every client, the BC-set content is over a million rows, and for a view
+*&  in a switched package that recording ran for hours (2026-07-07,
+*&  2026-09-03). Mode 'D' (insert, no dialog) skips it.
 *&---------------------------------------------------------------------*
 FORM write_via_view
   USING    is_params TYPE ty_params
@@ -462,19 +481,29 @@ FORM write_via_view
   DATA(lv_is_del) = COND abap_bool(
     WHEN to_upper( is_params-action ) = 'DEL' THEN abap_true ELSE abap_false ).
 
-  " View cluster (SM34): write the member data THROUGH the member view but suppress
-  " the view's own VDAT recording (no_transport='X', no corr_number).  We then record
-  " R3TR CDAT <cluster> + the member TABU keys ourselves (PERFORM record_cdat) — the
-  " exact transport an SM34 save produces (CDAT header + TABU keys, no member VDAT).
+  " Every write goes through the view runtime without transport; the keys of
+  " what was written are recorded afterwards, headlessly, as the SM30/SM34
+  " save would record them (VDAT/TABU header + TABU keys, or CDAT header +
+  " member TABU keys). See the FORM header.
   DATA(lv_is_cdat) = COND abap_bool( WHEN lv_trobj = 'CDAT' THEN abap_true ELSE abap_false ).
-  DATA: lv_no_transp TYPE tvdir-flag,
-        lv_corr_in   TYPE trkorr.
-  IF lv_is_cdat = abap_true.
-    lv_no_transp = 'X'.
-    CLEAR lv_corr_in.
-  ELSE.
-    CLEAR lv_no_transp.
-    lv_corr_in = lv_trkorr.
+  DATA: lv_no_transp TYPE tvdir-flag VALUE 'X',
+        lv_corr_in   TYPE trkorr,
+        lt_written   TYPE ty_refs,
+        lt_extras    TYPE ty_extras,
+        lv_row       TYPE i.
+  FIELD-SYMBOLS <xfld> TYPE any.
+
+  IF is_params-extras_json IS NOT INITIAL.
+    TRY.
+        /ui2/cl_json=>deserialize(
+          EXPORTING json        = is_params-extras_json
+                    pretty_name = /ui2/cl_json=>pretty_mode-none
+          CHANGING  data        = lt_extras ).
+      CATCH cx_root INTO DATA(lx_xj).
+        cs_result-status = 'error'.
+        APPEND |View-field deserialization failed: { lx_xj->get_text( ) }| TO cs_result-messages.
+        RETURN.
+    ENDTRY.
   ENDIF.
 
   " Deserialize the plan (rows typed as the BASE table)
@@ -502,10 +531,21 @@ FORM write_via_view
   ENDTRY.
 
   LOOP AT <plan> ASSIGNING <row>.
+    lv_row = lv_row + 1.
     CLEAR <entry>.
-    " Base-table fields (incl. the remapped key) carry over by name; text-table
-    " fields (e.g. description) stay blank and are written for sy-langu.
+    " Base-table fields (incl. the remapped key) carry over by name; view fields
+    " outside the base table (a text table's description) come from the extras,
+    " and the view runtime writes them for sy-langu.
     MOVE-CORRESPONDING <row> TO <entry>.
+    LOOP AT lt_extras INTO DATA(ls_x) WHERE row = lv_row.
+      ASSIGN COMPONENT ls_x-field OF STRUCTURE <entry> TO <xfld>.
+      IF sy-subrc <> 0.
+        cs_result-status = 'error'.
+        APPEND |Field { ls_x-field } is not in view { lv_view }| TO cs_result-messages.
+        RETURN.
+      ENDIF.
+      <xfld> = ls_x-value.
+    ENDLOOP.
 
     " ── Delete path ─────────────────────────────────────────────────────────
     " The work area's key identifies the entry; action 'DEL' removes it across the
@@ -513,13 +553,14 @@ FORM write_via_view
     " as deleting the row in SM30 does.  entry_not_found → already gone (idempotent).
     IF lv_is_del = abap_true.
       lv_action = 'DEL'.
-      lv_corr   = lv_trkorr.
+      CLEAR lv_corr.
       CALL FUNCTION 'VIEW_MAINTENANCE_SINGLE_ENTRY'
         EXPORTING
           action                     = lv_action
-          corr_number                = lv_trkorr
+          corr_number                = lv_corr_in
           view_name                  = lv_view
           no_warning_for_clientindep = 'X'
+          no_transport               = lv_no_transp
           suppressdialog             = 'X'
         IMPORTING
           corr_number                = lv_corr
@@ -546,12 +587,13 @@ FORM write_via_view
         RETURN.
       ENDIF.
       cs_result-rows_written = cs_result-rows_written + 1.
+      PERFORM keep_entry USING <entry> CHANGING lt_written.
       CONTINUE.
     ENDIF.
 
     " New target keys → INSERT; if the row already exists, fall back to UPDATE.
     lv_action = 'INS'.
-    lv_corr   = lv_trkorr.
+    CLEAR lv_corr.
     CALL FUNCTION 'VIEW_MAINTENANCE_SINGLE_ENTRY'
       EXPORTING
         action                     = lv_action
@@ -580,9 +622,10 @@ FORM write_via_view
       CALL FUNCTION 'VIEW_MAINTENANCE_SINGLE_ENTRY'
         EXPORTING
           action                     = lv_action
-          corr_number                = lv_trkorr
+          corr_number                = lv_corr_in
           view_name                  = lv_view
           no_warning_for_clientindep = 'X'
+          no_transport               = lv_no_transp
           suppressdialog             = 'X'
         IMPORTING
           corr_number                = lv_corr
@@ -601,21 +644,19 @@ FORM write_via_view
     ENDIF.
 
     cs_result-rows_written = cs_result-rows_written + 1.
+    PERFORM keep_entry USING <entry> CHANGING lt_written.
   ENDLOOP.
 
-  " View cluster: register R3TR CDAT <cluster> + the member TABU keys onto the request
-  " BEFORE the commit (TR_OBJECTS_INSERT records via the CTS update task, persisted with
-  " the data on COMMIT).  Runs headless because this report is a background job (sy-batch).
-  IF lv_is_cdat = abap_true AND lv_trkorr IS NOT INITIAL AND cs_result-rows_written > 0.
-    PERFORM record_cdat USING is_params lv_trkorr CHANGING cs_result.
+  " Record what was written onto the request BEFORE the commit, so the keys are
+  " persisted together with the data (CTS records through its update task).
+  IF lv_trkorr IS NOT INITIAL AND cs_result-rows_written > 0.
+    PERFORM record_headless USING is_params lv_trkorr lv_view lt_written CHANGING cs_result.
     IF cs_result-status = 'error'.
       ROLLBACK WORK.
       RETURN.
     ENDIF.
   ENDIF.
 
-  " The FM registered the transport entries through the CTS update task; persist
-  " them together with the data.
   COMMIT WORK AND WAIT.
 
   cs_result-status = 'ok'.
@@ -663,91 +704,173 @@ FORM write_via_view
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&  Record a view cluster onto the request the SM34-standard way:
-*&  R3TR CDAT <cluster> header + R3TR TABU <member table> <tabkey> keys
-*&  (mastered by the cluster), via TR_OBJECTS_INSERT.
-*&
-*&  ⚠ DORMANT / BLOCKED (proven on CAR 2026-06-10): TR_OBJECTS_INSERT
-*&  hardcodes iv_with_dialog='X' → TRINT_OBJECTS_CHECK_AND_INSERT drives a
-*&  GUI/request dialog (SAPGUI_SET_PROPERTY) that fails even in a background
-*&  job (sy-batch), collapsing a show_only_* check into TK495 "Action was
-*&  canceled".  Same dialog wall that made VDAT recording abandon this FM.
-*&  The MCP layer therefore routes clusters to VDAT (member view) recording,
-*&  so transport_object='CDAT' is never sent and this FORM is not reached.
-*&  Re-enable only with a headless path: TRINT direct-call (iv_with_dialog
-*&  'D' + is_api_call-request) or VIEWCLUSTER_IMPORT with staged SLCTR data.
+*&  Keep a copy of a written view entry for key recording after the loop.
 *&---------------------------------------------------------------------*
-FORM record_cdat
-  USING    is_params TYPE ty_params
-           iv_trkorr TYPE trkorr
-  CHANGING cs_result TYPE ty_result.
+FORM keep_entry
+  USING    is_entry   TYPE any
+  CHANGING ct_written TYPE ty_refs.
+  DATA lr_copy TYPE REF TO data.
+  FIELD-SYMBOLS <copy> TYPE any.
+  CREATE DATA lr_copy LIKE is_entry.
+  ASSIGN lr_copy->* TO <copy>.
+  <copy> = is_entry.
+  APPEND lr_copy TO ct_written.
+ENDFORM.
 
-  DATA: lt_ko200 TYPE STANDARD TABLE OF ko200,
-        lt_e071k TYPE STANDARD TABLE OF e071k,
-        lt_keys  TYPE STANDARD TABLE OF trobj_name,
-        ls_ko200 TYPE ko200,
-        ls_e071k TYPE e071k,
-        lv_clust TYPE trobj_name,
-        lv_tab   TYPE e071k-objname,
-        lv_order TYPE e070-trkorr,
-        lv_task  TYPE e070-trkorr.
+*&---------------------------------------------------------------------*
+*&  Record written entries onto the request, headlessly, the way the
+*&  SM30/SM34 save records them:
+*&    VDAT  → R3TR VDAT <view>    + R3TR TABU <table> <key> per view table
+*&    TABU  → R3TR TABU <table>   + the same keys
+*&    CDAT  → R3TR CDAT <cluster> + R3TR TABU <member table> <key>
+*&  Keys are built from the DDIC key fields of each table in the view
+*&  (DD26S/DD03L): client from sy-mandt, a language key from the entry or
+*&  sy-langu, everything else from the entry (blank is a valid key value).
+*&  A table whose key fields are not all in the entry (a lookup table joined
+*&  for a text) is not a maintained table and is skipped, as SM30 does.
+*&
+*&  TRINT_OBJECTS_CHECK_AND_INSERT with iv_with_dialog='D' — insert into
+*&  the given request, no dialog. ' ' and 'R' only check and insert nothing;
+*&  'X' (what TR_OBJECTS_INSERT forces) inserts through the dialog and is the
+*&  only mode that runs the switch-BC-set recording that ran for hours on
+*&  switched-package views (see write_via_view).
+*&---------------------------------------------------------------------*
+FORM record_headless
+  USING    is_params  TYPE ty_params
+           iv_trkorr  TYPE trkorr
+           iv_view    TYPE dd02v-tabname
+           it_written TYPE ty_refs
+  CHANGING cs_result  TYPE ty_result.
 
-  lv_clust = to_upper( is_params-cluster_name ).
-  lv_tab   = to_upper( is_params-table_name ).
+  TYPES: BEGIN OF ty_keyfield,
+           tabname   TYPE dd03l-tabname,
+           fieldname TYPE dd03l-fieldname,
+           position  TYPE dd03l-position,
+           datatype  TYPE dd03l-datatype,
+           leng      TYPE dd03l-leng,
+         END OF ty_keyfield.
 
-  " Header object: the view cluster (R3TR CDAT <cluster>).
-  ls_ko200-pgmid    = 'R3TR'.
-  ls_ko200-object   = 'CDAT'.
-  ls_ko200-obj_name = lv_clust.
-  APPEND ls_ko200 TO lt_ko200.
+  DATA: lt_ko200    TYPE tredt_objects,
+        lt_e071k    TYPE tredt_keys,
+        lt_tables   TYPE STANDARD TABLE OF dd26s-tabname,
+        lt_keyf     TYPE STANDARD TABLE OF ty_keyfield,
+        lv_trobj    TYPE e071-object,
+        lv_master   TYPE e071k-mastername,
+        lv_mtype    TYPE e071k-mastertype,
+        lv_order    TYPE trkorr,
+        lv_task     TYPE trkorr,
+        lv_tabkey   TYPE e071k-tabkey,
+        lv_off      TYPE i,
+        lv_complete TYPE abap_bool,
+        lv_val      TYPE c LENGTH 255,
+        lr_entry    TYPE REF TO data.
+  FIELD-SYMBOLS: <entry> TYPE any,
+                 <field> TYPE any.
 
-  " Key entries: the touched member-table rows, mastered by the cluster — exactly
-  " the E071K shape SM34 records (R3TR TABU <member table>, MASTERTYPE CDAT).
-  TRY.
-      /ui2/cl_json=>deserialize(
-        EXPORTING json        = is_params-tabkeys_json
-                  pretty_name = /ui2/cl_json=>pretty_mode-none
-        CHANGING  data        = lt_keys ).
-    CATCH cx_root INTO DATA(lx_de).
-      cs_result-status = 'error'.
-      APPEND |CDAT tabkeys deserialize failed: { lx_de->get_text( ) }| TO cs_result-messages.
-      RETURN.
-  ENDTRY.
+  lv_trobj = to_upper( is_params-transport_object ).
+  IF lv_trobj IS INITIAL.
+    lv_trobj = 'VDAT'.
+  ENDIF.
 
-  LOOP AT lt_keys INTO DATA(lv_key).
-    CLEAR ls_e071k.
-    ls_e071k-pgmid      = 'R3TR'.
-    ls_e071k-object     = 'TABU'.
-    ls_e071k-objname    = lv_tab.
-    ls_e071k-mastertype = 'CDAT'.
-    ls_e071k-mastername = lv_clust.
-    ls_e071k-tabkey     = lv_key.
-    APPEND ls_e071k TO lt_e071k.
+  CASE lv_trobj.
+    WHEN 'CDAT'.
+      lv_master = to_upper( is_params-cluster_name ).
+      lv_mtype  = 'CDAT'.
+    WHEN 'TABU'.
+      lv_master = to_upper( is_params-table_name ).
+      lv_mtype  = 'TABU'.
+    WHEN OTHERS.
+      lv_master = iv_view.
+      lv_mtype  = 'VDAT'.
+  ENDCASE.
+
+  APPEND VALUE #( pgmid = 'R3TR' object = lv_trobj obj_name = lv_master objfunc = 'K' ) TO lt_ko200.
+
+  " The tables whose keys are recorded: the view's tables, or the one table.
+  IF lv_trobj = 'TABU'.
+    APPEND lv_master TO lt_tables.
+  ELSE.
+    SELECT tabname FROM dd26s WHERE viewname = @iv_view ORDER BY tabpos INTO TABLE @lt_tables.
+    IF lt_tables IS INITIAL.
+      APPEND to_upper( is_params-table_name ) TO lt_tables.
+    ENDIF.
+  ENDIF.
+
+  SELECT tabname, fieldname, position, datatype, leng FROM dd03l
+    FOR ALL ENTRIES IN @lt_tables
+    WHERE tabname = @lt_tables-table_line AND keyflag = 'X' AND as4local = 'A'
+    INTO TABLE @lt_keyf.
+  SORT lt_keyf BY tabname position.
+
+  LOOP AT lt_tables INTO DATA(lv_tab).
+    LOOP AT it_written INTO lr_entry.
+      ASSIGN lr_entry->* TO <entry>.
+      CLEAR lv_tabkey.
+      lv_off = 0.
+      lv_complete = abap_true.
+      LOOP AT lt_keyf INTO DATA(ls_kf) WHERE tabname = lv_tab.
+        CLEAR lv_val.
+        IF ls_kf-datatype = 'CLNT'.
+          lv_val = sy-mandt.
+        ELSE.
+          " A key field the entry does not have means a table this view only
+          " reads (a lookup joined for its text): not maintained, skipped. A
+          " key field that is there but blank is a real key value (a blank
+          " storage location), except a language, which the runtime fills.
+          ASSIGN COMPONENT ls_kf-fieldname OF STRUCTURE <entry> TO <field>.
+          IF sy-subrc = 0 AND ( <field> IS NOT INITIAL OR ls_kf-datatype <> 'LANG' ).
+            lv_val = <field>.
+          ELSEIF ls_kf-datatype = 'LANG'.
+            lv_val = sy-langu.
+          ELSE.
+            lv_complete = abap_false.
+            EXIT.
+          ENDIF.
+        ENDIF.
+        IF lv_off + ls_kf-leng > 120.
+          lv_complete = abap_false.
+          EXIT.
+        ENDIF.
+        lv_tabkey+lv_off(ls_kf-leng) = lv_val.
+        lv_off = lv_off + ls_kf-leng.
+      ENDLOOP.
+      IF lv_complete = abap_false.
+        EXIT.   " not a maintained table of this view: next table
+      ENDIF.
+      APPEND VALUE #( pgmid = 'R3TR' object = 'TABU' objname = lv_tab tabkey = lv_tabkey
+                      mastertype = lv_mtype mastername = lv_master ) TO lt_e071k.
+    ENDLOOP.
   ENDLOOP.
 
-  CALL FUNCTION 'TR_OBJECTS_INSERT'
-    EXPORTING
-      wi_order              = iv_trkorr
-      iv_no_standard_editor = 'X'
-      iv_no_show_option     = 'X'
-      iv_no_ps              = 'X'
-    IMPORTING
-      we_order              = lv_order
-      we_task               = lv_task
-    TABLES
-      wt_ko200              = lt_ko200
-      wt_e071k              = lt_e071k
-    EXCEPTIONS
-      cancel_edit_other_error = 1
-      show_only_other_error   = 2
-      OTHERS                  = 3.
-  IF sy-subrc <> 0.
+  IF lt_e071k IS INITIAL.
     cs_result-status = 'error'.
-    APPEND |TR_OBJECTS_INSERT (CDAT { lv_clust }) failed (subrc { sy-subrc } { sy-msgid }{ sy-msgno } { sy-msgv1 })|
+    APPEND |No table key of { iv_view } could be built from the written entries; nothing recorded on { iv_trkorr }|
       TO cs_result-messages.
     RETURN.
   ENDIF.
-  APPEND |Recorded R3TR CDAT { lv_clust } + { lines( lt_e071k ) } R3TR TABU { lv_tab } key(s) onto { iv_trkorr }|
+
+  CALL FUNCTION 'TRINT_OBJECTS_CHECK_AND_INSERT'
+    EXPORTING
+      iv_order              = iv_trkorr
+      iv_with_dialog        = 'D'
+      iv_no_show_option     = 'X'
+      iv_no_standard_editor = 'X'
+      iv_no_ps              = 'X'
+    IMPORTING
+      ev_order              = lv_order
+      ev_task               = lv_task
+    CHANGING
+      ct_ko200              = lt_ko200
+      ct_e071k              = lt_e071k
+    EXCEPTIONS
+      OTHERS                = 1.
+  IF sy-subrc <> 0.
+    cs_result-status = 'error'.
+    APPEND |Recording { lv_trobj } { lv_master } onto { iv_trkorr } refused: { sy-msgid }{ sy-msgno } { sy-msgv1 } { sy-msgv2 } { sy-msgv3 } { sy-msgv4 }|
+      TO cs_result-messages.
+    RETURN.
+  ENDIF.
+  APPEND |Recorded R3TR { lv_trobj } { lv_master } + { lines( lt_e071k ) } R3TR TABU key(s) onto { lv_order } (task { lv_task })|
     TO cs_result-messages.
 ENDFORM.
 

@@ -1,6 +1,45 @@
 # Customizing Engine — Handoff & Findings
 
-> ## ⏩ LATEST STATUS (2026-09-03 — pushed to master)
+> ## ⏩ LATEST STATUS (2026-09-17)
+> **Server v1.9.3 / ABAP engine 0.9.26. Commits into switch-gated IS-Oil views work, recorded,
+> in seconds. The refusal (`riskyPackageGuard`) is removed.** The 2026-09-03 block below and
+> the 2026-07-07 audit describe the symptom accurately and the cause wrongly: it was never the
+> package, the switch state (all three IS-Oil switches are ON), or a cold view.
+>
+> **Cause.** `VIEW_MAINTENANCE_SINGLE_ENTRY` with a `corr_number` records through
+> `TR_OBJECTS_INSERT`, which hardcodes `iv_with_dialog = 'X'`. Only in that mode does
+> `TRINT_OBJECTS_CHECK_AND_INSERT` run switch-BC-set recording (`call_scpr_transport`, set when
+> `cl_abap_switch=>get_switches_in_use( )` — always true on an industry-solution client). For an
+> object in a switched package that is the module chain the audit traced (`CL_BCFG_BCSET_DS_HELPER`,
+> `CL_ABAP_SWITCH`, DDIC scans), working through `SCPRVALL` (1.4 M rows on S4). In a background job it
+> does not come back; in a dialog context VMSE instead dies on `SAPLSTRD 0352`.
+>
+> **TRINT's `iv_with_dialog` modes, read from source:** `' '` and `'R'` check only and insert
+> nothing (they return subrc 0 — a trap); `'X'` inserts with dialog and BC-set recording; `'D'`
+> inserts into the given `iv_order` with no dialog and no BC-set recording.
+>
+> **Fix (`zmcp_cust_write.abap`).** The view runtime always writes with `no_transport = 'X'`; the
+> written entries are kept, and `record_headless` builds the E071K keys for every table of the view
+> (DD26S/DD03L key fields; client from `sy-mandt`; a blank key value is valid; a blank language takes
+> `sy-langu`; a table whose key fields are not in the entry is a lookup and is skipped) and records
+> the `VDAT`/`TABU`/`CDAT` header plus `TABU` keys with `TRINT` mode `'D'`. `record_cdat`
+> (`TR_OBJECTS_INSERT`, TK495) is replaced by it.
+>
+> **Also new: view fields outside the base table.** `customizing_create` rows may now carry fields
+> the maintenance view has and the base table does not (a text table's `DESCR`). The planner passes
+> them beside the plan (`extras_json`, appended to every `ty_params` layout — positional) and the
+> writer puts them into the view entry, so texts are written and recorded with their row.
+>
+> **Verified on S4, 2026-09-17**, the whole IS-Oil HPM conversion configuration for BetrM onto
+> `A4HK900202` / task `A4HK900203`: `V_OIB05`, `V_OIB06`, `V_OIB_RDGRDEF`, `V_OIB_RDGGROUP`,
+> `V_OIB01`, `V_OIB04`, `V_OIB_CONV_RDGRP`, `V_OIB02` — 8 VDAT headers, 29 keys including every text
+> table, each write seconds. Data re-read from the tables matches. 201 tests pass.
+>
+> **Not changed:** `resolveMaint` still resolves `switchId` (information only). Cluster members
+> still record as the member view (`VDAT`); `CDAT` is now possible headlessly but not switched on.
+> The direct-write path ignores view-only fields.
+
+> ## ⏪ STATUS (2026-09-03 — superseded by the block above)
 > **Engine v1.9.2.** Read this block first, then the 2026-06-10 block below it, then
 > [`docs/customizing-engine.md`](docs/customizing-engine.md) and
 > [`docs/audit-2026-07-07-transport-handling.md`](docs/audit-2026-07-07-transport-handling.md) — that audit doc

@@ -178,18 +178,10 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     devclass  = col(tvdir[0] ?? {}, "DEVCLASS") || undefined
   }
 
-  // Switch Framework gating of that package (SFW_PACKAGE): the DEBUGGER-VERIFIED
-  // trigger (docs/audit-2026-07-07-transport-handling.md, wp_detail live WP
-  // tracing) for a headless VIEW_MAINTENANCE_SINGLE_ENTRY commit effectively
-  // never terminating — 12h+ for 4 rows into V_TOIJRMOT, a PLAIN view, not a
-  // cluster member. The runtime grinds per-DDIC-object through Switch Framework
-  // evaluation (CL_ABAP_SWITCH) plus first-load module-pool generation on a
-  // view that has never been touched via SM30/SM34 on this box, plus the ST-PI
-  // TMWFLOW CTS hook. Confirmed a second time 2026-09-03 (same module sequence)
-  // on V_OIJNOM_ST03, package OIJ, switch OIJ_TSW — which is ALSO a view-cluster
-  // member, but clustering is not the trigger: /POSDW/GPAP (2026-06-10) is a
-  // cluster member in a non-switch-gated package and wrote in seconds. Package
-  // switch-gating is the property that actually discriminates the two outcomes.
+  // Switch Framework gating of that package (SFW_PACKAGE), reported for
+  // information. It used to decide a refusal; the hang it stood for is the
+  // dialog-mode switch-BC-set recording in CTS, which the writer no longer
+  // triggers (see the note above customizing_apply in customizingEngine.ts).
   let switchId: string | undefined
   if (devclass) {
     const sfw = await sql1(client, `SELECT SWITCH_ID FROM SFW_PACKAGE WHERE DEVCLASS = '${devclass}'`)
