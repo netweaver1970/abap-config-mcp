@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, trackLock, forgetLock, dropSessionLocks, isEditingError, editingConflictHint, log } from "../connections"
-import { rememberTransport, pickTransport, formatCandidates } from "./transportGovernance"
+import { ensureConnected, trackLock, forgetLock, getHeldLock, dropSessionLocks, isEditingError, editingConflictHint, log, resolveConnectionId, getConnectionConfig } from "../connections"
+import { selectTransport, type TransportCandidate } from "./transportSelection"
+import { lookupRequest, listOpenRequests } from "./transportSql"
 
 interface ResolvedTransport {
   transport?: string   // request to record into (undefined = none needed / local package)
@@ -9,82 +10,70 @@ interface ResolvedTransport {
   prompt?: string      // set when the caller must STOP and return this (needs a choice)
 }
 
+export interface TransportArgs {
+  transport?: string
+  createTransport?: boolean
+  workItem?: string
+  connectionId?: string
+}
+
 /**
- * Governed transport selection for a workbench object (CTS function 'K'), using
- * the ADT `transportInfo` of the object as the candidate source:
- *   - explicit transport wins (and seeds session reuse);
- *   - local/non-transportable package → no transport;
- *   - object already locked into a request → record there;
- *   - else reuse this session's last 'K' request if still valid, otherwise
- *     return a prompt listing the valid open requests; create a new one only on
- *     an explicit createTransport opt-in (and only when SAP allows it).
- * Any transportInfo failure falls back to the prior behaviour (let the ADT call
- * decide) so the write is never blocked by a determination quirk.
+ * Transport for a workbench change (CTS function 'K'), by the shared rule in
+ * transportSelection.ts. ADT's transportInfo says whether the object records at
+ * all, whether SAP already ties it to a request, and which requests its transport
+ * layer allows; when that list is empty the user's open Workbench requests are
+ * offered instead.
  */
-async function resolveWorkbenchTransport(
+export async function resolveWorkbenchTransport(
   client: Awaited<ReturnType<typeof ensureConnected>>,
   refUrl: string,
   devClass: string | undefined,
   operation: string | undefined,
-  supplied: string | undefined,
-  optInCreate: boolean,
+  args: TransportArgs,
+  sessionId: string | undefined,
+  what: string,
   requestText: string,
 ): Promise<ResolvedTransport> {
-  if (supplied) {
-    rememberTransport("K", supplied)
-    return { transport: supplied }
-  }
-
   let info
   try {
     info = await client.transportInfo(refUrl, devClass, operation)
   } catch (err) {
-    log("WARN", `transportInfo failed for ${refUrl} — proceeding without governed transport selection`, err)
-    return {}
+    // Without transportInfo the object's needs are unknown: pass an explicit
+    // transport through and let SAP decide, rather than blocking the write.
+    log("WARN", `transportInfo failed for ${refUrl} — using the given transport as is`, err)
+    return { transport: args.transport, note: args.transport ? `Transport ${args.transport} (not checked: ${String((err as Error)?.message ?? err)})` : undefined }
   }
 
-  // Local / non-transportable package ($TMP etc.) — no transport required.
+  // Local / non-transportable package ($TMP etc.) — no transport, whatever was passed.
   if (!info.RECORDING || info.RECORDING.trim() === "") {
-    return { note: `local/non-transportable (${info.DEVCLASS || info.DLVUNIT || "$TMP"}) — no transport` }
+    return { note: `No transport — local package ${info.DEVCLASS || "$TMP"}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
   }
 
-  // Object already assigned to a request (locked into it) → record there.
-  const locked = info.LOCKS?.HEADER?.TRKORR
-  if (locked) {
-    rememberTransport("K", locked)
-    return { transport: locked, note: `object already on ${locked}` }
+  let candidates: TransportCandidate[] = (info.TRANSPORTS ?? []).map(h => ({ trkorr: h.TRKORR, text: h.AS4TEXT, owner: h.AS4USER }))
+  if (candidates.length === 0) {
+    candidates = await listOpenRequests(args.connectionId, "K", getConnectionConfig(args.connectionId).username)
   }
 
-  const candidates = (info.TRANSPORTS ?? []).map(h => ({
-    trkorr: h.TRKORR, text: h.AS4TEXT, owner: h.AS4USER,
-  }))
-
-  const decision = pickTransport("K", candidates)
-  if (decision.kind === "reuse") {
-    rememberTransport("K", decision.trkorr)
-    return { transport: decision.trkorr, note: decision.note }
-  }
-
-  // A choice is needed. Create a new request ONLY on explicit opt-in, and only
-  // when SAP permits it (EXISTING_REQ_ONLY guards object types that may not).
-  if (optInCreate) {
-    if (info.EXISTING_REQ_ONLY === "X") {
-      return { prompt:
-        `🚦 This object must record onto an EXISTING Workbench request (creating one is not allowed here).\n\n` +
-        `Valid open requests (CTS function K):\n${formatCandidates(candidates, "(none open — ask BASIS to provide one)")}\n\n` +
-        `Re-run with transport: <one of the above>.` }
-    }
-    const num = await client.createTransport(refUrl, requestText, info.DEVCLASS)
-    rememberTransport("K", num)
-    return { transport: num, note: `✅ created Workbench request ${num}` }
-  }
-
-  return { prompt:
-    `🚦 No transport supplied — this object records onto a Workbench request (CTS function K).\n\n` +
-    `Valid open requests for ${info.OBJECTNAME || refUrl.split("/").pop()}:\n` +
-    `${formatCandidates(candidates, "(none open — pass createTransport: true to start one)")}\n\n` +
-    `Re-run with transport: <one of the above> to record into it (preferred), ` +
-    `or createTransport: true to start a NEW Workbench request.` }
+  const sel = await selectTransport({
+    connectionId: resolveConnectionId(args.connectionId),
+    fn: "K",
+    what,
+    supplied: args.transport,
+    workItem: args.workItem,
+    sessionId,
+    forced: info.LOCKS?.HEADER?.TRKORR || undefined,
+    candidates,
+    lookup: trkorr => lookupRequest(args.connectionId, trkorr),
+    create: args.createTransport
+      ? async () => {
+          if (info.EXISTING_REQ_ONLY === "X") {
+            throw new Error(`SAP allows ${info.OBJECTNAME || "this object"} only on an existing request — pass transport: instead of createTransport.`)
+          }
+          return client.createTransport(refUrl, requestText, info.DEVCLASS)
+        }
+      : undefined,
+  })
+  return sel.kind === "use" ? { transport: sel.trkorr, note: sel.note } : { prompt: sel.text }
 }
 
 export async function handleWriteAbapObjectSource(args: {
@@ -93,8 +82,9 @@ export async function handleWriteAbapObjectSource(args: {
   source: string
   transport?: string
   createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}, extra?: { signal?: AbortSignal }) {
+}, extra?: { signal?: AbortSignal; sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
   const objectUrl = args.url
   const sourceUrl = args.sourceUrl ?? `${objectUrl}/source/main`
@@ -102,8 +92,8 @@ export async function handleWriteAbapObjectSource(args: {
   // Governed transport selection BEFORE locking, so a "pick a request" prompt
   // never leaves the object locked behind.
   const t = await resolveWorkbenchTransport(
-    client, objectUrl, undefined, undefined, args.transport,
-    !!args.createTransport, `MCP edit ${objectUrl.split("/").pop()}`)
+    client, objectUrl, undefined, undefined, args, extra?.sessionId,
+    `the change to ${objectUrl.split("/").pop()}`, `MCP edit ${objectUrl.split("/").pop()}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   // If the client abandons the call mid-flight, drop the session immediately to
@@ -123,10 +113,24 @@ export async function handleWriteAbapObjectSource(args: {
 
     await client.setObjectSource(sourceUrl, args.source, lockHandle, t.transport)
 
+    // Read it back. ADT has accepted writes it did not apply (a function group's
+    // own URL instead of its main program), which only showed later.
+    let verify = ""
+    try {
+      const stored = await client.getObjectSource(sourceUrl, { version: "inactive" } as any)
+      const norm = (x: string) => String(x ?? "").replace(/\r/g, "").split("\n").map(l => l.replace(/\s+$/, "")).join("\n").trim()
+      if (norm(stored) !== norm(args.source)) {
+        verify = `⚠️ Read back from ${sourceUrl}, the source differs from what was sent — SAP may not have stored it there. ` +
+          `Check the URL (for a function group's main program use .../functions/groups/<g>/includes/sapl<g>).\n`
+      }
+    } catch (e) {
+      verify = `(Could not read the source back to verify: ${String((e as Error)?.message ?? e)})\n`
+    }
+
     return {
       content: [{
         type: "text" as const,
-        text: `✅ Source written to ${objectUrl}\n` +
+        text: `✅ Source written to ${objectUrl}\n` + verify +
           (t.transport ? `Transport: ${t.transport}\n` : "") +
           (t.note ? `${t.note}\n` : "") +
           `Lock handle: ${lockHandle}\n\nThe object is still locked. Use abap_activate to compile+activate+unlock, or unlock_abap_object to discard.`
@@ -178,11 +182,18 @@ export async function handleLockAbapObject(args: { url: string; connectionId?: s
 
 export async function handleUnlockAbapObject(args: {
   url: string
-  lockHandle: string
+  lockHandle?: string
   connectionId?: string
 }) {
   const client = await ensureConnected(args.connectionId)
-  await client.unLock(args.url, args.lockHandle)
+  const handle = args.lockHandle ?? getHeldLock(args.connectionId, args.url)
+  if (!handle) {
+    return { content: [{ type: "text" as const, text:
+      `❌ No lock handle for ${args.url}: none was given and this server holds no lock on it.\n` +
+      `If SAP still shows it locked by you (SM12), the handle belongs to an earlier session — force_relogin drops that ` +
+      `session and releases its locks (all of them, for every caller of this server).` }] }
+  }
+  await client.unLock(args.url, handle)
   forgetLock(args.connectionId, args.url)
   return { content: [{ type: "text" as const, text: `🔓 Object unlocked: ${args.url}` }] }
 }
@@ -219,8 +230,9 @@ export async function handleCreateAbapObject(args: {
   parentPath?: string
   transport?: string
   createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
   const parentPath = args.parentPath ?? `/sap/bc/adt/packages/${args.packageName}`
   const objectType = normalizeCreatableType(args.objectType)
@@ -229,8 +241,8 @@ export async function handleCreateAbapObject(args: {
   // reference; a local package ($TMP) resolves to no transport. Best-effort —
   // any determination failure falls back to the supplied transport.
   const t = await resolveWorkbenchTransport(
-    client, parentPath, args.packageName, "I", args.transport,
-    !!args.createTransport, `MCP create ${args.name}`)
+    client, parentPath, args.packageName, "I", args, extra?.sessionId,
+    `creating ${args.name}`, `MCP create ${args.name}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   await client.createObject(
@@ -264,15 +276,16 @@ export async function handleDeleteAbapObject(args: {
   url: string
   transport?: string
   createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
 
   // Governed transport selection before locking (a "pick a request" prompt
   // should not leave the object locked).
   const t = await resolveWorkbenchTransport(
-    client, args.url, undefined, undefined, args.transport,
-    !!args.createTransport, `MCP delete ${args.url.split("/").pop()}`)
+    client, args.url, undefined, undefined, args, extra?.sessionId,
+    `deleting ${args.url.split("/").pop()}`, `MCP delete ${args.url.split("/").pop()}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   const lockResult = await client.lock(args.url)
@@ -297,13 +310,14 @@ export function registerWriteTools(server: McpServer): void {
     "write_abap_object_source",
     {
       title: "Write ABAP Object Source",
-      description: "Write/update the source code of an ABAP object. Automatically locks the object, writes, and leaves it locked for activation. Use abap_activate to compile & unlock, or unlock_abap_object to discard. Governed transport selection: if the object needs a transport and none is given, reuses this session's last Workbench request, else lists the valid open requests to pick from (a new one is created only with createTransport: true).",
+      description: "Write/update the source code of an ABAP object. Automatically locks the object, writes, and leaves it locked for activation. Use abap_activate to compile & unlock, or unlock_abap_object to discard. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         url: z.string().describe("ADT object URL (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG)"),
         sourceUrl: z.string().optional().describe("ADT source URL — defaults to <url>/source/main"),
         source: z.string().describe("New ABAP source code to write"),
-        transport: z.string().optional().describe("Transport request to record into. If omitted for a transportable object, the tool reuses this session's last Workbench request or lists the valid open ones to pick from (preferred over creating)."),
-        createTransport: z.boolean().optional().describe("Opt in to creating a NEW Workbench request when no transport is supplied (default: false — prefer recording into an existing open request)."),
+        transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -330,7 +344,7 @@ export function registerWriteTools(server: McpServer): void {
       description: "Unlock a previously locked ABAP object (discards any unsaved changes)",
       inputSchema: {
         url: z.string().describe("ADT object URL"),
-        lockHandle: z.string().describe("Lock handle returned by lock_abap_object or write_abap_object_source"),
+        lockHandle: z.string().optional().describe("Lock handle returned by lock_abap_object or write_abap_object_source. Optional: defaults to the lock this server holds on the object."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -341,15 +355,16 @@ export function registerWriteTools(server: McpServer): void {
     "create_abap_object",
     {
       title: "Create ABAP Object",
-      description: "Create a new ABAP development object (program, class, function group, table, etc.) in a package. Governed transport selection applies (same as write_abap_object_source): a local package ($TMP) needs no transport; for a transportable package, reuses this session's last Workbench request or lists the valid open ones (createTransport: true to start a new one).",
+      description: "Create a new ABAP development object (program, class, function group, include, table, etc.) in a package. A local package ($TMP) needs no transport. Creating a function group include (FUGR/I) also adds its INCLUDE line to the group's main program — do not add it again. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         objectType: z.string().describe("ABAP object type. Full typeId (PROG/P, CLAS/OC, FUGR/F, TABL/DT, DTEL/DE, DOMA/DO, INTF/OI) or the bare prefix (PROG, CLAS, FUGR, TABL, DTEL, DOMA, INTF, …) — the bare form is normalised to the full typeId."),
         name: z.string().describe("Object name (e.g. Z_MY_PROGRAM)"),
         description: z.string().describe("Object short description"),
         packageName: z.string().describe("Target package (e.g. ZDEV_PKG)"),
         parentPath: z.string().optional().describe("Parent ADT URL — defaults to /sap/bc/adt/packages/<packageName>"),
-        transport: z.string().optional().describe("Transport request to record into. If omitted for a transportable package, reuses this session's last Workbench request or lists the valid open ones."),
-        createTransport: z.boolean().optional().describe("Opt in to creating a NEW Workbench request when no transport is supplied (default: false)."),
+        transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -360,11 +375,12 @@ export function registerWriteTools(server: McpServer): void {
     "delete_abap_object",
     {
       title: "Delete ABAP Object",
-      description: "Delete an ABAP development object. Locks the object, deletes it, and unlocks. Governed transport selection applies (same as write_abap_object_source) when the object records onto a transport.",
+      description: "Delete an ABAP development object. Locks the object, deletes it, and unlocks. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         url: z.string().describe("ADT object URL to delete"),
-        transport: z.string().optional().describe("Transport request to record the deletion into. If omitted for a transportable object, reuses this session's last Workbench request or lists the valid open ones."),
-        createTransport: z.boolean().optional().describe("Opt in to creating a NEW Workbench request when no transport is supplied (default: false)."),
+        transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

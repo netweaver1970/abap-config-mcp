@@ -25,7 +25,9 @@ import {
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
 import { resolveMaint, runSql, tableRows, col, type ResolvedMaint } from "./customizing"
-import { rememberTransport, buildTransportPrompt } from "./transportGovernance"
+import { selectTransport, rememberTransport, workKey } from "./transportSelection"
+import { lookupRequest, listOpenRequests as listOpenRequestsSql } from "./transportSql"
+import { resolveConnectionId } from "../connections"
 import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
 
 // ─── Raw HTTP helper ───────────────────────────────────────────────────────────
@@ -60,43 +62,56 @@ interface EngineRequest {
   items_json?: string         // listing: JSON array of {PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO}
 }
 
-// ─── transport selection (governed workflow) ─────────────────────────────────
-// Enterprise landscapes pre-provision transports (CALM/SolMan); the engine does
-// not mint one per write. When a recorded write has no transport we: (1) reuse
-// the request used earlier this session for the same type, else (2) list the
-// open modifiable requests of the correct type so the caller can pick one, and
-// only (3) create a new request on an explicit opt-in. "type" = the CTS request
-// function: 'W' = Customizing (client-dependent config), 'K' = Workbench.
+// ─── transport selection ─────────────────────────────────────────────────────
+// Customizing writes (CTS function 'W') follow the same rule as workbench writes —
+// see transportSelection.ts. Two cases record nothing and need no transport: a
+// delivery class A table (application data, written directly) and a client that
+// does not record changes. When the caller asks for a new request, the engine
+// creates it at commit, and it is remembered for the piece of work afterwards.
 
-// Session reuse memory lives in the shared transportGovernance module so the
-// "continue on this session's request" behaviour is consistent with workbench writes.
+interface CustomizingTransport {
+  transport?: string
+  note?: string
+  prompt?: string
+  engineCreates?: boolean
+}
 
-interface OpenRequest { trkorr: string; text: string; owner: string }
-
-/** Open, modifiable, top-level requests of one CTS function, newest first.
- *  When `owner` is given, only that SAP user's requests are returned (the
- *  default for the prompt — your own requests); pass undefined to list all. */
-async function listOpenRequests(
-  connectionId: string | undefined,
-  trfunction: "W" | "K",
-  owner?: string,
-): Promise<OpenRequest[]> {
-  const client = await ensureConnected(connectionId)
-  const ownerFilter = owner
-    ? ` AND h~AS4USER = '${owner.toUpperCase().replace(/'/g, "''")}'`
-    : ""
-  const sql =
-    `SELECT h~TRKORR, h~AS4USER, t~AS4TEXT FROM E070 AS h ` +
-    `INNER JOIN E07T AS t ON t~TRKORR = h~TRKORR ` +
-    `WHERE h~STRKORR = '' AND h~TRSTATUS = 'D' AND h~TRFUNCTION = '${trfunction}'${ownerFilter} AND t~LANGU = 'E' ` +
-    `ORDER BY h~TRKORR DESCENDING`
+async function resolveCustomizingTransport(
+  args: { table: string; transport?: string; createTransport?: boolean; recordTransport?: boolean;
+          showAllTransports?: boolean; workItem?: string; connectionId?: string },
+  commit: boolean,
+  what: string,
+  sessionId: string | undefined,
+): Promise<CustomizingTransport> {
+  if (!commit || args.recordTransport === false) return { transport: args.transport }
+  const client = await ensureConnected(args.connectionId)
+  const cfg = getConnectionConfig(args.connectionId)
   try {
-    return tableRows(await runSql(client, sql, 50)).map(r => ({
-      trkorr: col(r, "TRKORR"), owner: col(r, "AS4USER"), text: col(r, "AS4TEXT"),
-    }))
-  } catch {
-    return []
+    const dd02 = tableRows(await runSql(client, `SELECT CONTFLAG FROM DD02L WHERE TABNAME = '${args.table.toUpperCase().replace(/'/g, "''")}' AND AS4LOCAL = 'A'`, 1))[0]
+    if (dd02 && col(dd02, "CONTFLAG") === "A") return { note: `No transport — ${args.table} is application data (delivery class A).` }
+    const t000 = tableRows(await runSql(client, `SELECT CCCORACTIV FROM T000 WHERE MANDT = '${(cfg.client ?? "").replace(/'/g, "''")}'`, 1))[0]
+    if (t000 && col(t000, "CCCORACTIV") !== "1") return { note: `No transport — client ${cfg.client} does not record changes.` }
+  } catch (err) {
+    log("WARN", "delivery class / client recording check failed — continuing with transport selection", err)
   }
+  if (args.createTransport && !args.transport) return { engineCreates: true }
+
+  const sel = await selectTransport({
+    connectionId: resolveConnectionId(args.connectionId),
+    fn: "W",
+    what,
+    supplied: args.transport,
+    workItem: args.workItem,
+    sessionId,
+    candidates: await listOpenRequestsSql(args.connectionId, "W", args.showAllTransports ? undefined : cfg.username),
+    lookup: trkorr => lookupRequest(args.connectionId, trkorr),
+  })
+  if (sel.kind === "ask") {
+    return { prompt: sel.text + `\n\nOr: createTransport: true for a new Customizing request (transportText: to name it), ` +
+      `recordTransport: false for a direct untransported write` +
+      (args.showAllTransports ? "." : `, showAllTransports: true to list everyone's requests.`) }
+  }
+  return { transport: sel.trkorr, note: sel.note }
 }
 
 // Response keys come back uppercase from /ui2/cl_json pretty_mode-none serialize.
@@ -760,8 +775,9 @@ export async function handleCustomizingApply(args: {
   showAllTransports?: boolean
   autoDeploy?: boolean
   icfPath?: string
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const commit = args.commit === true
   const isDelete = args.action === "delete"
 
@@ -843,25 +859,12 @@ export async function handleCustomizingApply(args: {
       : undefined,
   }
 
-  // ── Governed transport selection (shared interactive flow) ───────────────────
-  // A recorded commit needs a Customizing request (CTS function 'W'). With no
-  // explicit transport and no create opt-in we always present the choice — list
-  // the usable open requests AND the create options — rather than silently
-  // picking one. The caller proceeds by re-running with transport:/createTransport.
-  const reqType: "W" | "K" = "W"   // this tool writes client-dependent customizing
-  if (commit && !args.transport && args.recordTransport !== false && !args.createTransport) {
-    const owner = args.showAllTransports ? undefined : getConnectionConfig(args.connectionId).username
-    const open = await listOpenRequests(args.connectionId, reqType, owner)
-    return { content: [{ type: "text" as const, text: buildTransportPrompt({
-      candidates: open,
-      ctsFunction: reqType,
-      contextLabel: `a recorded customizing write (${args.table} ${args.keyField}=${args.targetKey})`,
-      canName: true,
-      extraDirectOption: "recordTransport: false for a direct, untransported write",
-      scopeNote: owner ? `your requests — pass showAllTransports: true for everyone's` : `all users`,
-      prefix: `${deployNote}${resolveNote}`,
-    }) }] }
-  }
+  // ── Transport (the shared rule in transportSelection.ts) ─────────────────────
+  const tsel = await resolveCustomizingTransport(args, commit,
+    `the customizing write (${args.table} ${args.keyField}=${args.targetKey})`, extra?.sessionId)
+  if (tsel.prompt) return { content: [{ type: "text" as const, text: `${deployNote}${resolveNote}${tsel.prompt}` }] }
+  body.transport = tsel.transport
+  if (tsel.note) resolveNote += `${tsel.note}\n`
   // Pass the optional request name through to the engine for the create path.
   if (args.transportText) body.transport_text = args.transportText
 
@@ -905,10 +908,9 @@ export async function handleCustomizingApply(args: {
   const isDry = r.DRY_RUN === "X" || !commit
   const stillGoing = isRunStillGoing(r.STATUS)
 
-  // Remember the request actually used so the next recorded write this session
-  // can offer "continue on ${trkorr}" instead of re-prompting.
-  if (commit && r.STATUS === "ok" && r.TRANSPORT) {
-    rememberTransport(reqType, r.TRANSPORT)
+  if (commit && r.STATUS === "ok" && r.TRANSPORT && tsel.engineCreates) {
+    rememberTransport(resolveConnectionId(args.connectionId), "W", workKey(args.workItem, extra?.sessionId), r.TRANSPORT)
+    resolveNote += `Transport ${r.TRANSPORT} — created as asked, now the transport for ${args.workItem ? `work item ${args.workItem.toUpperCase()}` : "this session"}.\n`
   }
 
   const lines: string[] = [
@@ -970,8 +972,9 @@ export async function handleCustomizingCreate(args: {
   showAllTransports?: boolean
   autoDeploy?: boolean
   icfPath?: string
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const commit = args.commit === true
 
   if (!Array.isArray(args.rows) || args.rows.length === 0) {
@@ -1049,21 +1052,12 @@ export async function handleCustomizingCreate(args: {
     cluster_name: clusterName,
   }
 
-  // ── Governed transport selection (shared interactive flow) ───────────────────
-  const reqType: "W" | "K" = "W"
-  if (commit && !args.transport && args.recordTransport !== false && !args.createTransport) {
-    const owner = args.showAllTransports ? undefined : getConnectionConfig(args.connectionId).username
-    const open = await listOpenRequests(args.connectionId, reqType, owner)
-    return { content: [{ type: "text" as const, text: buildTransportPrompt({
-      candidates: open,
-      ctsFunction: reqType,
-      contextLabel: `a recorded customizing create (${args.rows.length} row(s) into ${args.table})`,
-      canName: true,
-      extraDirectOption: "recordTransport: false for a direct, untransported write",
-      scopeNote: owner ? `your requests — pass showAllTransports: true for everyone's` : `all users`,
-      prefix: `${deployNote}${resolveNote}`,
-    }) }] }
-  }
+  // ── Transport (the shared rule in transportSelection.ts) ─────────────────────
+  const tsel = await resolveCustomizingTransport(args, commit,
+    `the customizing create (${args.rows.length} row(s) into ${args.table})`, extra?.sessionId)
+  if (tsel.prompt) return { content: [{ type: "text" as const, text: `${deployNote}${resolveNote}${tsel.prompt}` }] }
+  body.transport = tsel.transport
+  if (tsel.note) resolveNote += `${tsel.note}\n`
   if (args.transportText) body.transport_text = args.transportText
 
   let r: EngineResponse
@@ -1097,7 +1091,10 @@ export async function handleCustomizingCreate(args: {
 
   const isDry = r.DRY_RUN === "X" || !commit
   const stillGoing = isRunStillGoing(r.STATUS)
-  if (commit && r.STATUS === "ok" && r.TRANSPORT) rememberTransport(reqType, r.TRANSPORT)
+  if (commit && r.STATUS === "ok" && r.TRANSPORT && tsel.engineCreates) {
+    rememberTransport(resolveConnectionId(args.connectionId), "W", workKey(args.workItem, extra?.sessionId), r.TRANSPORT)
+    resolveNote += `Transport ${r.TRANSPORT} — created as asked, now the transport for ${args.workItem ? `work item ${args.workItem.toUpperCase()}` : "this session"}.\n`
+  }
 
   const lines: string[] = [
     ...(deployNote ? [deployNote.trimEnd()] : []),
@@ -1449,9 +1446,10 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         onlyMissing:      z.boolean().optional().describe("Only write rows absent from target (default: true)"),
         commit:           z.boolean().optional().describe("Actually write (default: false = dry run)"),
         recordTransport:  z.boolean().optional().describe("Record the write on a transport request (default: true for C/G/E). Set false for sandbox/test-data writes that should not be transported — transport must be omitted when false."),
-        createTransport:  z.boolean().optional().describe("Opt in to having the engine create a NEW Customizing request when no transport is supplied (default: false — the tool first prompts with existing requests + options). Combine with transportText to name it."),
+        createTransport:  z.boolean().optional().describe("Create a NEW Customizing request at commit (only when you mean it; existing requests are preferred). Combine with transportText to name it."),
         transportText:    z.string().optional().describe("Short description for the engine-created Customizing request (only used with createTransport: true). Omit to use an auto-generated text."),
         showAllTransports: z.boolean().optional().describe("When prompting for a transport, list ALL users' open requests instead of only your own (default: false = your own)."),
+        workItem:         z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         autoDeploy:       z.boolean().optional().describe("Auto-deploy/update the ABAP engine class if missing or outdated (default: true)"),
         icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),
         connectionId: z.string().optional().describe("SAP system connection ID"),
@@ -1486,9 +1484,10 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         commit:           z.boolean().optional().describe("Actually write (default: false = dry run returning the planned rows)"),
         recordTransport:  z.boolean().optional().describe("Record the write on a transport (default: true for C/G/E). Set false for a direct, untransported sandbox write — transport must be omitted then."),
         recordTableKeys:  z.boolean().optional().describe("For a table with no maintenance view (e.g. T006/T006A, normally CUNI): write it directly and record the row keys as R3TR TABU on the transport. Skips the dedicated transaction's checks — supply complete rows."),
-        createTransport:  z.boolean().optional().describe("Opt in to having the engine create a NEW Customizing request when none supplied (default: false — the tool first prompts). Combine with transportText to name it."),
+        createTransport:  z.boolean().optional().describe("Create a NEW Customizing request at commit (only when you mean it; existing requests are preferred). Combine with transportText to name it."),
         transportText:    z.string().optional().describe("Short description for the engine-created Customizing request (only used with createTransport: true)."),
         showAllTransports: z.boolean().optional().describe("When prompting for a transport, list ALL users' open requests instead of only your own (default: false)."),
+        workItem:         z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         autoDeploy:       z.boolean().optional().describe("Auto-deploy/update the engine class if missing or outdated (default: true)"),
         icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),
         connectionId: z.string().optional().describe("SAP system connection ID"),

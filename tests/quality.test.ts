@@ -5,7 +5,10 @@ import {
   handleCreateTestInclude,
 } from "../src/tools/quality"
 
-vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn() }))
+vi.mock("../src/connections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/connections")>()),
+  ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn(),
+}))
 import { ensureConnected } from "../src/connections"
 
 const mockClient = {
@@ -16,6 +19,7 @@ const mockClient = {
   lock: vi.fn(),
   unLock: vi.fn(),
   createTestInclude: vi.fn(),
+  transportInfo: vi.fn(),
 }
 
 beforeEach(() => {
@@ -23,6 +27,7 @@ beforeEach(() => {
   vi.mocked(ensureConnected).mockResolvedValue(mockClient as any)
   mockClient.lock.mockResolvedValue({ LOCK_HANDLE: "LH1" })
   mockClient.unLock.mockResolvedValue(undefined)
+  mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "$TMP" })
 })
 
 // ─── run_atc_analysis ─────────────────────────────────────────────────────────

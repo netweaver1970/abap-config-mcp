@@ -7,6 +7,7 @@ import {
   UnitTestSeverity
 } from "abap-adt-api"
 import { ensureConnected } from "../connections"
+import { resolveWorkbenchTransport } from "./write"
 
 export async function handleRunAtcAnalysis(args: {
   url: string
@@ -63,12 +64,25 @@ function formatAlerts(alerts: UnitTestAlert[]): string {
     .join("")
 }
 
-export async function handleRunUnitTests(args: { url: string; connectionId?: string }) {
+// ADT's default runs only RISK LEVEL HARMLESS + DURATION SHORT: a DANGEROUS or
+// MEDIUM test class was reported as "no unit test classes found".
+const ALL_RISKS_AND_DURATIONS = { harmless: true, dangerous: true, critical: true, short: true, medium: true, long: true }
+
+export async function handleRunUnitTests(args: {
+  url: string
+  riskLevels?: Array<"harmless" | "dangerous" | "critical">
+  durations?: Array<"short" | "medium" | "long">
+  connectionId?: string
+}) {
   const client = await ensureConnected(args.connectionId)
-  const classes = await client.unitTestRun(args.url)
+  const flags = { ...ALL_RISKS_AND_DURATIONS }
+  if (args.riskLevels?.length) for (const k of ["harmless", "dangerous", "critical"] as const) flags[k] = args.riskLevels.includes(k)
+  if (args.durations?.length) for (const k of ["short", "medium", "long"] as const) flags[k] = args.durations.includes(k)
+  const classes = await client.unitTestRun(args.url, flags)
 
   if (!classes || classes.length === 0) {
-    return { content: [{ type: "text" as const, text: "No unit test classes found in this object." }] }
+    const scope = Object.entries(flags).filter(([, v]) => v).map(([k]) => k).join(", ")
+    return { content: [{ type: "text" as const, text: `No unit test classes found in this object (ran: ${scope}).` }] }
   }
 
   const lines: string[] = []
@@ -133,9 +147,15 @@ export async function handleRunUnitTests(args: { url: string; connectionId?: str
 export async function handleCreateTestInclude(args: {
   classUrl: string
   transport?: string
+  createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
+  const t = await resolveWorkbenchTransport(
+    client, args.classUrl, undefined, undefined, args, extra?.sessionId,
+    `the test include of ${args.classUrl.split("/").pop()}`, `MCP test include ${args.classUrl.split("/").pop()}`)
+  if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   // The lock is correctly taken on the class object URL — a class test include
   // shares the class's enqueue (it is part of the class object), so the class
@@ -147,12 +167,12 @@ export async function handleCreateTestInclude(args: {
   const lockHandle = lockResult.LOCK_HANDLE
 
   try {
-    await client.createTestInclude(className, lockHandle, args.transport)
+    await client.createTestInclude(className, lockHandle, t.transport)
     await client.unLock(args.classUrl, lockHandle)
     return {
       content: [{
         type: "text" as const,
-        text: `✅ Test include created for ${className}\nYou can now add local test classes to this include.`
+        text: `✅ Test include created for ${className}\n${t.note ? `${t.note}\n` : ""}You can now add local test classes to this include.`
       }]
     }
   } catch (err) {
@@ -184,6 +204,8 @@ export function registerQualityTools(server: McpServer): void {
       description: "Execute ABAP unit tests for an object and return test results with pass/fail status and error details",
       inputSchema: {
         url: z.string().describe("ADT URL of the object containing unit tests"),
+        riskLevels: z.array(z.enum(["harmless", "dangerous", "critical"])).optional().describe("Only run test classes of these risk levels (default: all)"),
+        durations: z.array(z.enum(["short", "medium", "long"])).optional().describe("Only run test classes of these durations (default: all)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -194,10 +216,12 @@ export function registerQualityTools(server: McpServer): void {
     "create_test_include",
     {
       title: "Create Test Include",
-      description: "Create a unit test include (local test class) for an ABAP class. The class must be locked first.",
+      description: "Create a unit test include (local test class) for an ABAP class. The tool locks and unlocks the class itself. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         classUrl: z.string().describe("ADT URL of the class to add a test include to"),
-        transport: z.string().optional().describe("Transport request number"),
+        transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

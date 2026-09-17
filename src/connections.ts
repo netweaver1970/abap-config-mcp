@@ -263,8 +263,20 @@ export function forgetLock(connectionId: string | undefined, objectUrl: string):
  * (editing conflicts, lock errors, plain Errors without an HTTP status)
  * must NOT match — retrying those would just drop session locks for nothing.
  */
+/**
+ * True for errors that are about the request itself — an SQL statement ADT's data
+ * preview could not parse, a table or column that does not exist. ADT answers
+ * these with HTTP 400 too, which used to be read as a degraded session: the
+ * server then forced a reconnect, and a reconnect drops the stateful session and
+ * every object lock it holds. A typo in a query must never release a lock.
+ */
+export function isRequestError(err: unknown): boolean {
+  const msg = String((err as { message?: unknown })?.message ?? "")
+  return /unknown column|is invalid here|is expected|not allowed|literals? across|syntax|cannot find|does not exist|unknown table|not supported|only select|must start with select|invalid (table|field|name)/i.test(msg)
+}
+
 export function isSessionDegradedError(err: unknown): boolean {
-  if (isEditingError(err) || isInvalidLockError(err)) return false
+  if (isEditingError(err) || isInvalidLockError(err) || isRequestError(err)) return false
   const e = err as {
     err?: unknown
     status?: unknown

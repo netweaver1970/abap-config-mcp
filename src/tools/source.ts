@@ -2,9 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { ensureConnected } from "../connections"
 
+/**
+ * Read source; an object URL (no /source/...) returns ADT's metadata XML instead
+ * of code, so retry on <url>/source/main when that happens.
+ */
+export async function readSource(client: Awaited<ReturnType<typeof ensureConnected>>, url: string): Promise<string> {
+  const first = await client.getObjectSource(url)
+  if (!/\/source\//.test(url) && /^\s*<\?xml/.test(String(first ?? ""))) {
+    return client.getObjectSource(`${url.replace(/\/$/, "")}/source/main`)
+  }
+  return first
+}
+
 export async function handleGetAbapObjectLines(args: { url: string; connectionId?: string }) {
   const client = await ensureConnected(args.connectionId)
-  const source = await client.getObjectSource(args.url)
+  const source = await readSource(client, args.url)
   return {
     content: [{ type: "text" as const, text: source ?? `No source found at: ${args.url}` }]
   }
@@ -16,7 +28,7 @@ export async function handleSearchAbapObjectLines(args: {
   connectionId?: string
 }) {
   const client = await ensureConnected(args.connectionId)
-  const source = await client.getObjectSource(args.url)
+  const source = await readSource(client, args.url)
 
   if (!source) return { content: [{ type: "text" as const, text: `No source at: ${args.url}` }] }
 
@@ -42,7 +54,7 @@ export async function handleGetAbapBatchLines(args: { urls: string[]; connection
   const client = await ensureConnected(args.connectionId)
 
   const results = await Promise.allSettled(
-    args.urls.map(async url => ({ url, source: await client.getObjectSource(url) }))
+    args.urls.map(async url => ({ url, source: await readSource(client, url) }))
   )
 
   const parts = results.map(r =>

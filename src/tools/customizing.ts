@@ -14,7 +14,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, forceReconnect, log } from "../connections"
+import { ensureConnected, forceReconnect, isRequestError, log } from "../connections"
 import { formatQueryResult } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import type { ADTClient, QueryResult } from "abap-adt-api"
@@ -41,6 +41,9 @@ export async function runSql(client: ADTClient, sql: string, maxRows = 200): Pro
       return await c.statelessClone.runQuery(sql, maxRows)
     } catch (err) {
       lastErr = err
+      // A bad statement stays bad: retrying would only reconnect, and a reconnect
+      // releases the session's object locks.
+      if (isRequestError(err)) throw err
       if (attempt < 2) { log("DEBUG", `runSql retry ${attempt + 1} after error`, err); await sleep(200) }
     }
   }

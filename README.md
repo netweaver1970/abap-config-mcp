@@ -47,7 +47,7 @@ The AI handles the full workflow autonomously: search → read → write → che
 | **Write** | 5 tools | Lock objects, write source, unlock/discard, create new objects, delete objects |
 | **Activate** | 2 tools | Activate single objects, batch-activate all inactive objects |
 | **Quality** | 3 tools | ATC checks with findings and locations, unit test execution, create test includes |
-| **Transports** | 3 tools | List all transports across all users with objects, create/release/delete/change owner, find which transport an object needs |
+| **Transports** | 3 tools | List transports across all users with their objects (read from E070/E071), create/release/delete/change owner, find which transport an object needs. Every write picks its transport by one rule — see [Transport selection](#transport-selection) |
 | **Data** | 4 tools | Search tables by description keyword, describe table structure, run SELECT queries, read table contents |
 | **Analysis** | 4 tools | Where-used cross-reference, version history, runtime dumps (ST22), inactive objects list |
 | **Text elements** | 2 tools | Read/write selection screen texts, text symbols, and list headings |
@@ -319,6 +319,29 @@ Set **`ABAP_MCP_MAX_TIER`** = `0` (read-only Production server), `1` (also allow
 governed customizing), or `2`/unset (full Dev surface). Tools above the ceiling are
 **not registered at all**, and any *unclassified* tool defaults to Tier 2 — a new tool
 is never silently exposed on a restricted server.
+
+### Transport selection
+
+Every tool that records onto a transport — `create_abap_object`, `write_abap_object_source`,
+`delete_abap_object`, `set_text_elements`, `create_test_include`, `create_package`,
+`customizing_create`, `customizing_apply` — decides by the same rule, in this order:
+
+1. **A transport you pass** is checked (exists, still modifiable, right kind: Workbench for
+   repository objects, Customizing for customizing) and used. It becomes the transport of that
+   piece of work.
+2. **An object SAP already has locked into a request** records there — SAP allows nothing else.
+3. **`createTransport: true`** creates a new request. Nothing else ever creates one.
+4. **The transport this piece of work already uses**, if still open, is used again, and the result
+   says so. Pass another `transport` to change it.
+5. **Existing requests are preferred:** exactly one open request of the right kind is used; with
+   several, the tool lists them and asks which; with none, it asks, offering creation.
+
+A piece of work is `workItem` (any short name — `HPM`, a ticket number). Without one it is the MCP
+session, so two conversations never share a transport by accident. The choices are kept per SAP
+connection in `~/.abap-mcp/transport-memory.json` (override with `ABAP_MCP_TRANSPORT_MEMORY`), so
+they survive server restarts; `manage_transport_requests list` shows which work item each request
+belongs to. Local packages (`$TMP`), delivery class A tables and clients that do not record changes
+need no transport.
 
 ### 5. In-system ABAP: transported, not pushed (`engine_deploy`)
 

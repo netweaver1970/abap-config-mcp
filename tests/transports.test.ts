@@ -7,7 +7,30 @@ import {
 } from "../src/tools/transports"
 import type { TransportRequest } from "abap-adt-api"
 
-vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn() }))
+vi.mock("../src/connections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/connections")>()),
+  ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn(),
+  getConnectionConfig: vi.fn(() => ({ id: "S4", username: "GEERT" })),
+  resolveConnectionId: vi.fn(() => "S4"),
+}))
+
+// SQL answers keyed by a fragment of the statement.
+const sqlAnswers: Array<[RegExp, Array<Record<string, string>>]> = []
+vi.mock("../src/tools/customizing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/tools/customizing")>()
+  return {
+    ...actual,
+    runSql: vi.fn(async (_c: unknown, sql: string) => {
+      const hit = sqlAnswers.find(([re]) => re.test(sql))
+      const rows = hit ? hit[1] : []
+      const columns = rows.length ? Object.keys(rows[0]).map(name => ({ name })) : [{ name: "X" }]
+      return { columns, values: rows }
+    }),
+  }
+})
+import * as os from "os"
+import * as path from "path"
+process.env.ABAP_MCP_TRANSPORT_MEMORY = path.join(os.tmpdir(), `abap-mcp-transports-test-${process.pid}.json`)
 import { ensureConnected } from "../src/connections"
 
 const mockClient = {
@@ -49,30 +72,25 @@ describe("formatRequest", () => {
 // ─── manage_transport_requests: list ─────────────────────────────────────────
 
 describe("manage_transport_requests list", () => {
-  it("lists open transports", async () => {
-    const transport = {
-      "tm:number": "CARX000001", "tm:status": "D", "tm:owner": "BASIS", "tm:desc": "Dev transport",
-      links: [], objects: [], tasks: []
-    } as unknown as TransportRequest
+  beforeEach(() => { sqlAnswers.length = 0 })
 
-    mockClient.userTransports.mockResolvedValue({
-      workbench: [{ modifiable: [transport], released: [] }],
-      customizing: []
-    })
-
-    const result = await handleManageTransportRequests({ action: "list" })
-    expect(result.content[0].text).toContain("CARX000001")
-    expect(result.content[0].text).toContain("Open transports")
+  it("lists the user's open requests from E070, newest first", async () => {
+    sqlAnswers.push([/FROM E070 WHERE STRKORR/, [
+      { TRKORR: "A4HK900202", TRFUNCTION: "W", TRSTATUS: "D", AS4USER: "GEERT", AS4DATE: "20260824", AS4TEXT: "ZBETRM customizing" },
+      { TRKORR: "A4HK900196", TRFUNCTION: "K", TRSTATUS: "D", AS4USER: "GEERT", AS4DATE: "20260821", AS4TEXT: "ZBETRM workbench" },
+    ]])
+    const r = await handleManageTransportRequests({ action: "list" })
+    const text = r.content[0].text
+    expect(text).toContain("Open requests for GEERT (2)")
+    expect(text).toContain("A4HK900202  Customizing")
+    expect(text).toContain("A4HK900196  Workbench")
   })
 
-  it("returns no-transports message when list is empty", async () => {
-    mockClient.userTransports.mockResolvedValue({ workbench: [], customizing: [] })
-    const result = await handleManageTransportRequests({ action: "list" })
-    expect(result.content[0].text).toContain("No open transports")
+  it("says so when the user has no open request", async () => {
+    const r = await handleManageTransportRequests({ action: "list", username: "nobody" })
+    expect(r.content[0].text).toContain("No open transport requests for NOBODY")
   })
 })
-
-// ─── manage_transport_requests: details ──────────────────────────────────────
 
 describe("manage_transport_requests details", () => {
   const detailTransport = {
@@ -222,93 +240,36 @@ describe("manage_transport_requests change_owner", () => {
 // ─── list_all_transports ──────────────────────────────────────────────────────
 
 describe("list_all_transports", () => {
-  const makeTransport = (num: string, owner: string, desc: string, objects = [] as any[]) => ({
-    "tm:number": num, "tm:status": "D", "tm:owner": owner, "tm:desc": desc,
-    "tm:uri": "", links: [], objects, tasks: []
+  beforeEach(() => { sqlAnswers.length = 0 })
+
+  it("groups requests by owner and lists objects, including those in tasks", async () => {
+    sqlAnswers.push([/FROM E070 WHERE STRKORR/, [
+      { TRKORR: "A4HK900202", TRFUNCTION: "W", TRSTATUS: "D", AS4USER: "GEERT", AS4DATE: "20260824", AS4TEXT: "ZBETRM customizing" },
+      { TRKORR: "A4HK900300", TRFUNCTION: "K", TRSTATUS: "D", AS4USER: "OTHER", AS4DATE: "20260901", AS4TEXT: "Other work" },
+    ]])
+    sqlAnswers.push([/FROM E071 WHERE TRKORR IN/, [{ TRKORR: "A4HK900300", PGMID: "R3TR", OBJECT: "PROG", OBJ_NAME: "ZPROG" }]])
+    sqlAnswers.push([/INNER JOIN E071/, [{ STRKORR: "A4HK900202", PGMID: "R3TR", OBJECT: "VDAT", OBJ_NAME: "V_OIB01" }]])
+    const r = await handleListAllTransports({})
+    const text = r.content[0].text
+    expect(text).toContain("── GEERT (1) ──")
+    expect(text).toContain("── OTHER (1) ──")
+    expect(text).toContain("R3TR VDAT V_OIB01")
+    expect(text).toContain("R3TR PROG ZPROG")
   })
 
-  it("aggregates transports across all users", async () => {
-    mockClient.systemUsers.mockResolvedValue([
-      { id: "BASIS", title: "BASIS" },
-      { id: "DEVUSER", title: "Dev User" },
-    ])
-    mockClient.userTransports
-      .mockResolvedValueOnce({
-        workbench: [{ modifiable: [makeTransport("CARX000001", "BASIS", "Basis fix")], released: [] }],
-        customizing: []
-      })
-      .mockResolvedValueOnce({
-        workbench: [{ modifiable: [makeTransport("CARX000002", "DEVUSER", "Dev work")], released: [] }],
-        customizing: []
-      })
-
-    const result = await handleListAllTransports({})
-    const text = result.content[0].text
-    expect(text).toContain("CARX000001")
-    expect(text).toContain("CARX000002")
-    expect(text).toContain("BASIS")
-    expect(text).toContain("DEVUSER")
-    expect(text).toContain("2 total")
+  it("says so when nothing matches", async () => {
+    const r = await handleListAllTransports({ status: "released" })
+    expect(r.content[0].text).toContain("No released transport requests")
   })
 
-  it("shows objects inside each transport", async () => {
-    mockClient.systemUsers.mockResolvedValue([{ id: "BASIS", title: "BASIS" }])
-    mockClient.userTransports.mockResolvedValue({
-      workbench: [{
-        modifiable: [makeTransport("CARX000010", "BASIS", "With objects", [
-          { "tm:pgmid": "R3TR", "tm:type": "PROG", "tm:name": "ZPROG", "tm:dummy_uri": "", "tm:obj_info": "Program" }
-        ])],
-        released: []
-      }],
-      customizing: []
-    })
-
-    const result = await handleListAllTransports({})
-    expect(result.content[0].text).toContain("ZPROG")
-    expect(result.content[0].text).toContain("PROG")
-  })
-
-  it("returns empty message when no transports exist", async () => {
-    mockClient.systemUsers.mockResolvedValue([{ id: "BASIS", title: "BASIS" }])
-    mockClient.userTransports.mockResolvedValue({ workbench: [], customizing: [] })
-
-    const result = await handleListAllTransports({})
-    expect(result.content[0].text).toContain("No modifiable transports found")
-  })
-
-  it("tolerates a failing user query without breaking the result", async () => {
-    mockClient.systemUsers.mockResolvedValue([
-      { id: "BASIS", title: "BASIS" },
-      { id: "BADUSER", title: "Bad User" },
-    ])
-    mockClient.userTransports
-      .mockResolvedValueOnce({
-        workbench: [{ modifiable: [makeTransport("CARX000001", "BASIS", "OK transport")], released: [] }],
-        customizing: []
-      })
-      .mockRejectedValueOnce(new Error("authorization failed"))
-
-    const result = await handleListAllTransports({})
-    expect(result.content[0].text).toContain("CARX000001")
-    expect(result.content[0].text).not.toContain("BADUSER")
-  })
-
-  it("shows released transports when status=released", async () => {
-    mockClient.systemUsers.mockResolvedValue([{ id: "BASIS", title: "BASIS" }])
-    mockClient.userTransports.mockResolvedValue({
-      workbench: [{
-        modifiable: [],
-        released: [makeTransport("CARX000099", "BASIS", "Released transport")]
-      }],
-      customizing: []
-    })
-
-    const result = await handleListAllTransports({ status: "released" })
-    expect(result.content[0].text).toContain("CARX000099")
+  it("can skip the objects", async () => {
+    sqlAnswers.push([/FROM E070 WHERE STRKORR/, [
+      { TRKORR: "A4HK900202", TRFUNCTION: "W", TRSTATUS: "D", AS4USER: "GEERT", AS4DATE: "20260824", AS4TEXT: "ZBETRM customizing" },
+    ]])
+    const r = await handleListAllTransports({ withObjects: false })
+    expect(r.content[0].text).not.toContain("(no objects)")
   })
 })
-
-// ─── get_transport_for_object ─────────────────────────────────────────────────
 
 describe("get_transport_for_object", () => {
   it("returns transport info fields", async () => {

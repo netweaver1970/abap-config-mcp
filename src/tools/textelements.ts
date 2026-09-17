@@ -3,6 +3,7 @@ import { z } from "zod"
 import { ADTClient } from "abap-adt-api"
 import { ensureConnected, dropSessionLocks, isInvalidLockError, isEditingError, editingConflictHint, log } from "../connections"
 import { handleAbapActivate } from "./activate"
+import { resolveWorkbenchTransport } from "./write"
 
 // Text elements are read and written here in ADT's own text format rather than
 // through abap-adt-api's helpers, which get two things wrong against a real
@@ -38,6 +39,15 @@ const SELECTION_TEXT_MAX = 30
 const LISTHEADER_MAX = 71
 const COLUMNHEADER_MAX = 255
 const SYMBOL_MAX = 132
+
+/** The ADT URL of the object whose texts these are (for its transport). */
+export function objectUrlFor(objectType: string, objectName: string): string {
+  const name = encodeURIComponent(objectName.toLowerCase())
+  const t = objectType.toUpperCase()
+  if (t.startsWith("CLAS")) return `/sap/bc/adt/oo/classes/${name}`
+  if (t.startsWith("FUGR")) return `/sap/bc/adt/functions/groups/${name}`
+  return `/sap/bc/adt/programs/programs/${name}`
+}
 
 const mediaType = (cat: TextCategory) => `application/vnd.sap.adt.textelements.${cat}.v1`
 
@@ -186,8 +196,10 @@ export async function handleSetTextElements(args: {
   replace?: boolean
   activate?: boolean
   transport?: string
+  createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}, extra?: { signal?: AbortSignal }) {
+}, extra?: { signal?: AbortSignal; sessionId?: string }) {
   const problems = validateEntries(args.elements, args.category)
   if (problems.length) {
     return { content: [{ type: "text" as const, text: `❌ Nothing written — ${problems.length} problem(s):\n  • ${problems.join("\n  • ")}` }] }
@@ -195,6 +207,12 @@ export async function handleSetTextElements(args: {
 
   const client = await ensureConnected(args.connectionId)
   const textUrl = ADTClient.textElementsUrl(args.objectType, args.objectName)
+
+  // Texts record on the transport of the object they belong to.
+  const t = await resolveWorkbenchTransport(
+    client, objectUrlFor(args.objectType, args.objectName), undefined, undefined, args, extra?.sessionId,
+    `the text elements of ${args.objectName}`, `MCP texts ${args.objectName}`)
+  if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   // If the MCP client abandons the call mid-flight, the lock taken below would
   // otherwise leak server-side until the HTTP timeout. Drop the session to release it.
@@ -231,7 +249,7 @@ export async function handleSetTextElements(args: {
       }
     }
   }
-  const doWrite = (handle: string) => writeCategory(client, textUrl, args.category, target, handle, args.transport)
+  const doWrite = (handle: string) => writeCategory(client, textUrl, args.category, target, handle, t.transport)
 
   let lockHandle = await lockResource()
   try {
@@ -281,7 +299,8 @@ export async function handleSetTextElements(args: {
   return {
     content: [{
       type: "text" as const,
-      text: `✅ ${args.category} text elements ${mode} for ${args.objectName} — ${target.length} in total.\n\n` +
+      text: `✅ ${args.category} text elements ${mode} for ${args.objectName} — ${target.length} in total.\n` +
+        (t.note ? `${t.note}\n` : "") + `\n` +
         (stored ? formatForDisplay(stored, args.category) : "(read-back failed)") +
         `\n\n${activation}`,
     }],
@@ -337,7 +356,9 @@ export function registerTextElementTools(server: McpServer): void {
         remove: z.array(z.string()).optional().describe("Ids to delete from the category"),
         replace: z.boolean().optional().describe("Write exactly `elements` and drop everything else in the category. Default false = merge."),
         activate: z.boolean().optional().describe("Activate the text elements after writing (default true). Activating the program does not activate them."),
-        transport: z.string().optional().describe("Transport request — required for transportable packages"),
+        transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       },
     },

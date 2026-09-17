@@ -1,7 +1,61 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { TransportRequest, TransportTask, TransportObject } from "abap-adt-api"
-import { ensureConnected } from "../connections"
+import { ensureConnected, getConnectionConfig } from "../connections"
+import { runSql, tableRows, col } from "./customizing"
+import { listRemembered } from "./transportSelection"
+import { requestTexts } from "./transportSql"
+import { resolveConnectionId } from "../connections"
+
+// Listings read the CTS tables (E070 / E07T / E071). ADT's transport listing
+// filters by a search configuration and returned nothing on S4 for a user with
+// two open requests, so it is not used for "what is open".
+
+const FN_NAME: Record<string, string> = { K: "Workbench", W: "Customizing", T: "Transport of copies", C: "Relocation", S: "Task", Q: "Customizing task", R: "Repair" }
+const STATUS_NAME: Record<string, string> = { D: "modifiable", L: "modifiable, protected", O: "release started", R: "released", N: "released (with import protection)" }
+
+function day(value: string): string {
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return value
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
+
+interface RequestRow { trkorr: string; fn: string; status: string; owner: string; text: string; date: string }
+
+async function listRequests(connectionId: string | undefined, statuses: string[], owner?: string): Promise<RequestRow[]> {
+  const client = await ensureConnected(connectionId)
+  const st = statuses.map(x => `'${x}'`).join(", ")
+  const ownerFilter = owner ? ` AND AS4USER = '${owner.toUpperCase().replace(/'/g, "''")}'` : ""
+  const rows = tableRows(await runSql(client,
+    `SELECT TRKORR, TRFUNCTION, TRSTATUS, AS4USER, AS4DATE FROM E070 ` +
+    `WHERE STRKORR = '' AND TRSTATUS IN (${st}) AND TRFUNCTION IN ('K', 'W', 'T', 'C')${ownerFilter} ` +
+    `ORDER BY TRKORR DESCENDING`, 500))
+  const texts = await requestTexts(connectionId, rows.map(r => col(r, "TRKORR")))
+  return rows.map(r => ({ trkorr: col(r, "TRKORR"), fn: col(r, "TRFUNCTION"), status: col(r, "TRSTATUS"),
+    owner: col(r, "AS4USER"), date: day(col(r, "AS4DATE")), text: texts.get(col(r, "TRKORR")) ?? "" }))
+}
+
+async function objectsOf(connectionId: string | undefined, trkorrs: string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>()
+  if (!trkorrs.length) return out
+  const client = await ensureConnected(connectionId)
+  for (let i = 0; i < trkorrs.length; i += 8) {
+    const chunk = trkorrs.slice(i, i + 8).map(t => `'${t}'`).join(", ")
+    const direct = tableRows(await runSql(client,
+      `SELECT TRKORR, PGMID, OBJECT, OBJ_NAME FROM E071 WHERE TRKORR IN (${chunk})`, 2000))
+    const viaTasks = tableRows(await runSql(client,
+      `SELECT h~STRKORR, o~PGMID, o~OBJECT, o~OBJ_NAME FROM E070 AS h INNER JOIN E071 AS o ON o~TRKORR = h~TRKORR WHERE h~STRKORR IN (${chunk})`, 2000))
+    for (const r of direct) out.set(col(r, "TRKORR"), [...(out.get(col(r, "TRKORR")) ?? []), `${col(r, "PGMID")} ${col(r, "OBJECT")} ${col(r, "OBJ_NAME")}`])
+    for (const r of viaTasks) out.set(col(r, "STRKORR"), [...(out.get(col(r, "STRKORR")) ?? []), `${col(r, "PGMID")} ${col(r, "OBJECT")} ${col(r, "OBJ_NAME")}`])
+  }
+  for (const [k, v] of out) out.set(k, [...new Set(v)])
+  return out
+}
+
+function workItemsFor(connectionId: string | undefined, trkorr: string): string {
+  const keys = listRemembered(resolveConnectionId(connectionId)).filter(r => r.trkorr === trkorr).map(r => r.key.startsWith("work:") ? r.key.slice(5) : "a session")
+  return keys.length ? `   ← transport for ${[...new Set(keys)].join(", ")}` : ""
+}
 
 export function formatRequest(r: TransportRequest): string {
   return `${r["tm:number"]} | ${r["tm:status"]} | ${r["tm:owner"].padEnd(12)} | ${r["tm:desc"]}`
@@ -59,21 +113,13 @@ export async function handleManageTransportRequests(args: {
 
   switch (args.action) {
     case "list": {
-      const data = await client.userTransports(args.username ?? client.username)
-      const all = [
-        ...data.workbench.flatMap(t => t.modifiable),
-        ...data.customizing.flatMap(t => t.modifiable),
-      ]
-      if (all.length === 0) {
-        return { content: [{ type: "text" as const, text: `No open transports found.` }] }
+      const user = (args.username ?? getConnectionConfig(args.connectionId).username).toUpperCase()
+      const rows = await listRequests(args.connectionId, ["D", "L"], user)
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No open transport requests for ${user}.` }] }
       }
-      const header = `${"Number".padEnd(12)} | S | Owner        | Description\n${"-".repeat(70)}`
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Open transports for ${args.username ?? client.username} (${all.length}):\n${header}\n${all.map(formatRequest).join("\n")}`,
-        }]
-      }
+      const lines = rows.map(r => `  ${r.trkorr}  ${(FN_NAME[r.fn] ?? r.fn).padEnd(11)}  ${r.text}${workItemsFor(args.connectionId, r.trkorr)}`)
+      return { content: [{ type: "text" as const, text: `Open requests for ${user} (${rows.length}), newest first:\n${lines.join("\n")}` }] }
     }
 
     case "details": {
@@ -133,58 +179,27 @@ export async function handleManageTransportRequests(args: {
 
 export async function handleListAllTransports(args: {
   status?: "modifiable" | "released" | "all"
+  owner?: string
+  withObjects?: boolean
   connectionId?: string
 }) {
-  const client = await ensureConnected(args.connectionId)
   const status = args.status ?? "modifiable"
-
-  const users = await client.systemUsers()
-  const results = await Promise.allSettled(
-    users.map(u => client.userTransports(u.id))
-  )
-
-  const sections: string[] = []
-  let totalCount = 0
-
-  for (let i = 0; i < users.length; i++) {
-    const res = results[i]
-    if (res.status === "rejected") continue
-
-    const data = res.value
-    const requests: TransportRequest[] = []
-
-    for (const target of [...data.workbench, ...data.customizing]) {
-      if (status === "modifiable" || status === "all") requests.push(...target.modifiable)
-      if (status === "released" || status === "all") requests.push(...target.released)
-    }
-
-    if (requests.length === 0) continue
-    totalCount += requests.length
-
-    const lines = requests.map(r => {
-      const allObjects = [
-        ...r.objects,
-        ...(r.tasks ?? []).flatMap(t => t.objects),
-      ]
-      const objSummary = allObjects.length > 0
-        ? `\n` + allObjects.map(o => `    ${o["tm:pgmid"].padEnd(6)} ${o["tm:type"].padEnd(8)} ${o["tm:name"]}`).join("\n")
-        : "\n    (no objects)"
-      return `  ${r["tm:number"]} | ${r["tm:status"]} | ${r["tm:desc"]}\n  Owner: ${r["tm:owner"]}${objSummary}`
-    })
-
-    sections.push(`── ${users[i].id} (${requests.length} transport(s)) ──\n${lines.join("\n\n")}`)
+  const statuses = status === "modifiable" ? ["D", "L"] : status === "released" ? ["R", "N", "O"] : ["D", "L", "O", "R", "N"]
+  const rows = await listRequests(args.connectionId, statuses, args.owner)
+  if (rows.length === 0) {
+    return { content: [{ type: "text" as const, text: `No ${status} transport requests${args.owner ? ` for ${args.owner.toUpperCase()}` : ""}.` }] }
   }
-
-  if (totalCount === 0) {
-    return { content: [{ type: "text" as const, text: `No ${status} transports found across ${users.length} users.` }] }
-  }
-
-  return {
-    content: [{
-      type: "text" as const,
-      text: `All ${status} transports — ${totalCount} total across ${users.length} users:\n\n` + sections.join("\n\n"),
-    }]
-  }
+  const objects = args.withObjects === false ? new Map<string, string[]>() : await objectsOf(args.connectionId, rows.slice(0, 100).map(r => r.trkorr))
+  const byOwner = new Map<string, RequestRow[]>()
+  for (const r of rows) byOwner.set(r.owner, [...(byOwner.get(r.owner) ?? []), r])
+  const sections = [...byOwner.entries()].map(([owner, reqs]) =>
+    `── ${owner} (${reqs.length}) ──\n` + reqs.map(r => {
+      const objs = objects.get(r.trkorr)
+      const objText = args.withObjects === false ? "" : objs?.length ? "\n" + objs.slice(0, 50).map(o => `      ${o}`).join("\n") + (objs.length > 50 ? `\n      … ${objs.length - 50} more` : "") : "\n      (no objects)"
+      return `  ${r.trkorr}  ${(FN_NAME[r.fn] ?? r.fn).padEnd(11)}  ${STATUS_NAME[r.status] ?? r.status}  ${r.date}  ${r.text}${workItemsFor(args.connectionId, r.trkorr)}${objText}`
+    }).join("\n"))
+  const cut = rows.length > 100 && args.withObjects !== false ? `\n\n(Objects shown for the newest 100 requests.)` : ""
+  return { content: [{ type: "text" as const, text: `${rows.length} ${status} request(s), newest first:\n\n${sections.join("\n\n")}${cut}` }] }
 }
 
 export async function handleGetTransportForObject(args: {
@@ -242,12 +257,13 @@ export function registerTransportTools(server: McpServer): void {
     {
       title: "List All Transports",
       description:
-        "List open (or all) transport requests across ALL users in the SAP system. " +
-        "Shows each transport's owner, description, status, and every object contained in it. " +
-        "Useful for a pre-upgrade audit of what is in flight across the landscape.",
+        "List transport requests across all users, read from the CTS tables: owner, kind, status, date, description, " +
+        "the piece of work each is remembered for, and the objects in it (including its tasks' objects).",
       inputSchema: {
         status: z.enum(["modifiable", "released", "all"]).optional()
           .describe("Which transports to show: modifiable (default, open/unreleased), released, or all"),
+        owner: z.string().optional().describe("Only this user's requests"),
+        withObjects: z.boolean().optional().describe("List the objects in each request (default true; newest 100 requests)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },

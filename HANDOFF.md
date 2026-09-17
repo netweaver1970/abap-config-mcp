@@ -1,5 +1,41 @@
 # Customizing Engine — Handoff & Findings
 
+> ## ⏩ LATEST (2026-09-18) — v1.10.0: predictable transports, and a tooling review
+> **Transport selection** is one rule for every recording write (README → *Transport selection*):
+> given transport (checked) → object already locked into a request → `createTransport` → the transport
+> already used for this piece of work (`workItem`, else the MCP session; persisted per connection in
+> `~/.abap-mcp/transport-memory.json`) → exactly one open request → ask when several → ask/offer
+> creation when none. `transportSelection.ts` holds the rule; `transportSql.ts` reads E070/E07T.
+> Replaces `transportGovernance.ts`, whose process-global "last transport" was shared by every
+> session and lost on restart, and whose customizing path never reused anything.
+>
+> **Fixed in the review (each seen on S4 this week):**
+> - ADT's transport listing returned nothing for a user with 31 open requests → listings read E070/E071.
+>   ADT's freestyle SQL has no `LEFT OUTER JOIN` and fails on a line over 255 characters (keep IN lists short).
+> - An SQL mistake (HTTP 400) was taken for a degraded session → forced reconnect, which drops the
+>   stateful session and **every object lock** → `isRequestError` excludes them; `runSql` no longer retries them.
+> - Activation reported success while objects stayed inactive → both activate tools now list what is left.
+> - `abap_activate_multiple` failed with "currently editing" on this server's own locks → released first.
+> - `run_unit_tests` ran only HARMLESS/SHORT classes by default → all levels and durations.
+> - `get_abap_object_lines` on an object URL returned metadata XML → retries `/source/main`.
+> - `write_abap_object_source` could report success for a write SAP did not apply → reads back and warns.
+> - `unlock_abap_object` required a handle the caller rarely still has → defaults to the held lock.
+>
+> **Found, not fixed (worth a decision):**
+> - One stateful ADT session per SAP connection is shared by every MCP session: `force_relogin` or a
+>   reconnect in one conversation releases the locks of all others.
+> - Session recovery retries *mutating* tools after a reconnect; a write that failed after SAP applied it
+>   could be re-sent.
+> - `syntax_check` on a function module or include needs the right `mainUrl` and reports false errors
+>   otherwise; it is not derived.
+> - `customizing_create` direct (`recordTableKeys`) writes report "0 E071K entries" — the writer does not
+>   count keys on that path (the keys are recorded; see E071K).
+> - `describe_database_table` on a structure answers "Error while processing authorization checks".
+> - Parameter names differ between tools for the same thing (`name`/`objectName`/`table`, `url`/`objectUrl`),
+>   and a wrong name returns a raw validation dump.
+> - A running MCP client keeps the tool schemas it loaded at start: new parameters are invisible until the
+>   client reconnects.
+
 > ## ⏩ ALSO 2026-09-17 (later): text elements, and tables without a view
 > **`set_text_elements` rewritten (it could not write text symbols at all).** Verified on S4 against a
 > throwaway program, class and function group:

@@ -1,18 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { handleBrowsePackage, handleCreatePackage } from "../src/tools/packages"
 
-vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn() }))
+vi.mock("../src/connections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/connections")>()),
+  ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn(),
+}))
+vi.mock("../src/tools/transportSql", () => ({
+  lookupRequest: vi.fn(async (_conn: string | undefined, trkorr: string) => ({ trkorr, fn: "K", status: "D", owner: "DEV", text: "Test request" })),
+  listOpenRequests: vi.fn(async () => []),
+}))
+import * as os from "os"
+import * as path from "path"
+process.env.ABAP_MCP_TRANSPORT_MEMORY = path.join(os.tmpdir(), `abap-mcp-pkg-test-${process.pid}.json`)
 import { ensureConnected } from "../src/connections"
 
 const mockClient = {
   nodeContents: vi.fn(),
   createObject: vi.fn(),
+  transportInfo: vi.fn(),
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(ensureConnected).mockResolvedValue(mockClient as any)
   mockClient.createObject.mockResolvedValue(undefined)
+  mockClient.transportInfo.mockResolvedValue({ RECORDING: "X", DEVCLASS: "ZCAR_MM", TRANSPORTS: [] })
 })
 
 // ─── browse_package ───────────────────────────────────────────────────────────
@@ -92,7 +104,14 @@ describe("browse_package", () => {
 // ─── create_package ───────────────────────────────────────────────────────────
 
 describe("create_package", () => {
+  it("asks for a transport when the package records and none is open", async () => {
+    const result = await handleCreatePackage({ name: "ZCAR_MM_NEW", description: "New MM package", parentPackage: "ZCAR_MM" })
+    expect(mockClient.createObject).not.toHaveBeenCalled()
+    expect(result.content[0].text).toContain("createTransport: true")
+  })
+
   it("creates a package with required fields", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "$TMP" })
     const result = await handleCreatePackage({
       name: "ZCAR_MM_NEW",
       description: "New MM package",

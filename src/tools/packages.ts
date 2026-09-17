@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { NodeStructure } from "abap-adt-api"
 import { ensureConnected } from "../connections"
+import { resolveWorkbenchTransport } from "./write"
 
 function formatNodeStructure(pkg: string, structure: NodeStructure): string {
   const { nodes } = structure
@@ -74,10 +75,17 @@ export async function handleCreatePackage(args: {
   swComponent?: string
   transportLayer?: string
   transport?: string
+  createTransport?: boolean
+  workItem?: string
   connectionId?: string
-}) {
+}, extra?: { sessionId?: string }) {
   const client = await ensureConnected(args.connectionId)
   const parentPath = `/sap/bc/adt/packages/${args.parentPackage}`
+
+  const t = await resolveWorkbenchTransport(
+    client, `/sap/bc/adt/packages/${encodeURIComponent(args.name.toLowerCase())}`, args.name, "I", args, extra?.sessionId,
+    `creating package ${args.name}`, `MCP create package ${args.name}`)
+  if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   await client.createObject({
     objtype: "DEVC/K",
@@ -85,7 +93,7 @@ export async function handleCreatePackage(args: {
     parentName: args.parentPackage,
     description: args.description,
     parentPath,
-    transport: args.transport,
+    transport: t.transport,
     // Package-specific fields
     swcomp: args.swComponent ?? "",
     transportLayer: args.transportLayer ?? "",
@@ -101,7 +109,8 @@ export async function handleCreatePackage(args: {
         `Type:         ${args.packageType ?? "development"}\n` +
         (args.swComponent ? `SW component: ${args.swComponent}\n` : "") +
         (args.transportLayer ? `Transp. layer:${args.transportLayer}\n` : "") +
-        (args.transport ? `Transport:    ${args.transport}\n` : "") +
+        (t.transport ? `Transport:    ${t.transport}\n` : "") +
+        (t.note ? `${t.note}\n` : "") +
         `\nUse create_abap_object with packageName "${args.name}" to add objects to it.`
     }]
   }
@@ -144,7 +153,9 @@ export function registerPackageTools(server: McpServer): void {
         transportLayer: z.string().optional()
           .describe("Transport layer (e.g. Z, SAP). Controls which transport route is used."),
         transport: z.string().optional()
-          .describe("Transport request number — required when the parent package is transportable"),
+          .describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
+        workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
+        createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

@@ -23,6 +23,14 @@ vi.mock("../src/connections", async (importOriginal) => {
 })
 import { ensureConnected, trackLock, forgetLock, dropSessionLocks } from "../src/connections"
 
+vi.mock("../src/tools/transportSql", () => ({
+  lookupRequest: vi.fn(async (_conn: string | undefined, trkorr: string) => ({ trkorr, fn: "K", status: "D", owner: "DEV", text: "Test request" })),
+  listOpenRequests: vi.fn(async () => []),
+}))
+import * as os from "os"
+import * as path from "path"
+process.env.ABAP_MCP_TRANSPORT_MEMORY = path.join(os.tmpdir(), `abap-mcp-write-test-${process.pid}.json`)
+
 const mockClient = {
   lock: vi.fn(),
   unLock: vi.fn(),
@@ -83,6 +91,7 @@ describe("write_abap_object_source", () => {
   })
 
   it("passes transport number through", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "X", DEVCLASS: "ZDEV", TRANSPORTS: [] })
     await handleWriteAbapObjectSource({
       url: "/sap/bc/adt/programs/ZPROG",
       source: "REPORT zprog.",
@@ -132,6 +141,7 @@ describe("unlock_abap_object", () => {
 
 describe("create_abap_object", () => {
   it("normalises the bare object-type prefix to the full creatable typeId", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "X", DEVCLASS: "ZDEV", TRANSPORTS: [] })
     const result = await handleCreateAbapObject({
       objectType: "PROG", // bare prefix → must be normalised to PROG/P
       name: "ZPROG_NEW",
