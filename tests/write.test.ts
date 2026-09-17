@@ -220,3 +220,52 @@ describe("delete_abap_object", () => {
     expect(forgetLock).toHaveBeenCalledWith(undefined, "/url")
   })
 })
+
+// ─── empty RECORDING on a real package ───────────────────────────────────────
+//
+// ADT answered RECORDING = '' for a class in a transportable package (S4,
+// 2026-09-18). Treating that as "local, no transport" made ADT fall back to the
+// user's default request, which SAP then refused with "Object LIMU CPRI ... is
+// already locked in request ...". Only a package that really is local is
+// allowed to skip the transport.
+describe("transport when ADT reports no recording", () => {
+  it("still records a real package on the request the object is locked in", async () => {
+    mockClient.transportInfo.mockResolvedValue({
+      RECORDING: "", DEVCLASS: "ZBETRM", TRANSPORTS: [],
+      LOCKS: { HEADER: { TRKORR: "A4HK900196" }, TASKS: [{ TRKORR: "A4HK900197", AS4USER: "DEV" }] },
+    })
+    await handleWriteAbapObjectSource({ url: "/sap/bc/adt/oo/classes/zcl_x", source: "CLASS zcl_x DEFINITION." })
+    expect(mockClient.setObjectSource).toHaveBeenCalledWith(
+      "/sap/bc/adt/oo/classes/zcl_x/source/main", "CLASS zcl_x DEFINITION.", "LOCK_ABC123", "A4HK900196")
+  })
+
+  it("passes the request, not a task of it, when a task is named", async () => {
+    mockClient.transportInfo.mockResolvedValue({
+      RECORDING: "X", DEVCLASS: "ZBETRM", TRANSPORTS: [],
+      LOCKS: { HEADER: { TRKORR: "A4HK900196" }, TASKS: [{ TRKORR: "A4HK900197", AS4USER: "DEV" }] },
+    })
+    await handleWriteAbapObjectSource({
+      url: "/sap/bc/adt/oo/classes/zcl_x", source: "CLASS zcl_x DEFINITION.", transport: "A4HK900197" })
+    expect(mockClient.setObjectSource).toHaveBeenCalledWith(
+      "/sap/bc/adt/oo/classes/zcl_x/source/main", "CLASS zcl_x DEFINITION.", "LOCK_ABC123", "A4HK900196")
+  })
+
+  it("skips the transport for a package that really is local", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "$TMP" })
+    await handleWriteAbapObjectSource({ url: "/sap/bc/adt/programs/ZTMP", source: "REPORT ztmp." })
+    expect(mockClient.setObjectSource).toHaveBeenCalledWith(
+      "/sap/bc/adt/programs/ZTMP/source/main", "REPORT ztmp.", "LOCK_ABC123", undefined)
+  })
+
+  it("creates on the request that was named, not on a generated one", async () => {
+    // With RECORDING = '' treated as local, createObject was called without a
+    // request and ADT answered by generating one ("Generated Request for Change
+    // Recording"), scattering new objects over requests nobody asked for.
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "ZBETRM", TRANSPORTS: [] })
+    await handleCreateAbapObject({
+      objectType: "CLAS", name: "ZCL_X", description: "x",
+      packageName: "ZBETRM", transport: "A4HK900196" })
+    const corrNr = mockClient.createObject.mock.calls[0][6]
+    expect(corrNr).toBe("A4HK900196")
+  })
+})

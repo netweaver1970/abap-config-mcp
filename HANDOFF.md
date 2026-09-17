@@ -243,6 +243,32 @@ SICF: node `/sap/bc/zmcp_cust`, handler `ZCL_MCP_CUST_ENGINE`, must be **active*
 
 ---
 
+## Trap: ADT can report a transportable package as local
+
+On S4 (18 Sept 2026) `transportInfo` answered `RECORDING = ''` for a class in
+package `ZBETRM`, a transportable package. The old rule took an empty
+`RECORDING` as "local package, no transport needed" and passed no request on to
+ADT. SAP then fell back to the user's **default request** (`E070USE`), which is
+not the request the object is locked in, and refused the write:
+
+    Object LIMU CPRI ZCL_BETRM_VCF_54B_TEST is already locked in request A4HK900196 of user GEERT
+
+The same empty `RECORDING` on `create_abap_object` made ADT generate a request
+of its own — the stray "Generated Request for Change Recording" entries on that
+system. Two objects each ended up on a request nobody asked for.
+
+The rule now skips the transport only for a package that really is local
+(`$…` or none). Anything else goes through the normal selection, and a request
+the caller names is passed on. Regression tests: `tests/write.test.ts`,
+"transport when ADT reports no recording".
+
+**The number ADT accepts is the request, never one of its tasks.** Given a task
+of the right request, SAP answers with the same "already locked in request …"
+message. `lookupRequest` resolving a task to its request is therefore right, and
+`selectTransport` passes the request on.
+
+---
+
 ## ✅ Proven WORKING end-to-end
 - Bootstrap deploy/activate with **update-in-place** (must update if class exists, not just `create`).
 - `ping` (version handshake), `selftest` (dynamic typing, sample read, DDIC-aware E071K TABKEY build —

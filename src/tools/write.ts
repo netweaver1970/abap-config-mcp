@@ -44,9 +44,15 @@ export async function resolveWorkbenchTransport(
     return { transport: args.transport, note: args.transport ? `Transport ${args.transport} (not checked: ${String((err as Error)?.message ?? err)})` : undefined }
   }
 
-  // Local / non-transportable package ($TMP etc.) — no transport, whatever was passed.
-  if (!info.RECORDING || info.RECORDING.trim() === "") {
-    return { note: `No transport — local package ${info.DEVCLASS || "$TMP"}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
+  // Local / non-transportable package ($TMP etc.) — no transport, whatever was
+  // passed. Only a package that really is local: ADT has answered with an empty
+  // RECORDING for a transportable package as well (S4, class source, 2026-09-18),
+  // and dropping the transport there leaves SAP to pick the user's default
+  // request, which then collides with the request the object is already locked
+  // in ("Object LIMU CPRI ... is already locked in request ...").
+  const pkg = (info.DEVCLASS || devClass || "").trim()
+  if ((!info.RECORDING || info.RECORDING.trim() === "") && (pkg === "" || pkg.startsWith("$"))) {
+    return { note: `No transport — local package ${pkg || "$TMP"}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
   }
 
   let candidates: TransportCandidate[] = (info.TRANSPORTS ?? []).map(h => ({ trkorr: h.TRKORR, text: h.AS4TEXT, owner: h.AS4USER }))
@@ -54,14 +60,30 @@ export async function resolveWorkbenchTransport(
     candidates = await listOpenRequests(args.connectionId, "K", getConnectionConfig(args.connectionId).username)
   }
 
+  // An object SAP already ties to a request is recorded through one of its
+  // tasks; the number ADT accepts is the REQUEST, and a task of it is refused
+  // with "already locked in request ...".
+  const lockedRequest = info.LOCKS?.HEADER?.TRKORR || undefined
+
+  // A transport named by the caller that is this same request (or one of its
+  // tasks) is not a different choice: SAP's own assignment stands.
+  let supplied = args.transport
+  if (supplied && lockedRequest) {
+    const s = supplied.toUpperCase()
+    const sameRequest = s === lockedRequest
+      || (info.LOCKS?.TASKS ?? []).some(t => t.TRKORR === s)
+      || (await lookupRequest(args.connectionId, s))?.trkorr === lockedRequest
+    if (sameRequest) supplied = undefined
+  }
+
   const sel = await selectTransport({
     connectionId: resolveConnectionId(args.connectionId),
     fn: "K",
     what,
-    supplied: args.transport,
+    supplied,
     workItem: args.workItem,
     sessionId,
-    forced: info.LOCKS?.HEADER?.TRKORR || undefined,
+    forced: lockedRequest,
     candidates,
     lookup: trkorr => lookupRequest(args.connectionId, trkorr),
     create: args.createTransport
@@ -119,6 +141,7 @@ export async function handleWriteAbapObjectSource(args: {
       trackLock(args.connectionId, objectUrl, lockHandle)
     }
 
+    log("INFO", `setObjectSource ${sourceUrl} corrNr=${t.transport ?? "(none)"} note=${t.note ?? ""}`)
     await client.setObjectSource(sourceUrl, args.source, lockHandle, t.transport)
 
     // Read it back. ADT has accepted writes it did not apply (a function group's

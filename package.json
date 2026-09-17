@@ -1,6 +1,6 @@
 {
   "name": "abap-config-mcp",
-  "version": "1.12.0",
+  "version": "1.12.1",
   "description": "Standalone MCP server for SAP ABAP development AND customizing (IMG/SPRO) via the ADT API - works with Claude Code, Cursor, and any MCP-compatible AI client",
   "main": "dist/index.js",
   "bin": {
