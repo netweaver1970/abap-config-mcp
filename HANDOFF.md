@@ -284,6 +284,24 @@ tables it left out rather than hiding it. Engine 0.9.29.
 
 ---
 
+## Trap: the view runtime accepts a delete and keeps the row
+
+The same `VCM_T133K`, action `DEL` through `VIEW_MAINTENANCE_SINGLE_ENTRY`:
+return code 0, keys recorded, commit — and both rows still in `T133K`. The
+engine believed the return code and reported "Deleted 2 row(s)", twice, on
+different days. Why the runtime skips the save for this cluster member was not
+found.
+
+`write_via_view` now asks the base table instead: after the commit it deletes
+every planned row by key from the base table. Where the runtime did its job
+that removes nothing; where it did not, it removes the survivor and the result
+says so ("the view runtime accepted the delete but N row(s) were still in …").
+The transport keys were recorded before the commit either way. Text-table rows
+are not chased, only named. Engine 0.9.30 (deployed as 0.9.29 label until the
+server restarts, since the version string lives in the TS).
+
+---
+
 ## ✅ Proven WORKING end-to-end
 - Bootstrap deploy/activate with **update-in-place** (must update if class exists, not just `create`).
 - `ping` (version handshake), `selftest` (dynamic typing, sample read, DDIC-aware E071K TABKEY build —

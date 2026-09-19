@@ -659,6 +659,30 @@ FORM write_via_view
 
   COMMIT WORK AND WAIT.
 
+  " The view runtime can accept a DEL, return 0, and leave the row where it
+  " was: VCM_T133K (a cluster member joining T133K, T133S and T133T) did exactly
+  " that twice, and the engine reported "Deleted 2 row(s)" both times. So the
+  " base table is asked, not the runtime: a key-wise DELETE of every planned row
+  " removes nothing when the runtime did its job (sy-subrc 4) and removes the
+  " survivor when it did not. The transport keys were recorded above either
+  " way, so the request still carries the deletion. Only the base table is
+  " touched; a text-table row the runtime also left behind is reported, not
+  " chased.
+  IF lv_is_del = abap_true.
+    DATA lv_survived TYPE i.
+    LOOP AT <plan> ASSIGNING <row>.
+      DELETE (is_params-table_name) FROM <row>.
+      IF sy-subrc = 0.
+        lv_survived = lv_survived + sy-dbcnt.
+      ENDIF.
+    ENDLOOP.
+    IF lv_survived > 0.
+      COMMIT WORK AND WAIT.
+      APPEND |The view runtime accepted the delete but { lv_survived } row(s) were still in { to_upper( is_params-table_name ) } after its commit; they were deleted from the base table directly. Check any text table of { lv_view } for rows left behind.|
+        TO cs_result-messages.
+    ENDIF.
+  ENDIF.
+
   cs_result-status = 'ok'.
   DATA(lv_verb) = COND string( WHEN lv_is_del = abap_true THEN 'Deleted' ELSE 'Wrote' ).
 
