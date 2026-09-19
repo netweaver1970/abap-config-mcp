@@ -68,6 +68,22 @@ function formatAlerts(alerts: UnitTestAlert[]): string {
 // MEDIUM test class was reported as "no unit test classes found".
 const ALL_RISKS_AND_DURATIONS = { harmless: true, dangerous: true, critical: true, short: true, medium: true, long: true }
 
+/**
+ * Run a class that implements IF_OO_ADT_CLASSRUN — ADT's "Run as ABAP
+ * Application (Console)" — and return what it wrote to OUT. The class decides
+ * what happens: it can post documents and commit, so this is a tier-2 tool and
+ * is never retried automatically after a lost session.
+ */
+export async function handleRunClass(args: { className: string; connectionId?: string }) {
+  const client = await ensureConnected(args.connectionId)
+  const name = args.className.trim().toUpperCase()
+  const output = await client.runClass(name)
+  const text = String(output ?? "").trim()
+  return {
+    content: [{ type: "text" as const, text: `▶ ${name} (IF_OO_ADT_CLASSRUN)\n\n${text || "(no output)"}` }],
+  }
+}
+
 export async function handleRunUnitTests(args: {
   url: string
   riskLevels?: Array<"harmless" | "dangerous" | "critical">
@@ -210,6 +226,19 @@ export function registerQualityTools(server: McpServer): void {
       }
     },
     handleRunUnitTests
+  )
+
+  server.registerTool(
+    "abap_run_class",
+    {
+      title: "Run ABAP Class (Console)",
+      description: "Run a class that implements IF_OO_ADT_CLASSRUN (ADT's 'Run as ABAP Application (Console)') and return what its MAIN method wrote to OUT. The class decides what happens — it can post documents and commit — so read it before running it. Never retried automatically after a lost session.",
+      inputSchema: {
+        className: z.string().describe("Class name, e.g. ZCL_MY_RUNNER. Must implement IF_OO_ADT_CLASSRUN and be active."),
+        connectionId: z.string().optional().describe("SAP system connection ID")
+      }
+    },
+    handleRunClass
   )
 
   server.registerTool(

@@ -51,7 +51,7 @@ export const TOOL_TIERS: Record<string, RiskTier> = {
   create_abap_object: 2, write_abap_object_source: 2, delete_abap_object: 2,
   abap_activate: 2, abap_activate_multiple: 2, create_package: 2,
   create_test_include: 2, set_text_elements: 2,
-  lock_abap_object: 2, unlock_abap_object: 2, run_unit_tests: 2,
+  lock_abap_object: 2, unlock_abap_object: 2, run_unit_tests: 2, abap_run_class: 2,
   customizing_engine_bootstrap: 2, customizing_engine_cleanup: 2, engine_deploy: 2,
   abap_debug_session: 2, abap_debug_set_breakpoint: 2, abap_debug_delete_breakpoint: 2,
   abap_debug_set_variable: 2, abap_debug_step: 2, abap_debug_stack: 2,
