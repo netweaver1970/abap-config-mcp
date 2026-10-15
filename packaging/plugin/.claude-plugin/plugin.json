@@ -1,0 +1,9 @@
+{
+  "name": "abap-config",
+  "version": "{{VERSION}}",
+  "description": "SAP ABAP development and SPRO/IMG customizing from Claude Code: the abap-config-mcp server (stdio, 58 tools) plus the sap-abap skill that tells Claude how to use it safely.",
+  "author": { "name": "Geert Steyaert" },
+  "repository": "https://github.com/netweaver1970/abap-config-mcp",
+  "license": "MIT",
+  "keywords": ["sap", "abap", "adt", "customizing", "spro", "mcp"]
+}

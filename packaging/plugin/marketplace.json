@@ -1,0 +1,13 @@
+{
+  "name": "abap-config",
+  "owner": { "name": "Geert Steyaert" },
+  "metadata": { "description": "SAP ABAP & customizing tools for Claude Code" },
+  "plugins": [
+    {
+      "name": "abap-config",
+      "source": "./plugins/abap-config",
+      "description": "SAP ABAP development and SPRO/IMG customizing (abap-config-mcp server + sap-abap skill).",
+      "version": "{{VERSION}}"
+    }
+  ]
+}

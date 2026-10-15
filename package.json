@@ -4,7 +4,8 @@
   "description": "Standalone MCP server for SAP ABAP development AND customizing (IMG/SPRO) via the ADT API - works with Claude Code, Cursor, and any MCP-compatible AI client",
   "main": "dist/index.js",
   "bin": {
-    "abap-config-mcp": "dist/index.js"
+    "abap-config-mcp": "dist/index.js",
+    "abap-config-mcp-stdio": "dist/stdio.js"
   },
   "author": "Geert Steyaert",
   "repository": {
@@ -24,6 +25,7 @@
   ],
   "scripts": {
     "build": "node esbuild.config.js",
+    "package": "npm run build && node scripts/package.js",
     "start": "node dist/index.js",
     "dev": "node --require ts-node/register src/index.ts",
     "test-connection": "node dist/test-connection.js",

@@ -1,0 +1,122 @@
+{
+  "manifest_version": "0.3",
+  "name": "abap-config-mcp",
+  "display_name": "SAP ABAP & Customizing",
+  "version": "{{VERSION}}",
+  "description": "ABAP development over ADT and SPRO/IMG customizing with governed transports, for SAP NetWeaver and S/4HANA.",
+  "long_description": "Connects Claude to your SAP system through the ABAP Development Tools (ADT) REST API. Search, read, write, activate, ATC, unit tests, debugging, transports, where-used, ST22 dumps and table queries — plus an in-system customizing engine that drives the SM30/SM34 maintenance runtime, so configuration changes get FK checks, change documents and transport recording like a manual SPRO change. Every action runs as the SAP user you configure; intended for DEV and UAT, read-only on Production (set Max risk tier to 0).",
+  "author": {
+    "name": "Geert Steyaert",
+    "url": "https://github.com/netweaver1970"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/netweaver1970/abap-config-mcp"
+  },
+  "homepage": "https://github.com/netweaver1970/abap-config-mcp",
+  "license": "MIT",
+  "keywords": [
+    "sap",
+    "abap",
+    "adt",
+    "s4hana",
+    "customizing",
+    "spro",
+    "transport"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/dist/stdio.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/dist/stdio.js"
+      ],
+      "env": {
+        "ABAP_MCP_CONFIG": "${user_config.config_file}",
+        "SAP_ID": "${user_config.sap_id}",
+        "SAP_URL": "${user_config.sap_url}",
+        "SAP_CLIENT": "${user_config.sap_client}",
+        "SAP_USER": "${user_config.sap_user}",
+        "SAP_PASSWORD": "${user_config.sap_password}",
+        "SAP_LANGUAGE": "${user_config.sap_language}",
+        "SAP_ALLOW_SELF_SIGNED": "${user_config.allow_self_signed}",
+        "ABAP_MCP_MAX_TIER": "${user_config.max_tier}"
+      }
+    }
+  },
+  "user_config": {
+    "sap_url": {
+      "type": "string",
+      "title": "SAP URL",
+      "description": "ADT base URL, e.g. https://sapdev.example.com:44300 (leave empty when using a connections.json file)",
+      "required": false
+    },
+    "sap_client": {
+      "type": "string",
+      "title": "Client",
+      "description": "SAP client (Mandant), e.g. 100",
+      "required": false
+    },
+    "sap_user": {
+      "type": "string",
+      "title": "SAP user",
+      "description": "SAP logon user for this system",
+      "required": false
+    },
+    "sap_password": {
+      "type": "string",
+      "title": "SAP password",
+      "description": "Stored in the OS keychain",
+      "sensitive": true,
+      "required": false
+    },
+    "sap_id": {
+      "type": "string",
+      "title": "System id",
+      "description": "Short name Claude uses for this system (connectionId)",
+      "default": "DEV",
+      "required": false
+    },
+    "sap_language": {
+      "type": "string",
+      "title": "Logon language",
+      "description": "Logon language, e.g. EN",
+      "default": "EN",
+      "required": false
+    },
+    "allow_self_signed": {
+      "type": "boolean",
+      "title": "Accept self-signed TLS certificates",
+      "description": "Common on SAP dev systems",
+      "default": false,
+      "required": false
+    },
+    "config_file": {
+      "type": "file",
+      "title": "connections.json (several systems)",
+      "description": "Optional. A connections.json with one or more systems; when set, the single-system fields above are ignored.",
+      "required": false
+    },
+    "max_tier": {
+      "type": "number",
+      "title": "Max risk tier",
+      "description": "0 = read-only (Production), 1 = + governed customizing writes, 2 = everything (Development)",
+      "default": 2,
+      "min": 0,
+      "max": 2,
+      "required": false
+    }
+  },
+  "tools": [],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

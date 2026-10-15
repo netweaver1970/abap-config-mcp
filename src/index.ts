@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 import * as http from "http"
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
-import { registerAllTools } from "./tools/index"
-import { installParamGuard } from "./tools/paramGuard"
+import { createMcpServer } from "./server"
 import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
 import { version as SERVER_VERSION } from "../package.json"
@@ -77,15 +75,6 @@ function describeRequest(body: unknown): string {
     return `tool:${params?.["name"] ?? "?"}`
   }
   return String(method ?? "unknown")
-}
-
-// ─── MCP server factory ────────────────────────────────────────────────────
-
-function createMcpServer(): McpServer {
-  const server = new McpServer({ name: "abap-config-mcp", version: SERVER_VERSION })
-  installParamGuard(server)
-  registerAllTools(server)
-  return server
 }
 
 // ─── HTTP server ───────────────────────────────────────────────────────────

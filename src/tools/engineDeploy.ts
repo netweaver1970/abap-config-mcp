@@ -13,6 +13,7 @@
  */
 import * as fs from "fs"
 import * as path from "path"
+import * as os from "os"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { ensureConnected, log } from "../connections"
@@ -64,12 +65,19 @@ const keyOf = (connId?: string) => connId ?? "__default__"
 
 // ── config persistence (injectable IO for tests) ───────────────────────────────
 export function configPath(): string {
-  return process.env.ABAP_DEPLOY_CONFIG ?? path.resolve(process.cwd(), "engine-deploy.json")
+  if (process.env.ABAP_DEPLOY_CONFIG) return process.env.ABAP_DEPLOY_CONFIG
+  // Run from the repo: keep the file there. Run from a plugin/extension bundle
+  // (cwd is not ours): keep it next to the user's connections.json.
+  const local = path.resolve(process.cwd(), "engine-deploy.json")
+  return fs.existsSync(local) ? local : path.join(os.homedir(), ".abap-mcp", "engine-deploy.json")
 }
 type Reader = (p: string) => string
 type Writer = (p: string, c: string) => void
 const defaultRead: Reader = p => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "")
-const defaultWrite: Writer = (p, c) => fs.writeFileSync(p, c)
+const defaultWrite: Writer = (p, c) => {
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, c)
+}
 
 export function loadConfig(read: Reader = defaultRead): DeployConfig {
   try {

@@ -27,8 +27,42 @@ export interface Config {
   server?: ServerConfig
 }
 
+/** An env value, or undefined when blank or an unfilled `${user_config.x}` placeholder. */
+function env(name: string): string | undefined {
+  const v = process.env[name]?.trim()
+  return v && !v.startsWith("${") ? v : undefined
+}
+
+/**
+ * A single connection taken from SAP_* environment variables — how the Claude
+ * Desktop extension passes the system entered in its install form. Used only
+ * when no ABAP_MCP_CONFIG file is given.
+ */
+export function connectionFromEnv(): ConnectionConfig | null {
+  const url = env("SAP_URL")
+  if (!url) return null
+  const username = env("SAP_USER")
+  const password = env("SAP_PASSWORD")
+  if (!username || !password) {
+    console.error("SAP_URL is set but SAP_USER / SAP_PASSWORD are missing.")
+    process.exit(1)
+  }
+  const timeout = parseInt(env("SAP_TIMEOUT_MS") ?? "", 10)
+  return {
+    id: env("SAP_ID") ?? "DEV",
+    url: url.replace(/\/+$/, ""),
+    username,
+    password,
+    client: env("SAP_CLIENT"),
+    language: env("SAP_LANGUAGE") ?? "EN",
+    allowSelfSigned: /^(1|true|yes)$/i.test(env("SAP_ALLOW_SELF_SIGNED") ?? ""),
+    ...(timeout > 0 ? { timeout } : {}),
+  }
+}
+
 function resolveConfigPath(): string {
-  if (process.env.ABAP_MCP_CONFIG) return process.env.ABAP_MCP_CONFIG
+  const explicit = env("ABAP_MCP_CONFIG")
+  if (explicit) return explicit.replace(/^~(?=\/)/, os.homedir())
 
   const candidates = [
     path.join(process.cwd(), "connections.json"),
@@ -47,6 +81,14 @@ let _config: Config | null = null
 
 export function loadConfig(): Config {
   if (_config) return _config
+
+  if (!env("ABAP_MCP_CONFIG")) {
+    const fromEnv = connectionFromEnv()
+    if (fromEnv) {
+      _config = { connections: [fromEnv] }
+      return _config
+    }
+  }
 
   const configPath = resolveConfigPath()
 

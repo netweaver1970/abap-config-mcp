@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "abap": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/dist/stdio.js"]
+    }
+  }
+}

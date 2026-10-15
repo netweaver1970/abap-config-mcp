@@ -5,3 +5,4 @@ connections.json
 .env
 *.log
 engine-deploy.json
+release/

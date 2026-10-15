@@ -66,7 +66,7 @@ export function tierOf(name: string): RiskTier {
 
 /** Read the configured ceiling. ABAP_MCP_MAX_TIER = 0 | 1 | 2 (default 2). */
 export function getMaxTier(): RiskTier {
-  switch (process.env.ABAP_MCP_MAX_TIER) {
+  switch (String(parseInt(process.env.ABAP_MCP_MAX_TIER ?? "", 10))) {   // tolerates "1.0" / " 1" from install forms
     case "0": return 0
     case "1": return 1
     default:  return 2
