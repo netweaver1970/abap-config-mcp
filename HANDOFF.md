@@ -21,7 +21,8 @@
 >   `TABU /POSDW/STOGRT 600EZMCP`, both mastered `CDAT /POSDW/VC_STOGR`; delete removed both rows.
 > - **Delete keys (engine 0.9.33):** the runtime clears the entry on `DEL`, and the writer kept it after
 >   the call, so every recorded delete (VDAT too) was keyed with blank fields (`600`, `600E`). Kept
->   before the call now; re-run verified. The two blank keys from the first run are still on `CARK900019`.
+>   before the call now; re-run verified. The two blank keys from the first run were removed from
+>   `CARK900019` (user-approved); it holds the CDAT header and the two correct keys.
 
 > ## ⏩ LATEST (2026-09-18) — v1.12.0: the rest of the review
 > - **No blind retries of writes.** After a degraded-session reconnect only read-only (tier 0) and repeatable
