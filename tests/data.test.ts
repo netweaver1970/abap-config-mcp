@@ -119,7 +119,7 @@ describe("read_table_contents", () => {
   it("reads a valid table name", async () => {
     mockClient.tableContents.mockResolvedValue({ columns: [{ name: "MATNR" }], values: [{ MATNR: "X" }] })
     const result = await handleReadTableContents({ tableName: "MARA" })
-    expect(mockClient.tableContents).toHaveBeenCalledWith("MARA", 100, false, undefined)
+    expect(mockClient.tableContents).toHaveBeenCalledWith("MARA", 100, false)
     expect(result.content[0].text).toContain("X")
   })
 
@@ -129,9 +129,34 @@ describe("read_table_contents", () => {
     expect(mockClient.tableContents).not.toHaveBeenCalled()
   })
 
-  it("passes whereClause through", async () => {
-    mockClient.tableContents.mockResolvedValue({ columns: [{ name: "MATNR" }], values: [] })
+  it("runs a whereClause as a SELECT (the table preview refuses a bare clause)", async () => {
+    mockClient.runQuery.mockResolvedValue({ columns: [{ name: "MATNR" }], values: [] })
     await handleReadTableContents({ tableName: "MARA", whereClause: "MATNR LIKE 'Z%'" })
-    expect(mockClient.tableContents).toHaveBeenCalledWith("MARA", 100, false, "MATNR LIKE 'Z%'")
+    expect(mockClient.runQuery).toHaveBeenCalledWith("SELECT * FROM MARA WHERE MATNR LIKE 'Z%'", 100, false)
+    expect(mockClient.tableContents).not.toHaveBeenCalled()
+  })
+
+  it("refuses a whereClause that is not a plain condition", async () => {
+    await expect(handleReadTableContents({ tableName: "MARA", whereClause: "1 = 1; DELETE FROM mara" })).rejects.toThrow(/Only SELECT/)
+    expect(mockClient.runQuery).not.toHaveBeenCalled()
+  })
+})
+
+// ─── long statements ──────────────────────────────────────────────────────────
+
+import { wrapSqlLines } from "../src/tools/data"
+
+describe("wrapSqlLines", () => {
+  it("leaves short statements alone", () => {
+    expect(wrapSqlLines("SELECT * FROM t000")).toBe("SELECT * FROM t000")
+  })
+
+  it("wraps a line over 255 characters at whitespace, never inside a literal", () => {
+    const lit = "'" + "a b ".repeat(30) + "it''s'"
+    const sql = "SELECT mandt, COUNT(*) AS n FROM t000 WHERE " + Array(12).fill("mtext <> 'x y'").join(" AND ") + ` AND mtext <> ${lit} GROUP BY mandt HAVING COUNT(*) > 0`
+    const out = wrapSqlLines(sql)
+    expect(out.split("\n").every(l => l.length <= 255)).toBe(true)
+    expect(out.replace(/\n/g, " ")).toBe(sql)
+    expect(out).toContain(lit)
   })
 })

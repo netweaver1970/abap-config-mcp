@@ -15,7 +15,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { ensureConnected, forceReconnect, isRequestError, log, connectionIdOf } from "../connections"
-import { formatQueryResult } from "./data"
+import { formatQueryResult, freestyleQuery } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import type { ADTClient, QueryResult } from "abap-adt-api"
 
@@ -42,7 +42,7 @@ export async function runSql(client: ADTClient, sql: string, maxRows = 200): Pro
       // dumps with CX_SY_GENERATE_SUBPOOL_FULL.  Stateless = fresh roll area per
       // request → the subpools are rolled out each call and never pile up.
       // decode=false: raw values (see handleExecuteDataQuery in data.ts)
-      return await c.statelessClone.runQuery(sql, maxRows, false)
+      return await freestyleQuery(c, sql, maxRows)
     } catch (err) {
       lastErr = err
       // A bad statement stays bad: retrying would only reconnect, and a reconnect
@@ -681,7 +681,7 @@ export async function handleCustomizingRead(args: {
     // Fall back to runQuery if tableContents WITH whereClause fails (SICF not active)
     if (whereClause) {
       const sql = `SELECT * FROM ${baseTable} WHERE ${whereClause}`
-      result = await client.statelessClone.runQuery(sql, max, false) as any
+      result = await freestyleQuery(client, sql, max) as any
     } else {
       throw err
     }
@@ -718,8 +718,8 @@ export async function handleCustomizingDiff(args: {
   const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
 
   const [srcResult, tgtResult] = await Promise.all([
-    client.statelessClone.runQuery(srcSql, 500, false),
-    client.statelessClone.runQuery(tgtSql, 500, false),
+    freestyleQuery(client, srcSql, 500),
+    freestyleQuery(client, tgtSql, 500),
   ])
 
   const srcRows = tableRows(srcResult)
@@ -803,8 +803,8 @@ export async function handleCustomizingPlanChange(args: {
   const srcSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${src}'`
   const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
   const [srcResult, tgtResult] = await Promise.all([
-    client.statelessClone.runQuery(srcSql, 500, false),
-    client.statelessClone.runQuery(tgtSql, 500, false),
+    freestyleQuery(client, srcSql, 500),
+    freestyleQuery(client, tgtSql, 500),
   ])
 
   const srcRows = tableRows(srcResult)
