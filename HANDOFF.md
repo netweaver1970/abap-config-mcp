@@ -1,5 +1,24 @@
 # Customizing Engine — Handoff & Findings
 
+> ## ⏩ LATEST (2026-10-22) — engine 0.9.32: view clusters record R3TR CDAT
+> - **View-cluster members record as SM34 does**: `R3TR CDAT <cluster>` over the member's `R3TR TABU`
+>   keys (CDAT-mastered), written through the member view's runtime, recorded with TRINT mode `'D'`.
+>   The recorder already handled a CDAT master; `resolveMaint` now asks for it (`recordObject: "CDAT"`).
+> - **View variants** (DD25L VIEWCLASS `'V'`, e.g. `/POSDW/V_GPAC3` in `/POSDW/VC_TASKSG`) are driven
+>   through the maintenance view they vary; a view with no TVDIR is never driven.
+> - **The 2026-09-03 "cluster write loops forever" (S4, `V_OIJNOM_ST03` in `VC_OIJNOMST`, package OIJ)**
+>   was the dialog-mode switch-BC-set recording root-caused on 2026-09-17 (block below): its SM50
+>   cycle is that chain exactly. Writes no longer record in mode `'X'`, so it cannot recur by that
+>   route; the CDAT path uses the same mode `'D'`. Dry run on S4 resolves it to `R3TR CDAT VC_OIJNOMST`.
+>   Not re-run as a real write (needs the user's OK).
+> - **A runtime check that raises `MESSAGE E`** (a foreign key) no longer cancels the write job: it is
+>   caught (`error_message`) and returned with its text; `status` of an aborted job lists the job
+>   log's error lines.
+> - **org_copy dry run** lists the dependent tables again (WERKS 0001 on S4: 385; BUKRS Z100: 1587).
+> - **`tools/list_changed`** is sent once per new session when its GET stream opens.
+> - Verified so far: dry runs on CAR/S4. Pending the user's OK: a recorded CDAT create+delete of
+>   `/POSDW/STOGR` `ZMCP` on CAR `CARK900018`, checked in E071/E071K.
+
 > ## ⏩ LATEST (2026-09-18) — v1.12.0: the rest of the review
 > - **No blind retries of writes.** After a degraded-session reconnect only read-only (tier 0) and repeatable
 >   tools (activation, unit tests, ATC, syntax check) run again; any other tool reports that the session was
