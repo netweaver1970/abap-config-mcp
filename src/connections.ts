@@ -74,6 +74,8 @@ interface ManagedConnection {
   lastUsedAt: number
   /** objectUrl → LOCK_HANDLE for locks this ADT session currently holds */
   locks: Map<string, string>
+  /** a SAP context was opened by an earlier login (it must be ended before the next one) */
+  hadContext: boolean
 }
 
 /** Keyed by connection id + MCP session id. */
@@ -81,11 +83,11 @@ const connections = new Map<string, ManagedConnection>()
 
 const connKey = (id: string, sessionId: string) => `${id}\u0000${sessionId}`
 
-function buildClient(cfg: ConnectionConfig): ADTClient {
+function buildClient(cfg: ConnectionConfig, timeoutMs?: number): ADTClient {
   const isHttps = cfg.url.toLowerCase().startsWith("https:")
   const sslOptions = isHttps ? createSSLConfig(cfg.allowSelfSigned ?? false, cfg.ca) : {}
   // Default 30 s timeout — prevents the server hanging on an unresponsive SAP system
-  const timeout = cfg.timeout ?? 30_000
+  const timeout = timeoutMs ?? cfg.timeout ?? 30_000
   return new ADTClient(
     cfg.url,
     cfg.username,
@@ -100,38 +102,69 @@ export function resolveConnectionId(connectionId?: string): string {
   return connectionId ?? loadConfig().connections[0].id
 }
 
+/** Unlock every lock this ADT session tracks (best-effort; ending the session releases them too). */
+async function releaseTrackedLocks(managed: ManagedConnection): Promise<void> {
+  for (const [url, handle] of managed.locks) {
+    try {
+      await managed.client.unLock(url, handle)
+    } catch (err) {
+      log("DEBUG", `unLock ${url.split("/").pop()} before ending the session failed (the session end releases it)`, err)
+    }
+  }
+}
+
+/**
+ * End the SAP context this client is in, and with it every enqueue lock the
+ * context holds. login() on its own clears the cookies and opens a NEW context,
+ * leaving the old one — and its locks — alive until SAP times it out (CAR,
+ * 2026-10-22: the new session was then refused with "User BASIS is currently
+ * editing" by our own orphaned lock, and force_relogin could not reach it).
+ */
+async function endContext(managed: ManagedConnection): Promise<void> {
+  await releaseTrackedLocks(managed)
+  try {
+    await managed.client.dropSession()
+  } catch (err) {
+    log("DEBUG", `dropSession for ${managed.config.id}/${managed.sessionId.slice(0, 8)} failed (SAP may have ended it already)`, err)
+  }
+  if (managed.locks.size > 0) {
+    log("WARN", `Session for ${managed.config.id} ended — ${managed.locks.size} lock(s) released`)
+    managed.locks.clear()
+  }
+}
+
 async function doLogin(managed: ManagedConnection): Promise<void> {
+  // A re-login (idle refresh, failed keep-alive, force_relogin) first ends the
+  // context the client is still in, so its locks are released, not orphaned.
+  if (managed.hadContext) await endContext(managed)
   log("INFO", `Connecting to ${managed.config.id} (${managed.config.url}) as ${managed.config.username}`)
   await managed.client.login()
   managed.client.stateful = session_types.stateful
   managed.loggedIn = true
+  managed.hadContext = true
   managed.lastActivityAt = Date.now()
-  // All lock handles from a prior session are dead after re-login
-  if (managed.locks.size > 0) {
-    log("WARN", `Session re-established for ${managed.config.id} — ${managed.locks.size} stale lock handle(s) cleared`)
-    managed.locks.clear()
-  }
   log("INFO", `Connected to ${managed.config.id}`)
   // Ensure keep-alive is running after every successful login, including
   // re-logins triggered by session expiry (warm-up may have failed at startup).
   startKeepAlive()
 }
 
-async function getManagedConnection(connectionId?: string): Promise<ManagedConnection> {
+/** This MCP session's connection entry for connectionId, created (not logged in) when missing. */
+function managedFor(connectionId?: string): ManagedConnection {
   const id = resolveConnectionId(connectionId)
   const sessionId = currentSessionId()
-  const config = loadConfig()
-
   let managed = connections.get(connKey(id, sessionId))
   if (!managed) {
-    const cfg = config.connections.find(c => c.id === id)
-    if (!cfg) {
-      throw new Error(`Unknown connection: ${id}. Available: ${config.connections.map(c => c.id).join(", ")}`)
-    }
-    managed = { config: cfg, client: buildClient(cfg), sessionId, loggedIn: false, lastActivityAt: 0, lastUsedAt: Date.now(), locks: new Map() }
+    const cfg = getConnectionConfig(id)
+    managed = { config: cfg, client: buildClient(cfg), sessionId, loggedIn: false, lastActivityAt: 0, lastUsedAt: Date.now(), locks: new Map(), hadContext: false }
     connections.set(connKey(id, sessionId), managed)
     log("DEBUG", `New ADT session for ${id} / MCP session ${sessionId.slice(0, 8)}`)
   }
+  return managed
+}
+
+async function getManagedConnection(connectionId?: string): Promise<ManagedConnection> {
+  const managed = managedFor(connectionId)
   managed.lastUsedAt = Date.now()
 
   // Proactively re-login before the SAP session times out
@@ -164,15 +197,23 @@ export async function ensureConnected(connectionId?: string): Promise<ADTClient>
  * server, without the downtime).  Returns the re-logged-in client.
  */
 export async function forceReconnect(connectionId?: string): Promise<ADTClient> {
-  const managed = await getManagedConnection(connectionId)
-  try {
-    await managed.client.dropSession()
-  } catch (err) {
-    log("DEBUG", `dropSession during forceReconnect failed (continuing to re-login)`, err)
-  }
+  const managed = managedFor(connectionId)
   managed.loggedIn = false
   log("WARN", `Forcing reconnect for ${managed.config.id} (recovering degraded ADT session)`)
+  // The re-login releases this session's locks and ends its context first (doLogin).
   return getClient(connectionId)
+}
+
+/**
+ * A separate, stateless client of its own for one long or isolated call (a class
+ * run): its own login, so it never shares the conversation's stateful context —
+ * whose internal session keeps running a class pool it already loaded — and a
+ * timeout on it leaves that context untouched. The caller logs it out.
+ */
+export async function newIsolatedClient(connectionId: string | undefined, timeoutMs: number): Promise<ADTClient> {
+  const client = buildClient(getConnectionConfig(connectionId), timeoutMs)
+  await client.login()
+  return client
 }
 
 export function listConnections(): ConnectionConfig[] {
@@ -230,12 +271,9 @@ export function startKeepAlive(): void {
 async function closeManaged(key: string, managed: ManagedConnection, reason: string): Promise<void> {
   connections.delete(key)
   const held = managed.locks.size
-  if (!managed.loggedIn) return
-  try {
-    await managed.client.dropSession()
-  } catch (err) {
-    log("DEBUG", `dropSession while closing ${managed.config.id}/${managed.sessionId.slice(0, 8)} failed`, err)
-  }
+  // A session marked logged-out (failed keep-alive) may still be alive in SAP with its locks.
+  if (!managed.hadContext) return
+  await endContext(managed)
   log("INFO", `ADT session closed for ${managed.config.id} / MCP session ${managed.sessionId.slice(0, 8)} (${reason})` +
     (held ? ` — ${held} lock(s) released` : ""))
 }
@@ -244,6 +282,11 @@ async function closeManaged(key: string, managed: ManagedConnection, reason: str
 export async function closeSessionConnections(sessionId: string): Promise<void> {
   const mine = [...connections.entries()].filter(([, m]) => m.sessionId === sessionId)
   await Promise.all(mine.map(([k, m]) => closeManaged(k, m, "MCP session ended")))
+}
+
+/** Close every ADT session (server shutdown), releasing their locks. */
+export async function closeAllConnections(): Promise<void> {
+  await Promise.all([...connections.entries()].map(([k, m]) => closeManaged(k, m, "server shutting down")))
 }
 
 /** Close ADT sessions no tool call has used for ABAP_SESSION_EVICT_MS. */
@@ -277,6 +320,7 @@ export function stopKeepAlive(): void {
 export async function dropSessionLocks(connectionId?: string): Promise<void> {
   const managed = await getManagedConnection(connectionId)
   try {
+    await releaseTrackedLocks(managed)
     await managed.client.dropSession()
     if (managed.locks.size > 0) {
       log("DEBUG", `Dropped session for ${managed.config.id} — ${managed.locks.size} lock(s) released`)

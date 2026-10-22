@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // A fake ADT client per construction, so each ADT session is observable.
-const created: Array<{ login: ReturnType<typeof vi.fn>; dropSession: ReturnType<typeof vi.fn>; stateful: unknown }> = []
+const calls: string[] = []
+const created: Array<{ login: ReturnType<typeof vi.fn>; dropSession: ReturnType<typeof vi.fn>; unLock: ReturnType<typeof vi.fn>; stateful: unknown }> = []
 vi.mock("abap-adt-api", () => ({
   session_types: { stateful: "stateful" },
   createSSLConfig: () => ({}),
   ADTClient: class {
-    login = vi.fn(async () => undefined)
-    dropSession = vi.fn(async () => undefined)
+    login = vi.fn(async () => { calls.push("login") })
+    dropSession = vi.fn(async () => { calls.push("drop") })
+    unLock = vi.fn(async (url: string) => { calls.push(`unlock ${url}`) })
     stateful: unknown
     constructor() { created.push(this as any) }
   },
@@ -18,13 +20,14 @@ vi.mock("../src/config", () => ({
 
 import {
   ensureConnected, runInSession, trackLock, getHeldLock, dropSessionLocks,
-  closeSessionConnections, evictIdleSessions, listSessions, stopKeepAlive,
+  closeSessionConnections, evictIdleSessions, listSessions, stopKeepAlive, forceReconnect, closeAllConnections,
 } from "../src/connections"
 
 beforeEach(async () => {
   stopKeepAlive()
   for (const s of listSessions()) await closeSessionConnections(s.sessionId)
   created.length = 0
+  calls.length = 0
 })
 
 describe("one ADT session per MCP session", () => {
@@ -66,6 +69,39 @@ describe("one ADT session per MCP session", () => {
     await runInSession("old", () => ensureConnected("S4"))
     await evictIdleSessions(Date.now() + 61 * 60_000)
     expect(created[0].dropSession).toHaveBeenCalled()
+    expect(listSessions()).toHaveLength(0)
+  })
+})
+
+describe("a re-login never orphans the old SAP context", () => {
+  it("force_relogin unlocks the tracked locks and ends the old context before logging in", async () => {
+    await runInSession("conv-a", async () => { await ensureConnected("S4"); trackLock("S4", "/sap/bc/adt/oo/classes/zcl_a", "LA") })
+    calls.length = 0
+    await runInSession("conv-a", () => forceReconnect("S4"))
+    expect(calls).toEqual(["unlock /sap/bc/adt/oo/classes/zcl_a", "drop", "login"])
+    expect(runInSession("conv-a", () => getHeldLock("S4", "/sap/bc/adt/oo/classes/zcl_a"))).toBeUndefined()
+  })
+
+  it("the idle refresh ends the old context first", async () => {
+    await runInSession("conv-a", () => ensureConnected("S4"))
+    calls.length = 0
+    const now = Date.now()
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 20 * 60_000)
+    try { await runInSession("conv-a", () => ensureConnected("S4")) } finally { spy.mockRestore() }
+    expect(calls).toEqual(["drop", "login"])
+  })
+
+  it("the first login has no old context to end", async () => {
+    await runInSession("conv-a", () => ensureConnected("S4"))
+    expect(calls).toEqual(["login"])
+  })
+
+  it("server shutdown ends every session, releasing its locks", async () => {
+    await runInSession("conv-a", async () => { await ensureConnected("S4"); trackLock("S4", "/obj", "LA") })
+    await runInSession("conv-b", () => ensureConnected("S4"))
+    await closeAllConnections()
+    expect(created.every(c => c.dropSession.mock.calls.length === 1)).toBe(true)
+    expect(created[0].unLock).toHaveBeenCalledWith("/obj", "LA")
     expect(listSessions()).toHaveLength(0)
   })
 })

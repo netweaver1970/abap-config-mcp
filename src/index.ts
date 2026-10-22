@@ -5,7 +5,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
 import { createMcpServer } from "./server"
-import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections } from "./connections"
+import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections, closeAllConnections } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
 import { version as SERVER_VERSION } from "../package.json"
 
@@ -298,12 +298,27 @@ async function start(): Promise<void> {
     }
   }
 
-  process.on("SIGINT", () => {
-    log("INFO", "Shutting down…")
+  // launchctl kickstart -k sends SIGTERM. Exiting without ending the ADT sessions
+  // left their SAP contexts — and every lock in them — alive until SAP timed them
+  // out, so the next server refused our own objects as "currently editing".
+  let stopping = false
+  const shutdown = (why: string) => {
+    if (stopping) return
+    stopping = true
+    log("INFO", `Shutting down (${why})…`)
     stopKeepAlive()
-    for (const t of Object.values(transports)) { try { t.close() } catch { /* */ } }
-    httpServer.close(() => process.exit(0))
-  })
+    // ADT sessions first: closing a transport starts its own session close without
+    // waiting, which then left nothing here to wait for before the exit.
+    closeAllConnections()
+      .catch(err => log("WARN", "Closing ADT sessions failed", err))
+      .finally(() => {
+        for (const t of Object.values(transports)) { try { t.close() } catch { /* */ } }
+        httpServer.close(() => process.exit(0))
+      })
+    setTimeout(() => process.exit(0), 5_000).unref()
+  }
+  process.on("SIGINT", () => shutdown("SIGINT"))
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
 }
 
 start().catch(err => {

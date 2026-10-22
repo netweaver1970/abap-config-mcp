@@ -1334,7 +1334,7 @@ Parameters:
 ### Operations
 
 #### `force_relogin`
-Drop and re-establish the ADT session for a connection. Heals a degraded session (every ADT call returns HTTP 400/401/CSRF) without restarting the server.
+Drop and re-establish the ADT session for a connection. Heals a degraded session (every ADT call returns HTTP 400/401/CSRF) without restarting the server. The old session's locks are unlocked and its SAP context is ended before the new login. Every other re-login (idle refresh, failed keep-alive) and a server shutdown do the same, so no lock is left behind in an orphaned context.
 
 ```
 Parameters:

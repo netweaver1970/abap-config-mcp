@@ -341,20 +341,24 @@ export async function handleCreateAbapObject(args: {
     `creating ${args.name}`, `MCP create ${args.name}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
-  await client.createObject(
-    objectType as any,
-    args.name,
-    args.packageName,
-    args.description,
-    parentPath,
-    undefined,
-    t.transport
-  )
-
-  // ADT registers an implicit author edit-lock on creation.  Drop the session so
-  // a subsequent write_abap_object_source can acquire a proper lock handle.
-  // Without this, client.lock() fails with "already being edited by <user>".
-  try { await dropSessionLocks(args.connectionId) } catch { /* best-effort */ }
+  try {
+    await client.createObject(
+      objectType as any,
+      args.name,
+      args.packageName,
+      args.description,
+      parentPath,
+      undefined,
+      t.transport
+    )
+  } finally {
+    // ADT registers an implicit author edit-lock on creation.  Drop the session so
+    // a subsequent write_abap_object_source can acquire a proper lock handle.
+    // Without this, client.lock() fails with "already being edited by <user>".
+    // Also when the create failed: a create that timed out on our side may still
+    // have been applied in SAP, lock included.
+    try { await dropSessionLocks(args.connectionId) } catch { /* best-effort */ }
+  }
 
   return {
     content: [{

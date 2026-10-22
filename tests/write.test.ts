@@ -178,6 +178,14 @@ describe("write_abap_object_source with sourcePath", () => {
   })
 })
 
+describe("create_abap_object releases the creation lock", () => {
+  it("drops the session even when the create fails (it may have been applied in SAP)", async () => {
+    mockClient.createObject.mockRejectedValue(new Error("timeout of 30000ms exceeded"))
+    await expect(handleCreateAbapObject({ objectType: "CLAS", name: "ZCL_X", description: "x", packageName: "$TMP" })).rejects.toThrow("timeout")
+    expect(dropSessionLocks).toHaveBeenCalled()
+  })
+})
+
 // ─── lock_abap_object ─────────────────────────────────────────────────────────
 
 describe("lock_abap_object", () => {
