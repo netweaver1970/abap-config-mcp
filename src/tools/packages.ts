@@ -4,9 +4,18 @@ import { NodeStructure } from "abap-adt-api"
 import { ensureConnected } from "../connections"
 import { resolveWorkbenchTransport } from "./write"
 
-function formatNodeStructure(pkg: string, structure: NodeStructure): string {
-  const { nodes } = structure
-  if (nodes.length === 0) return `Package ${pkg} is empty.`
+const DEFAULT_MAX_OBJECTS = 500
+// Sub-packages are read one after another on the conversation's stateful session
+// (SAP serialises its requests anyway: fired in parallel, a large structure
+// package queued dozens of calls that each ran into the 30 s timeout). Bounded
+// in number and in time, below the HTTP server's 45 s watchdog.
+const MAX_SUBPACKAGES = 25
+const SUBPACKAGE_BUDGET_MS = 30_000
+
+function formatNodeStructure(pkg: string, structure: NodeStructure, maxObjects = DEFAULT_MAX_OBJECTS): string {
+  const all = structure.nodes
+  if (all.length === 0) return `Package ${pkg} is empty.`
+  const nodes = all.slice(0, Math.max(maxObjects, 1))
 
   // Group by object type for readability
   const byType = new Map<string, typeof nodes>()
@@ -26,17 +35,20 @@ function formatNodeStructure(pkg: string, structure: NodeStructure): string {
     sections.push(`  ${type} (${items.length}):\n${rows.join("\n")}`)
   }
 
-  return `Package ${pkg} — ${nodes.length} object(s):\n\n${sections.join("\n\n")}`
+  const more = all.length - nodes.length
+  return `Package ${pkg} — ${all.length} object(s):\n\n${sections.join("\n\n")}` +
+    (more > 0 ? `\n\n… ${more} more not shown (maxObjects ${maxObjects}).` : "")
 }
 
 export async function handleBrowsePackage(args: {
   packageName: string
   includeSubPackages?: boolean
+  maxObjects?: number
   connectionId?: string
 }) {
   const client = await ensureConnected(args.connectionId)
   const structure = await client.nodeContents("DEVC/K", args.packageName)
-  const text = formatNodeStructure(args.packageName, structure)
+  const text = formatNodeStructure(args.packageName, structure, args.maxObjects)
 
   if (!args.includeSubPackages) {
     return { content: [{ type: "text" as const, text }] }
@@ -48,16 +60,23 @@ export async function handleBrowsePackage(args: {
     return { content: [{ type: "text" as const, text }] }
   }
 
-  const subResults = await Promise.allSettled(
-    subPkgs.map(async sub => {
-      const s = await client.nodeContents("DEVC/K", sub.OBJECT_NAME)
-      return formatNodeStructure(sub.OBJECT_NAME, s)
-    })
-  )
-
-  const subTexts = subResults
-    .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
-    .map(r => r.value)
+  const subTexts: string[] = []
+  const started = Date.now()
+  const skipped: string[] = []
+  for (const sub of subPkgs) {
+    if (subTexts.length >= MAX_SUBPACKAGES || Date.now() - started > SUBPACKAGE_BUDGET_MS) {
+      skipped.push(sub.OBJECT_NAME)
+      continue
+    }
+    try {
+      subTexts.push(formatNodeStructure(sub.OBJECT_NAME, await client.nodeContents("DEVC/K", sub.OBJECT_NAME), args.maxObjects))
+    } catch (err) {
+      subTexts.push(`Package ${sub.OBJECT_NAME}: could not be read (${String((err as Error)?.message ?? err)})`)
+    }
+  }
+  if (skipped.length > 0) {
+    subTexts.push(`${skipped.length} sub-package(s) not expanded — browse them one by one: ${skipped.join(", ")}`)
+  }
 
   return {
     content: [{
@@ -128,7 +147,8 @@ export function registerPackageTools(server: McpServer): void {
       inputSchema: {
         packageName: z.string().describe("Package name to browse (e.g. ZCAR_MM, $TMP)"),
         includeSubPackages: z.boolean().optional()
-          .describe("Also fetch and display the contents of any sub-packages found. Default: false"),
+          .describe(`Also fetch and display the contents of any sub-packages found (at most ${MAX_SUBPACKAGES}, one level). Default: false`),
+        maxObjects: z.number().optional().describe(`Most objects listed per package (default ${DEFAULT_MAX_OBJECTS}); the count of the rest is shown.`),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

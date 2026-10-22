@@ -56,6 +56,31 @@ describe("browse_package", () => {
     expect(result.content[0].text).toContain("▶")
   })
 
+  it("lists at most maxObjects and says how many more there are", async () => {
+    mockClient.nodeContents.mockResolvedValue({ nodes, categories: [], objectTypes: [] })
+    const text = (await handleBrowsePackage({ packageName: "ZCAR_MM", maxObjects: 2 })).content[0].text
+    expect(text).toContain("3 object(s)")
+    expect(text).not.toContain("ZCAR_MM_HELPER")
+    expect(text).toContain("1 more not shown")
+  })
+
+  it("reads sub-packages one after another, and a failing one does not lose the rest", async () => {
+    let inFlight = 0, maxInFlight = 0
+    const subs = ["ZS1", "ZS2", "ZS3"].map(n => ({ ...nodes[2], OBJECT_NAME: n }))
+    mockClient.nodeContents.mockImplementation(async (_t: string, name: string) => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise(r => setTimeout(r, 5))
+      inFlight--
+      if (name === "ZS2") throw new Error("boom")
+      return { nodes: name === "ZTOP" ? subs : [nodes[0]], categories: [], objectTypes: [] }
+    })
+    const text = (await handleBrowsePackage({ packageName: "ZTOP", includeSubPackages: true })).content[0].text
+    expect(maxInFlight).toBe(1)
+    expect(text).toContain("Package ZS1")
+    expect(text).toContain("ZS2: could not be read (boom)")
+    expect(text).toContain("Package ZS3")
+  })
+
   it("returns empty message for an empty package", async () => {
     mockClient.nodeContents.mockResolvedValue({ nodes: [], categories: [], objectTypes: [] })
     const result = await handleBrowsePackage({ packageName: "ZEMPTY" })
