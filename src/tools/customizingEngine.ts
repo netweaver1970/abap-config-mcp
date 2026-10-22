@@ -759,6 +759,14 @@ export async function handleOrgCopy(args: {
 // view runtime without transport and records the keys headlessly, so there is
 // nothing left to refuse. resolveMaint still resolves switchId, for information.
 
+/** How a cluster member / view variant is written and recorded, for the resolve note. */
+function clusterNote_(maint: ResolvedMaint): string {
+  const parts: string[] = []
+  if (maint.variant) parts.push(`view variant ${maint.variant} of ${maint.maintObject}, maintained through it`)
+  if (maint.cluster) parts.push(`member of view cluster ${maint.cluster}: written through ${maint.maintObject}, recorded as R3TR CDAT ${maint.cluster} as SM34 records it`)
+  return parts.length ? ` — ${parts.join("; ")}` : ""
+}
+
 // ─── customizing_apply ──────────────────────────────────────────────────────────
 
 export async function handleCustomizingApply(args: {
@@ -800,15 +808,14 @@ export async function handleCustomizingApply(args: {
   }
   // Resolve the maintenance object so the engine writes through the generated
   // SM30 runtime (VIEW_MAINTENANCE_SINGLE_ENTRY) and records the correct transport
-  // object: VDAT for a maintenance view, TABU for a single-table maintenance.
-  // For a view-cluster member we drive the member view and record R3TR VDAT (member)
-  // + the TABU keys — which transports the cluster member data correctly. True
-  // R3TR CDAT (SM34) recording is NOT done: the only headless key-level recorder
-  // (TR_OBJECTS_INSERT) is dialog-bound and raises TK495 even in a background job.
-  // (The engine's transport_object='CDAT' path exists but is dormant pending an
-  // SLCTR/VIEWCLUSTER_IMPORT approach.) Skipped for direct (recordTransport:false) writes.
+  // object: VDAT for a maintenance view, TABU for a single-table maintenance, and
+  // for a view-cluster member R3TR CDAT <cluster> over the member's TABU keys, as
+  // an SM34 save records it. The data still goes through the member view's runtime;
+  // the writer records the keys with TRINT_OBJECTS_CHECK_AND_INSERT in mode 'D'
+  // (insert, no dialog) — TR_OBJECTS_INSERT, which forces the dialog, raised TK495
+  // in a background job. Skipped for direct (recordTransport:false) writes.
   let maintObject = ""
-  let transportObject = ""          // "VDAT" | "TABU"
+  let transportObject = ""          // "VDAT" | "TABU" | "CDAT"
   let clusterName = ""
   let resolveNote = ""
   if (args.recordTransport !== false) {
@@ -817,13 +824,9 @@ export async function handleCustomizingApply(args: {
       const maint = await resolveMaint(client, args.table)
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
-        // Record the member view (VDAT) / table (TABU). Cluster members record VDAT
-        // for now (true CDAT recording is dialog-bound headlessly — see above).
         transportObject = maint.recordObject
-        clusterName     = maint.cluster ?? ""
-        const clusterNote = maint.cluster
-          ? ` — in view cluster ${maint.cluster} (records the member view ${maintObject} as R3TR VDAT; SM34 R3TR CDAT not recorded headlessly)`
-          : ""
+        clusterName     = maint.recordObject === "CDAT" ? maint.cluster ?? "" : ""
+        const clusterNote = clusterNote_(maint)
         resolveNote = `(maint object ${maintObject} → R3TR ${transportObject}; ` +
           `table set ${maint.tables.join(" + ")}${clusterNote})\n`
       } else {
@@ -1012,10 +1015,8 @@ export async function handleCustomizingCreate(args: {
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
         transportObject = maint.recordObject
-        clusterName     = maint.cluster ?? ""
-        const clusterNote = maint.cluster
-          ? ` — in view cluster ${maint.cluster} (records the member view ${maintObject} as R3TR VDAT)`
-          : ""
+        clusterName     = maint.recordObject === "CDAT" ? maint.cluster ?? "" : ""
+        const clusterNote = clusterNote_(maint)
         resolveNote = `(maint object ${maintObject} → R3TR ${transportObject}; table set ${maint.tables.join(" + ")}${clusterNote})\n`
       } else if (args.recordTableKeys === true) {
         // No view: write the table directly and record its row keys as R3TR TABU,

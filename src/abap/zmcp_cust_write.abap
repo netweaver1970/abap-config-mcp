@@ -574,16 +574,17 @@ FORM write_via_view
           no_clientindependent_auth  = 5
           no_upd_auth                = 6
           no_show_auth               = 7
+          error_message              = 8
           OTHERS                     = 9.
       IF sy-subrc = 2.
         APPEND |Entry already absent — skipped| TO cs_result-messages.
         CONTINUE.
       ENDIF.
       IF sy-subrc <> 0.
+        " The message first: ROLLBACK WORK resets sy-subrc.
+        PERFORM runtime_failure USING 'DEL' CHANGING cs_result.
         ROLLBACK WORK.
         cs_result-status = 'error'.
-        APPEND |VIEW_MAINTENANCE_SINGLE_ENTRY DEL failed (subrc { sy-subrc } { sy-msgid }{ sy-msgno } { sy-msgv1 })|
-          TO cs_result-messages.
         RETURN.
       ENDIF.
       cs_result-rows_written = cs_result-rows_written + 1.
@@ -614,6 +615,7 @@ FORM write_via_view
         no_clientindependent_auth  = 5
         no_upd_auth                = 6
         no_show_auth               = 7
+        error_message              = 8
         OTHERS                     = 9.
 
     IF sy-subrc = 1.
@@ -632,14 +634,15 @@ FORM write_via_view
         CHANGING
           entry                      = <entry>
         EXCEPTIONS
+          error_message              = 8
           OTHERS                     = 9.
     ENDIF.
 
     IF sy-subrc <> 0.
+      " The message first: ROLLBACK WORK resets sy-subrc.
+      PERFORM runtime_failure USING lv_action CHANGING cs_result.
       ROLLBACK WORK.
       cs_result-status = 'error'.
-      APPEND |VIEW_MAINTENANCE_SINGLE_ENTRY { lv_action } failed (subrc { sy-subrc } { sy-msgid }{ sy-msgno } { sy-msgv1 })|
-        TO cs_result-messages.
       RETURN.
     ENDIF.
 
@@ -725,6 +728,26 @@ FORM write_via_view
     lv_msg = |{ lv_verb } { cs_result-rows_written } row(s) via { lv_view }, but no R3TR TABU { lv_btab } keys were recorded on { lv_trkorr } or its tasks — check the request is a modifiable Customizing request|.
   ENDIF.
   APPEND lv_msg TO cs_result-messages.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&  Report why the view runtime refused a row, with the message text.
+*&  A check in the runtime (a foreign key: "Entry 2 9003 does not exist in
+*&  /POSDW/GPAG", CAR 2026-10-22) raises MESSAGE E. Uncaught, that cancels the
+*&  background job: no result is stored and the caller only learns the job
+*&  was aborted. Caught as error_message, it ends up here.
+*&---------------------------------------------------------------------*
+FORM runtime_failure
+  USING    iv_action TYPE any
+  CHANGING cs_result TYPE ty_result.
+  DATA lv_txt TYPE string.
+  DATA(lv_rc) = sy-subrc.
+  IF sy-msgid IS NOT INITIAL.
+    MESSAGE ID sy-msgid TYPE 'I' NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4 INTO lv_txt.
+  ENDIF.
+  APPEND |VIEW_MAINTENANCE_SINGLE_ENTRY { iv_action } failed (subrc { lv_rc }{ COND string( WHEN sy-msgid IS NOT INITIAL THEN | { sy-msgid }{ sy-msgno }| ) }): { lv_txt }|
+    TO cs_result-messages.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

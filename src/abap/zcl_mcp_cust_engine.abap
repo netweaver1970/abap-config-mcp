@@ -199,6 +199,13 @@ CLASS zcl_mcp_cust_engine DEFINITION
     METHODS job_progress_note
       RETURNING VALUE(rv_note) TYPE string.
 
+    "! The error lines of a job's log (message types E/A/X), so an aborted run
+    "! says why instead of "check SM37".
+    METHODS job_log_errors
+      IMPORTING iv_jobname  TYPE btcjob
+                iv_jobcount TYPE btcjobcnt
+      CHANGING  ct_messages TYPE stringtab.
+
     "! Age out finished/aborted run artifacts (INDX ZJ/ZR/ZP) whose job handle is
     "! older than the retention window — results stay re-readable for a while
     "! (a lost HTTP response must not destroy the outcome) but don't accumulate.
@@ -2148,16 +2155,44 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       WHEN 'A'.                       " aborted / cancelled
         rs_resp-status = 'aborted'.
         APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } was ABORTED (cancelled or failed, | &&
-               |TBTCO 'A') — no result was written. Check SM37 job log / ST22.| TO rs_resp-messages.
+               |TBTCO 'A') — no result was written.| TO rs_resp-messages.
+        job_log_errors( EXPORTING iv_jobname = ls_jh-jobname iv_jobcount = ls_jh-jobcount
+                        CHANGING  ct_messages = rs_resp-messages ).
       WHEN 'F'.                       " finished but wrote no ZR result → dumped mid-run
         rs_resp-status = 'aborted'.
         APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } FINISHED (TBTCO 'F') but produced no | &&
-               |result — it likely dumped mid-run. Check ST22 / SM37 job log.| TO rs_resp-messages.
+               |result — it likely dumped mid-run. Check ST22.| TO rs_resp-messages.
+        job_log_errors( EXPORTING iv_jobname = ls_jh-jobname iv_jobcount = ls_jh-jobcount
+                        CHANGING  ct_messages = rs_resp-messages ).
       WHEN OTHERS.
         rs_resp-status = 'pending'.
         APPEND |Job { ls_jh-jobname }/{ ls_jh-jobcount } TBTCO status '{ lv_jstat }'|
           TO rs_resp-messages.
     ENDCASE.
+  ENDMETHOD.
+
+
+  METHOD job_log_errors.
+    DATA: lt_log   TYPE STANDARD TABLE OF tbtc5,
+          lv_found TYPE abap_bool.
+    CALL FUNCTION 'BP_JOBLOG_READ'
+      EXPORTING  jobcount  = iv_jobcount
+                 jobname   = iv_jobname
+      TABLES     joblogtbl = lt_log
+      EXCEPTIONS OTHERS    = 1.
+    IF sy-subrc <> 0.
+      APPEND `(The job log could not be read — see SM37.)` TO ct_messages.
+      RETURN.
+    ENDIF.
+    LOOP AT lt_log INTO DATA(ls_log) WHERE msgtype CA 'EAX'.
+      " 00564 "Job canceled after system exception …" only repeats the outcome.
+      CHECK NOT ( ls_log-msgid = '00' AND ls_log-msgno = '564' ).
+      APPEND |Job log: { ls_log-msgid }{ ls_log-msgno } { ls_log-text }| TO ct_messages.
+      lv_found = abap_true.
+    ENDLOOP.
+    IF lv_found = abap_false.
+      APPEND `The job log names no error — see SM37 / ST22.` TO ct_messages.
+    ENDIF.
   ENDMETHOD.
 
 

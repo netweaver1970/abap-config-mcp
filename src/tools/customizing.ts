@@ -14,7 +14,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, forceReconnect, isRequestError, log, connectionIdOf } from "../connections"
+import { ensureConnected, forceReconnect, isRequestError, isSessionDegradedError, log, connectionIdOf } from "../connections"
 import { formatQueryResult, freestyleQuery } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import type { ADTClient, QueryResult } from "abap-adt-api"
@@ -67,8 +67,13 @@ export function col(row: Record<string, string>, ...names: string[]): string {
 }
 
 const EMPTY: QueryResult = { columns: [], values: [] } as unknown as QueryResult
+// A lookup that fails reads as "no rows" — except a degraded session, which goes
+// on to the session recovery (it would otherwise pass for "no maintenance view").
 const sql1 = (client: ADTClient, s: string) =>
-  runSql(client, s, 200).then(tableRows).catch(() => [] as Record<string, string>[])
+  runSql(client, s, 200).then(tableRows).catch(err => {
+    if (isSessionDegradedError(err)) throw err
+    return [] as Record<string, string>[]
+  })
 
 // ─── maintenance-object resolver ───────────────────────────────────────────────
 //
@@ -111,9 +116,12 @@ export interface ResolvedMaint {
   // view for VDAT, or the table itself for single-table TABU maintenance).
   // "" ⇒ no generated SM30/SM34 maintenance → only a direct (untransported) write is possible.
   maintObject: string
-  // recordObject = the transport object the headless write actually records.
-  // For a cluster member we drive the member view, so it records VDAT (not CDAT).
-  recordObject?: "VDAT" | "TABU"
+  // variant = the view variant that was asked for, when maintObject is the
+  // maintenance view it is a variant of (a variant has no maintenance of its own).
+  variant?: string
+  // recordObject = the transport object the headless write records: CDAT for a
+  // view-cluster member (as an SM34 save), else VDAT / TABU.
+  recordObject?: "VDAT" | "TABU" | "CDAT"
   // transport = the *official* transport object as SAP/SPRO classifies it
   // (cluster→CDAT, view→VDAT, single table→TABU).
   transport: { object: "VDAT" | "TABU" | "CDAT"; name: string }
@@ -161,6 +169,26 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     }
   }
 
+  // A view variant (DD25L VIEWCLASS 'V') has no maintenance of its own: SM30 and
+  // SM34 maintain it through the maintenance view it is a variant of (its
+  // ROOTTAB). Driving VIEW_MAINTENANCE_SINGLE_ENTRY on the variant itself is not
+  // what SAP does (/POSDW/V_GPAC3, a member of /POSDW/VC_TASKSG, CAR).
+  let variant: string | undefined
+  if (view) {
+    const vc = await sql1(client, `SELECT VIEWCLASS, ROOTTAB FROM DD25L WHERE VIEWNAME = '${view}'`)
+    const base = col(vc[0] ?? {}, "ROOTTAB")
+    if (col(vc[0] ?? {}, "VIEWCLASS") === "V" && base) {
+      const baseTv = await sql1(client, `SELECT TABNAME FROM TVDIR WHERE TABNAME = '${base}'`)
+      if (baseTv[0]) {
+        variant   = view
+        view      = base
+        const dd25b = await sql1(client, `SELECT ROOTTAB FROM DD25L WHERE VIEWNAME = '${base}'`)
+        rootTable = col(dd25b[0] ?? {}, "ROOTTAB") || base
+        tabRows   = await sql1(client, `SELECT TABNAME, TABPOS FROM DD26S WHERE VIEWNAME = '${base}' ORDER BY TABPOS`)
+      }
+    }
+  }
+
   let tables = tabRows.map(r => col(r, "TABNAME")).filter(Boolean)
   if (tables.length === 0) tables = [rootTable]
   if (!rootTable) rootTable = tables[0]
@@ -178,8 +206,10 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
   // TVDIR (function group / maint type / package) of the maintenance object
   const maintName = view ?? (singleTable ? obj : "")
   let funcGroup: string | undefined, maintType: string | undefined, devclass: string | undefined
+  let hasMaint = false
   if (maintName) {
     const tvdir = await sql1(client, `SELECT AREA, TYPE, DEVCLASS FROM TVDIR WHERE TABNAME = '${maintName}'`)
+    hasMaint  = !!tvdir[0]
     funcGroup = col(tvdir[0] ?? {}, "AREA") || undefined
     maintType = col(tvdir[0] ?? {}, "TYPE") || undefined
     devclass  = col(tvdir[0] ?? {}, "DEVCLASS") || undefined
@@ -196,10 +226,13 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
   }
 
   // View-cluster membership (VCLSTRUC): does a cluster maintain this view?
+  // A variant counts as the member the cluster names (/POSDW/V_GPAC3 is in
+  // VC_TASKSG, its base view /POSDW/V_GPAC is in no cluster).
   let cluster: string | undefined
-  if (view) {
-    const vcl = await sql1(client, `SELECT VCLNAME FROM VCLSTRUC WHERE OBJECT = '${view}'`)
+  for (const member of [variant, view].filter((v): v is string => !!v)) {
+    const vcl = await sql1(client, `SELECT VCLNAME FROM VCLSTRUC WHERE OBJECT = '${member}'`)
     cluster = col(vcl[0] ?? {}, "VCLNAME") || undefined
+    if (cluster) break
   }
 
   // IMG activity wiring (CUS_ACTOBJ) — object type V/S/C/T/D, IMG activity, tcode.
@@ -225,9 +258,11 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
   const authGroup = col(tddat[0] ?? {}, "CCLASS") || undefined
 
   // What the headless write drives + records, vs the official transport object.
-  const maintObject  = view ?? (singleTable ? obj : "")
-  const recordObject: "VDAT" | "TABU" | undefined =
-    view ? "VDAT" : singleTable ? "TABU" : undefined
+  // Only an object with generated maintenance (TVDIR) is driven through the view
+  // runtime; a view without one has no maintenance dialog to run.
+  const maintObject  = hasMaint ? (view ?? (singleTable ? obj : "")) : ""
+  const recordObject: ResolvedMaint["recordObject"] =
+    !maintObject ? undefined : cluster ? "CDAT" : view ? "VDAT" : "TABU"
   const transport: ResolvedMaint["transport"] =
     cluster ? { object: "CDAT", name: cluster }
     : view  ? { object: "VDAT", name: view }
@@ -248,6 +283,7 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
     authGroup,
     objectType,
     cluster,
+    variant,
     devclass,
     switchId,
     maintObject,
