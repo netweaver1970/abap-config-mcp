@@ -15,6 +15,8 @@ const FN_NAME: Record<string, string> = { K: "Workbench", W: "Customizing", T: "
 const STATUS_NAME: Record<string, string> = { D: "modifiable", L: "modifiable, protected", O: "release started", R: "released", N: "released (with import protection)" }
 
 function day(value: string): string {
+  const raw = /^(\d{4})(\d{2})(\d{2})$/.exec(value)   // DATS as SAP sends it
+  if (raw) return `${raw[1]}-${raw[2]}-${raw[3]}`
   const d = new Date(value)
   if (isNaN(d.getTime())) return value
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`

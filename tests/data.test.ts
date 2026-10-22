@@ -69,6 +69,19 @@ describe("formatQueryResult", () => {
     expect(text).toContain("(0 row(s))")
   })
 
+  it("prints raw (undecoded) values as SAP sends them, a missing one as empty", () => {
+    // runQuery(..., false): DATS stays YYYYMMDD, NUMC keeps all digits, and a
+    // lone empty cell arrives as undefined (abap-adt-api drops it)
+    const result: QueryResult = {
+      columns: [{ name: "JOBNAME" }, { name: "ENDDATE" }, { name: "REQUEST_TSN" }],
+      values: [{ JOBNAME: "ZJOB", ENDDATE: undefined, REQUEST_TSN: "20261022150733000006000" }]
+    } as any
+    const text = formatQueryResult(result)
+    expect(text).toContain("20261022150733000006000")
+    expect(text).not.toContain("undefined")
+    expect(text).toContain("(1 row(s))")
+  })
+
   it("returns error message when no columns", () => {
     const result: QueryResult = { columns: [], values: [] } as any
     expect(formatQueryResult(result)).toContain("No columns")
@@ -84,7 +97,7 @@ describe("execute_data_query", () => {
       values: [{ MATNR: "Z001" }]
     })
     const result = await handleExecuteDataQuery({ sql: "SELECT MATNR FROM MARA" })
-    expect(mockClient.runQuery).toHaveBeenCalledWith("SELECT MATNR FROM MARA", 100)
+    expect(mockClient.runQuery).toHaveBeenCalledWith("SELECT MATNR FROM MARA", 100, false)
     expect(result.content[0].text).toContain("Z001")
   })
 
@@ -96,7 +109,7 @@ describe("execute_data_query", () => {
   it("passes custom maxRows", async () => {
     mockClient.runQuery.mockResolvedValue({ columns: [{ name: "A" }], values: [] })
     await handleExecuteDataQuery({ sql: "SELECT A FROM T", maxRows: 5 })
-    expect(mockClient.runQuery).toHaveBeenCalledWith(expect.any(String), 5)
+    expect(mockClient.runQuery).toHaveBeenCalledWith(expect.any(String), 5, false)
   })
 })
 

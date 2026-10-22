@@ -50,7 +50,10 @@ export async function handleExecuteDataQuery(args: {
   // ABAP caps those at 36 per internal session.  Running on the long-lived
   // stateful session would accumulate them until a CX_SY_GENERATE_SUBPOOL_FULL
   // dump (CL_ADT_DP_OPEN_SQL_HANDLER); stateless rolls out each request's pool.
-  const result = await client.statelessClone.runQuery(args.sql, args.maxRows ?? 100)
+  // decode=false: values as SAP sends them.  abap-adt-api's decoder turns DATS
+  // into JS Dates (and crashes on an empty one: "reading 'substr'") and NUMC /
+  // DEC into floats (a 23-digit request TSN came back as 2.0261021213305e+22).
+  const result = await client.statelessClone.runQuery(args.sql, args.maxRows ?? 100, false)
   return { content: [{ type: "text" as const, text: formatQueryResult(result) }] }
 }
 

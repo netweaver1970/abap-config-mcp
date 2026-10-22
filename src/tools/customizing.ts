@@ -38,7 +38,8 @@ export async function runSql(client: ADTClient, sql: string, maxRows = 200): Pro
       // session.  In the stateful session they accumulate until the 37th query
       // dumps with CX_SY_GENERATE_SUBPOOL_FULL.  Stateless = fresh roll area per
       // request → the subpools are rolled out each call and never pile up.
-      return await c.statelessClone.runQuery(sql, maxRows)
+      // decode=false: raw values (see handleExecuteDataQuery in data.ts)
+      return await c.statelessClone.runQuery(sql, maxRows, false)
     } catch (err) {
       lastErr = err
       // A bad statement stays bad: retrying would only reconnect, and a reconnect
@@ -677,7 +678,7 @@ export async function handleCustomizingRead(args: {
     // Fall back to runQuery if tableContents WITH whereClause fails (SICF not active)
     if (whereClause) {
       const sql = `SELECT * FROM ${baseTable} WHERE ${whereClause}`
-      result = await client.statelessClone.runQuery(sql, max) as any
+      result = await client.statelessClone.runQuery(sql, max, false) as any
     } else {
       throw err
     }
@@ -714,8 +715,8 @@ export async function handleCustomizingDiff(args: {
   const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
 
   const [srcResult, tgtResult] = await Promise.all([
-    client.statelessClone.runQuery(srcSql, 500),
-    client.statelessClone.runQuery(tgtSql, 500),
+    client.statelessClone.runQuery(srcSql, 500, false),
+    client.statelessClone.runQuery(tgtSql, 500, false),
   ])
 
   const srcRows = tableRows(srcResult)
@@ -799,8 +800,8 @@ export async function handleCustomizingPlanChange(args: {
   const srcSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${src}'`
   const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
   const [srcResult, tgtResult] = await Promise.all([
-    client.statelessClone.runQuery(srcSql, 500),
-    client.statelessClone.runQuery(tgtSql, 500),
+    client.statelessClone.runQuery(srcSql, 500, false),
+    client.statelessClone.runQuery(tgtSql, 500, false),
   ])
 
   const srcRows = tableRows(srcResult)
