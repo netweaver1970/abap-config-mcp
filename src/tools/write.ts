@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import { ensureConnected, trackLock, forgetLock, getHeldLock, dropSessionLocks, isEditingError, editingConflictHint, log, resolveConnectionId, getConnectionConfig } from "../connections"
 import { selectTransport, type TransportCandidate } from "./transportSelection"
 import { lookupRequest, listOpenRequests } from "./transportSql"
@@ -98,16 +101,63 @@ export async function resolveWorkbenchTransport(
   return sel.kind === "use" ? { transport: sel.trkorr, note: sel.note } : { prompt: sel.text }
 }
 
+export const SOURCE_FILE_MAX_BYTES = 5 * 1024 * 1024
+
+/**
+ * Source for write_abap_object_source from a local file (sourcePath), so a large
+ * source reaches SAP as it is on disk instead of being copied through the
+ * conversation. Only a regular file under the user's home directory (symlinks
+ * resolved), at most SOURCE_FILE_MAX_BYTES. Read as UTF-8; a leading BOM is
+ * dropped, line endings are left as they are (as for source).
+ * Returns the source, or { error } with the reason it was refused.
+ */
+export function readSourceFile(sourcePath: string, home: string = os.homedir()): { source: string } | { error: string } {
+  if (!path.isAbsolute(sourcePath)) {
+    return { error: `sourcePath must be an absolute path under your home directory (${home}); got "${sourcePath}".` }
+  }
+  let real: string, realHome: string
+  try {
+    real = fs.realpathSync(sourcePath)
+    realHome = fs.realpathSync(home)
+  } catch (e) {
+    return { error: `Cannot read sourcePath ${sourcePath}: ${String((e as Error)?.message ?? e)}` }
+  }
+  const rel = path.relative(realHome, real)
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return { error: `sourcePath must be under your home directory (${home}); ${sourcePath} is not.` }
+  }
+  const st = fs.statSync(real)
+  if (!st.isFile()) return { error: `sourcePath ${sourcePath} is not a file.` }
+  if (st.size > SOURCE_FILE_MAX_BYTES) {
+    return { error: `sourcePath ${sourcePath} is ${(st.size / 1024 / 1024).toFixed(1)} MB; the limit is ${SOURCE_FILE_MAX_BYTES / 1024 / 1024} MB.` }
+  }
+  return { source: fs.readFileSync(real, "utf8").replace(/^\uFEFF/, "") }
+}
+
 export async function handleWriteAbapObjectSource(args: {
   url: string
   sourceUrl?: string
-  source: string
+  source?: string
+  sourcePath?: string
   transport?: string
   createTransport?: boolean
   workItem?: string
   keepLock?: boolean
   connectionId?: string
 }, extra?: { signal?: AbortSignal; sessionId?: string }) {
+  // Exactly one of source / sourcePath, checked before anything touches SAP.
+  if ((args.source === undefined) === (args.sourcePath === undefined)) {
+    return { content: [{ type: "text" as const, text: `❌ Give exactly one of source (the code) or sourcePath (an absolute path to a local file under your home directory).` }] }
+  }
+  let source: string
+  if (args.sourcePath !== undefined) {
+    const read = readSourceFile(args.sourcePath)
+    if ("error" in read) return { content: [{ type: "text" as const, text: `❌ ${read.error}` }] }
+    source = read.source
+  } else {
+    source = args.source as string
+  }
+
   const client = await ensureConnected(args.connectionId)
   const objectUrl = args.url
   const sourceUrl = args.sourceUrl ?? `${objectUrl}/source/main`
@@ -142,7 +192,7 @@ export async function handleWriteAbapObjectSource(args: {
     }
 
     log("INFO", `setObjectSource ${sourceUrl} corrNr=${t.transport ?? "(none)"} note=${t.note ?? ""}`)
-    await client.setObjectSource(sourceUrl, args.source, lockHandle, t.transport)
+    await client.setObjectSource(sourceUrl, source, lockHandle, t.transport)
 
     // Read it back. ADT has accepted writes it did not apply (a function group's
     // own URL instead of its main program), which only showed later.
@@ -150,7 +200,7 @@ export async function handleWriteAbapObjectSource(args: {
     try {
       const stored = await client.getObjectSource(sourceUrl, { version: "inactive" } as any)
       const norm = (x: string) => String(x ?? "").replace(/\r/g, "").split("\n").map(l => l.replace(/\s+$/, "")).join("\n").trim()
-      if (norm(stored) !== norm(args.source)) {
+      if (norm(stored) !== norm(source)) {
         verify = `⚠️ Read back from ${sourceUrl}, the source differs from what was sent — SAP may not have stored it there. ` +
           `Check the URL (for a function group's main program use .../functions/groups/<g>/includes/sapl<g>).\n`
       }
@@ -356,11 +406,12 @@ export function registerWriteTools(server: McpServer): void {
     "write_abap_object_source",
     {
       title: "Write ABAP Object Source",
-      description: "Write/update the source code of an ABAP object: locks, writes, reads back to verify, and releases the lock (keepLock: true to keep it). The new source is the inactive version until abap_activate. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
+      description: "Write/update the source code of an ABAP object: locks, writes, reads back to verify, and releases the lock (keepLock: true to keep it). Give the code as source, or — for large sources — sourcePath, an absolute path to a local file under your home directory (UTF-8, at most 5 MB) that is sent as it is; exactly one of the two. The new source is the inactive version until abap_activate. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
         url: z.string().describe("ADT object URL (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG)"),
         sourceUrl: z.string().optional().describe("ADT source URL — defaults to <url>/source/main"),
-        source: z.string().describe("New ABAP source code to write"),
+        source: z.string().optional().describe("New ABAP source code to write. Give this or sourcePath, not both."),
+        sourcePath: z.string().optional().describe("Absolute path of a local file under your home directory holding the new source (UTF-8, at most 5 MB) — read instead of source, so large sources need not pass through the conversation. Give this or source, not both."),
         transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
         createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),

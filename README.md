@@ -687,6 +687,9 @@ Write new source code to an ABAP object. Automatically locks the object before w
 Parameters:
   objectUrl   ADT URL of the object
   source      New source code (full replacement)
+  sourcePath  Instead of source: absolute path of a local file under your home
+              directory (UTF-8, max 5 MB), sent as it is — for large sources that
+              should not pass through the conversation. Exactly one of the two.
   transport   Transport request number (required for transportable packages)
   connection  System id
 

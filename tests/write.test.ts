@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   handleWriteAbapObjectSource,
+  readSourceFile,
+  SOURCE_FILE_MAX_BYTES,
   handleLockAbapObject,
   handleUnlockAbapObject,
   handleCreateAbapObject,
@@ -27,6 +29,7 @@ vi.mock("../src/tools/transportSql", () => ({
   lookupRequest: vi.fn(async (_conn: string | undefined, trkorr: string) => ({ trkorr, fn: "K", status: "D", owner: "DEV", text: "Test request" })),
   listOpenRequests: vi.fn(async () => []),
 }))
+import * as fsMod from "fs"
 import * as os from "os"
 import * as path from "path"
 process.env.ABAP_MCP_TRANSPORT_MEMORY = path.join(os.tmpdir(), `abap-mcp-write-test-${process.pid}.json`)
@@ -126,6 +129,52 @@ describe("write_abap_object_source", () => {
     await expect(handleWriteAbapObjectSource({ url: "/url", source: "x" })).rejects.toThrow("write failed")
     expect(mockClient.unLock).toHaveBeenCalledWith("/url", "LOCK_ABC123")
     expect(forgetLock).toHaveBeenCalledWith(undefined, "/url")
+  })
+})
+
+// ─── write_abap_object_source: sourcePath ─────────────────────────────────────
+
+describe("write_abap_object_source with sourcePath", () => {
+  const home = os.homedir()
+  let dir: string
+  beforeEach(() => { dir = fsMod.mkdtempSync(path.join(home, ".abap-mcp-srcpath-test-")) })
+  afterEach(() => { fsMod.rmSync(dir, { recursive: true, force: true }) })
+
+  it("writes the file's content as is (CRLF kept, BOM dropped)", async () => {
+    const file = path.join(dir, "zprog.abap")
+    fsMod.writeFileSync(file, "\uFEFFREPORT zprog.\r\nWRITE 'ä'.\r\n", "utf8")
+    const result = await handleWriteAbapObjectSource({ url: "/sap/bc/adt/programs/ZPROG", sourcePath: file })
+    expect(mockClient.setObjectSource).toHaveBeenCalledWith(
+      "/sap/bc/adt/programs/ZPROG/source/main", "REPORT zprog.\r\nWRITE 'ä'.\r\n", "LOCK_ABC123", undefined)
+    expect(result.content[0].text).toContain("✅")
+  })
+
+  it("refuses both or neither of source and sourcePath without touching SAP", async () => {
+    for (const a of [{}, { source: "x", sourcePath: path.join(dir, "f") }]) {
+      const r = await handleWriteAbapObjectSource({ url: "/url", ...a })
+      expect(r.content[0].text).toContain("exactly one of source")
+    }
+    expect(ensureConnected).not.toHaveBeenCalled()
+  })
+
+  it("refuses a relative path, a path outside home, a directory and an oversized file", async () => {
+    expect(readSourceFile("zprog.abap")).toMatchObject({ error: expect.stringContaining("absolute") })
+    expect(readSourceFile("/etc/hosts")).toMatchObject({ error: expect.stringContaining("under your home directory") })
+    expect(readSourceFile(path.join(dir, "..", "..", "..", "etc", "hosts"))).toMatchObject({ error: expect.stringContaining("under your home") })
+    expect(readSourceFile(dir)).toMatchObject({ error: expect.stringContaining("not a file") })
+    expect(readSourceFile(path.join(dir, "missing.abap"))).toMatchObject({ error: expect.stringContaining("Cannot read") })
+    const big = path.join(dir, "big.abap")
+    fsMod.writeFileSync(big, Buffer.alloc(SOURCE_FILE_MAX_BYTES + 1, 0x41))
+    expect(readSourceFile(big)).toMatchObject({ error: expect.stringContaining("limit is 5 MB") })
+    const r = await handleWriteAbapObjectSource({ url: "/url", sourcePath: "/etc/hosts" })
+    expect(r.content[0].text).toContain("❌")
+    expect(mockClient.setObjectSource).not.toHaveBeenCalled()
+  })
+
+  it("refuses a symlink under home that points outside it", () => {
+    const link = path.join(dir, "hosts.abap")
+    fsMod.symlinkSync("/etc/hosts", link)
+    expect(readSourceFile(link)).toMatchObject({ error: expect.stringContaining("under your home directory") })
   })
 })
 
