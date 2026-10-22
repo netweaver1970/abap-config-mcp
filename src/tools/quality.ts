@@ -6,7 +6,8 @@ import {
   UnitTestMethod,
   UnitTestSeverity
 } from "abap-adt-api"
-import { ensureConnected } from "../connections"
+import { randomUUID } from "crypto"
+import { ensureConnected, newIsolatedClient, resolveConnectionId, log } from "../connections"
 import { resolveWorkbenchTransport } from "./write"
 
 export async function handleRunAtcAnalysis(args: {
@@ -68,20 +69,96 @@ function formatAlerts(alerts: UnitTestAlert[]): string {
 // MEDIUM test class was reported as "no unit test classes found".
 const ALL_RISKS_AND_DURATIONS = { harmless: true, dangerous: true, critical: true, short: true, medium: true, long: true }
 
+// How long one class run may take in SAP before this server gives up on its
+// answer (the run itself goes on in SAP), and how long one tool call waits for it
+// — below the HTTP server's 45 s watchdog and the MCP client's 60 s timeout.
+const RUN_CLASS_TIMEOUT_MS = parseInt(process.env.ABAP_RUN_CLASS_TIMEOUT_MS ?? "", 10) || 30 * 60_000
+const RUN_CLASS_WAIT_DEFAULT_S = 25
+const RUN_CLASS_WAIT_MAX_S = 40
+// A finished run nobody collected is forgotten after this long.
+const RUN_CLASS_KEEP_MS = 60 * 60_000
+
+interface ClassRun {
+  className: string
+  connectionId: string
+  startedAt: number
+  finishedAt?: number
+  output?: string
+  error?: string
+  done: Promise<void>
+}
+
+const classRuns = new Map<string, ClassRun>()
+
+function startClassRun(className: string, connectionId: string | undefined): string {
+  const runId = randomUUID().slice(0, 8)
+  const run: ClassRun = { className, connectionId: resolveConnectionId(connectionId), startedAt: Date.now(), done: Promise.resolve() }
+  // Its own stateless client, not the conversation's stateful session: that
+  // session's internal session keeps the class pool it loaded first, so a class
+  // created or changed since ran its old version, or failed with "does not
+  // implement if_oo_adt_classrun~main" (CAR, 2026-10-22). And a run that outlasts
+  // our wait or times out leaves the stateful session as it was.
+  run.done = (async () => {
+    let client
+    try {
+      client = await newIsolatedClient(connectionId, RUN_CLASS_TIMEOUT_MS)
+      run.output = String((await client.runClass(className)) ?? "").trim()
+    } catch (err) {
+      run.error = String((err as Error)?.message ?? err)
+    } finally {
+      run.finishedAt = Date.now()
+      if (client) client.logout().catch(e => log("DEBUG", `logout after running ${className} failed`, e))
+    }
+  })()
+  classRuns.set(runId, run)
+  return runId
+}
+
+function forgetOldRuns(now = Date.now()): void {
+  for (const [id, r] of classRuns) if (r.finishedAt && now - r.finishedAt > RUN_CLASS_KEEP_MS) classRuns.delete(id)
+}
+
 /**
  * Run a class that implements IF_OO_ADT_CLASSRUN — ADT's "Run as ABAP
  * Application (Console)" — and return what it wrote to OUT. The class decides
  * what happens: it can post documents and commit, so this is a tier-2 tool and
- * is never retried automatically after a lost session.
+ * is never retried automatically after a lost session. A run still going after
+ * the wait is left running and answered with a runId to collect it with.
  */
-export async function handleRunClass(args: { className: string; connectionId?: string }) {
-  const client = await ensureConnected(args.connectionId)
-  const name = args.className.trim().toUpperCase()
-  const output = await client.runClass(name)
-  const text = String(output ?? "").trim()
-  return {
-    content: [{ type: "text" as const, text: `▶ ${name} (IF_OO_ADT_CLASSRUN)\n\n${text || "(no output)"}` }],
+export async function handleRunClass(args: { className?: string; runId?: string; waitSeconds?: number; connectionId?: string }) {
+  forgetOldRuns()
+  if (!args.runId === !args.className) {
+    return { content: [{ type: "text" as const, text: "❌ Give className to start a run, or runId to collect one that is still going — not both." }] }
   }
+  let runId = args.runId
+  if (runId === undefined) {
+    runId = startClassRun(args.className!.trim().toUpperCase(), args.connectionId)
+  }
+  const run = classRuns.get(runId)
+  if (!run) {
+    return { content: [{ type: "text" as const, text: `❌ No class run ${runId}: it was collected already, or this server restarted, or it finished more than an hour ago.` }] }
+  }
+
+  const waitS = Math.min(Math.max(args.waitSeconds ?? RUN_CLASS_WAIT_DEFAULT_S, 0), RUN_CLASS_WAIT_MAX_S)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([run.done, new Promise<void>(r => { timer = setTimeout(r, waitS * 1000) })])
+  clearTimeout(timer)
+
+  const head = `▶ ${run.className} (IF_OO_ADT_CLASSRUN) on ${run.connectionId}`
+  if (run.finishedAt === undefined) {
+    const s = Math.round((Date.now() - run.startedAt) / 1000)
+    return { content: [{ type: "text" as const, text:
+      `${head}\n\n⏳ Still running in SAP after ${s} s. Call abap_run_class with runId: "${runId}" to wait for it and get its output ` +
+      `(this server waits for SAP up to ${Math.round(RUN_CLASS_TIMEOUT_MS / 60_000)} min).` }] }
+  }
+  classRuns.delete(runId)
+  if (run.error !== undefined) {
+    const timedOut = /timeout|timed out/i.test(run.error)
+    throw new Error(`${run.className} failed: ${run.error}` + (timedOut
+      ? `\nThe run may still be going on in SAP (SM50) — no answer came back in time. Your session was not affected.`
+      : ""))
+  }
+  return { content: [{ type: "text" as const, text: `${head}\n\n${run.output || "(no output)"}` }] }
 }
 
 export async function handleRunUnitTests(args: {
@@ -232,9 +309,11 @@ export function registerQualityTools(server: McpServer): void {
     "abap_run_class",
     {
       title: "Run ABAP Class (Console)",
-      description: "Run a class that implements IF_OO_ADT_CLASSRUN (ADT's 'Run as ABAP Application (Console)') and return what its MAIN method wrote to OUT. The class decides what happens — it can post documents and commit — so read it before running it. Never retried automatically after a lost session.",
+      description: "Run a class that implements IF_OO_ADT_CLASSRUN (ADT's 'Run as ABAP Application (Console)') and return what its MAIN method wrote to OUT. Runs the class's current active version, in a session of its own. The class decides what happens — it can post documents and commit — so read it before running it. Never retried automatically after a lost session. A run that takes longer than waitSeconds keeps running in SAP and answers with a runId: call again with runId to wait for it and get the output.",
       inputSchema: {
-        className: z.string().describe("Class name, e.g. ZCL_MY_RUNNER. Must implement IF_OO_ADT_CLASSRUN and be active."),
+        className: z.string().optional().describe("Class name, e.g. ZCL_MY_RUNNER. Must implement IF_OO_ADT_CLASSRUN and be active. Starts a new run."),
+        runId: z.string().optional().describe("Collect a run that was still going (from an earlier answer) instead of starting one."),
+        waitSeconds: z.number().optional().describe(`How long this call waits for the run to finish (default ${RUN_CLASS_WAIT_DEFAULT_S}, max ${RUN_CLASS_WAIT_MAX_S}); the run itself keeps going.`),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

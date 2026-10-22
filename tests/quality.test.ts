@@ -3,13 +3,15 @@ import {
   handleRunAtcAnalysis,
   handleRunUnitTests,
   handleCreateTestInclude,
+  handleRunClass,
 } from "../src/tools/quality"
 
 vi.mock("../src/connections", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/connections")>()),
   ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn(),
+  newIsolatedClient: vi.fn(), resolveConnectionId: (id?: string) => id ?? "CAR",
 }))
-import { ensureConnected } from "../src/connections"
+import { ensureConnected, newIsolatedClient } from "../src/connections"
 
 const mockClient = {
   createAtcRun: vi.fn(),
@@ -183,5 +185,45 @@ describe("create_test_include", () => {
     mockClient.createTestInclude.mockRejectedValue(new Error("include exists"))
     await expect(handleCreateTestInclude({ classUrl: "/url" })).rejects.toThrow("include exists")
     expect(mockClient.unLock).toHaveBeenCalled()
+  })
+})
+
+// ─── abap_run_class ───────────────────────────────────────────────────────────
+
+describe("abap_run_class", () => {
+  const runner = { runClass: vi.fn(), logout: vi.fn(async () => undefined) }
+  beforeEach(() => {
+    vi.mocked(newIsolatedClient).mockResolvedValue(runner as any)
+  })
+
+  it("runs on an isolated client, never the conversation's stateful session, and logs it out", async () => {
+    runner.runClass.mockResolvedValue("version 2\n")
+    const r = await handleRunClass({ className: "zcl_run", connectionId: "CAR" })
+    expect(newIsolatedClient).toHaveBeenCalledWith("CAR", expect.any(Number))
+    expect(ensureConnected).not.toHaveBeenCalled()
+    expect(runner.runClass).toHaveBeenCalledWith("ZCL_RUN")
+    expect(runner.logout).toHaveBeenCalled()
+    expect(r.content[0].text).toContain("version 2")
+  })
+
+  it("answers a long run with a runId and hands over the output on the next call", async () => {
+    let finish!: (v: string) => void
+    runner.runClass.mockReturnValue(new Promise<string>(res => { finish = res }))
+    const first = await handleRunClass({ className: "ZCL_LONG", waitSeconds: 0 })
+    const runId = /runId: "([^"]+)"/.exec(first.content[0].text)?.[1]
+    expect(first.content[0].text).toContain("Still running")
+    expect(runId).toBeTruthy()
+    finish("done")
+    const second = await handleRunClass({ runId, waitSeconds: 1 })
+    expect(second.content[0].text).toContain("done")
+    const third = await handleRunClass({ runId, waitSeconds: 0 })
+    expect(third.content[0].text).toContain("No class run")
+  })
+
+  it("reports a failed run as an error and needs exactly one of className / runId", async () => {
+    runner.runClass.mockRejectedValue(new Error("timeout of 1800000ms exceeded"))
+    await expect(handleRunClass({ className: "ZCL_X" })).rejects.toThrow(/still be going on in SAP/)
+    expect((await handleRunClass({})).content[0].text).toContain("❌")
+    expect((await handleRunClass({ className: "ZCL_X", runId: "abc" })).content[0].text).toContain("❌")
   })
 })

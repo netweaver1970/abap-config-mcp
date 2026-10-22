@@ -804,6 +804,19 @@ Parameters:
            severity, title, and detail lines for failures
 ```
 
+#### `abap_run_class`
+Run a class that implements `IF_OO_ADT_CLASSRUN` (ADT's "Run as ABAP Application (Console)") and return what it wrote to `out`. Each run gets a stateless SAP session of its own, so it always runs the current active version. The conversation's stateful session, which keeps running a class pool it has already loaded, is not used, and a slow run cannot leave that session stale. A run still going after `waitSeconds` keeps running in SAP and the answer carries a `runId`; call again with that `runId` to wait for it and get the output (the server waits for SAP up to 30 min, `ABAP_RUN_CLASS_TIMEOUT_MS`).
+
+```
+Parameters:
+  className    Class to run (starts a run)
+  runId        Instead of className: collect a run that was still going
+  waitSeconds  How long this call waits (default 25, max 40)
+  connectionId System id
+
+→ Returns: the class's console output, or a runId while it is still running
+```
+
 #### `create_test_include`
 Create a local test class include for an ABAP class (the `CCAU` include). The class must be locked before calling this. Returns the include URL for subsequent source writes.
 
