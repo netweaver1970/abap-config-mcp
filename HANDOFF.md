@@ -16,8 +16,12 @@
 >   log's error lines.
 > - **org_copy dry run** lists the dependent tables again (WERKS 0001 on S4: 385; BUKRS Z100: 1587).
 > - **`tools/list_changed`** is sent once per new session when its GET stream opens.
-> - Verified so far: dry runs on CAR/S4. Pending the user's OK: a recorded CDAT create+delete of
->   `/POSDW/STOGR` `ZMCP` on CAR `CARK900018`, checked in E071/E071K.
+> - **Verified on CAR (user-approved), `CARK900018` / task `CARK900019`:** create of `/POSDW/STOGR`
+>   `ZMCP` + text → E071 `R3TR CDAT /POSDW/VC_STOGR` and E071K `TABU /POSDW/STOGR 600ZMCP`,
+>   `TABU /POSDW/STOGRT 600EZMCP`, both mastered `CDAT /POSDW/VC_STOGR`; delete removed both rows.
+> - **Delete keys (engine 0.9.33):** the runtime clears the entry on `DEL`, and the writer kept it after
+>   the call, so every recorded delete (VDAT too) was keyed with blank fields (`600`, `600E`). Kept
+>   before the call now; re-run verified. The two blank keys from the first run are still on `CARK900019`.
 
 > ## ⏩ LATEST (2026-09-18) — v1.12.0: the rest of the review
 > - **No blind retries of writes.** After a degraded-session reconnect only read-only (tier 0) and repeatable

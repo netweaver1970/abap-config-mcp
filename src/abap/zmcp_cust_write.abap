@@ -554,6 +554,11 @@ FORM write_via_view
     IF lv_is_del = abap_true.
       lv_action = 'DEL'.
       CLEAR lv_corr.
+      " The runtime clears the entry on DEL: keep its key for the recording first.
+      " Kept after the call, the deletion was recorded under a blank key ('600'
+      " instead of '600ZMCP' for /POSDW/STOGR, CAR 2026-10-22).
+      DATA(lv_kept) = lines( lt_written ).
+      PERFORM keep_entry USING <entry> CHANGING lt_written.
       CALL FUNCTION 'VIEW_MAINTENANCE_SINGLE_ENTRY'
         EXPORTING
           action                     = lv_action
@@ -577,6 +582,8 @@ FORM write_via_view
           error_message              = 8
           OTHERS                     = 9.
       IF sy-subrc = 2.
+        lv_kept = lv_kept + 1.
+        DELETE lt_written FROM lv_kept.   " nothing deleted, nothing to record
         APPEND |Entry already absent — skipped| TO cs_result-messages.
         CONTINUE.
       ENDIF.
@@ -588,7 +595,6 @@ FORM write_via_view
         RETURN.
       ENDIF.
       cs_result-rows_written = cs_result-rows_written + 1.
-      PERFORM keep_entry USING <entry> CHANGING lt_written.
       CONTINUE.
     ENDIF.
 
