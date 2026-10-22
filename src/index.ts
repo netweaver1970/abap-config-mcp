@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as http from "http"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
@@ -23,6 +24,8 @@ process.on("unhandledRejection", (reason) => {
 // ─── Session management ────────────────────────────────────────────────────
 
 const transports: Record<string, StreamableHTTPServerTransport> = {}
+// Each session's McpServer, and whether it has told the client its tool list yet.
+const servers: Record<string, { server: McpServer; toldToolList: boolean }> = {}
 
 // ─── Auth ──────────────────────────────────────────────────────────────────
 
@@ -148,6 +151,7 @@ async function start(): Promise<void> {
             enableJsonResponse: true,
             onsessioninitialized: (sid: string) => {
               transports[sid] = transport
+              servers[sid] = { server: mcpServer, toldToolList: false }
               log("INFO", `Session opened  ${sid.slice(0, 8)}… (active: ${Object.keys(transports).length})`)
             }
           })
@@ -155,6 +159,7 @@ async function start(): Promise<void> {
             const sid = transport.sessionId
             if (sid) {
               delete transports[sid]
+              delete servers[sid]
               log("INFO", `Session closed  ${sid.slice(0, 8)}… (active: ${Object.keys(transports).length})`)
               // Its SAP ADT sessions end with it, releasing its locks.
               closeSessionConnections(sid).catch(err => log("WARN", `Closing ADT sessions of ${sid.slice(0, 8)} failed`, err))
@@ -231,7 +236,28 @@ async function start(): Promise<void> {
         // strands responses.  We therefore do NOT evict the session when the SSE
         // stream closes (that only forced needless reinitializations); the
         // session stays valid across GET-stream cycles and idle gaps.
-        await transports[sessionId].handleRequest(req, res)
+        const streaming = transports[sessionId].handleRequest(req, res)
+        // A client keeps the tool list it loaded when it first connected: after
+        // this server restarts, its old session gets a 404 and it initializes a
+        // new one, but goes on with the old list (new tools stay invisible until
+        // a manual reconnect). tools/list_changed makes a client that supports it
+        // fetch the list again. Sent once per session, when its GET stream is open
+        // — the only channel a server-initiated message can travel on, since tool
+        // responses come back on their own POST (enableJsonResponse).
+        // handleRequest resolves only when a GET stream closes, so the message
+        // goes out once the stream has started, not after the await.
+        const entry = servers[sessionId]
+        if (req.method === "GET" && entry && !entry.toldToolList) {
+          entry.toldToolList = true
+          setTimeout(() => {
+            try {
+              entry.server.sendToolListChanged()
+            } catch (err) {
+              log("DEBUG", `tools/list_changed for ${sessionId.slice(0, 8)} not sent`, err)
+            }
+          }, 200)
+        }
+        await streaming
         return
       }
     }

@@ -229,7 +229,10 @@ DRY RUN by default; `commit: true` to apply.
   server, then **reconnect the MCP client** — Claude Code snapshots the tool
   catalog at session start; a server restart reconnects the transport but does
   **not** re-list tools, so new/changed tool parameters aren't visible until the
-  client reconnects.
+  client reconnects. Since 2026-10-22 the server sends `notifications/tools/list_changed`
+  once on every new session, as soon as the client opens its GET stream, so a client
+  that honours it fetches the list again on its own after a restart; a client that
+  opens no GET stream, or ignores the notification, still needs the reconnect.
 
 ---
 
