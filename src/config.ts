@@ -24,6 +24,8 @@ export interface ServerConfig {
 
 export interface Config {
   connections: ConnectionConfig[]
+  /** Connection used when a tool call names none (default: the first one). Env ABAP_MCP_DEFAULT_CONNECTION overrides it. */
+  defaultConnection?: string
   server?: ServerConfig
 }
 

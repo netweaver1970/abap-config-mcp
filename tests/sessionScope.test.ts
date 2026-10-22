@@ -15,13 +15,18 @@ vi.mock("abap-adt-api", () => ({
   },
 }))
 vi.mock("../src/config", () => ({
-  loadConfig: () => ({ connections: [{ id: "S4", url: "https://sap", username: "U", password: "P" }] }),
+  loadConfig: () => ({ connections: [
+    { id: "S4", url: "https://sap", username: "U", password: "P" },
+    { id: "CAR", url: "https://car", username: "U", password: "P" },
+  ] }),
 }))
 
 import {
   ensureConnected, runInSession, trackLock, getHeldLock, dropSessionLocks,
   closeSessionConnections, evictIdleSessions, listSessions, stopKeepAlive, forceReconnect, closeAllConnections,
+  resolveConnectionId,
 } from "../src/connections"
+import { runSql } from "../src/tools/customizing"
 
 beforeEach(async () => {
   stopKeepAlive()
@@ -103,6 +108,28 @@ describe("a re-login never orphans the old SAP context", () => {
     expect(created.every(c => c.dropSession.mock.calls.length === 1)).toBe(true)
     expect(created[0].unLock).toHaveBeenCalledWith("/obj", "LA")
     expect(listSessions()).toHaveLength(0)
+  })
+})
+
+describe("which system a call goes to", () => {
+  it("is the first connection unless a default is configured", () => {
+    expect(resolveConnectionId()).toBe("S4")
+    expect(resolveConnectionId("CAR")).toBe("CAR")
+    process.env.ABAP_MCP_DEFAULT_CONNECTION = "CAR"
+    try {
+      expect(resolveConnectionId()).toBe("CAR")
+      process.env.ABAP_MCP_DEFAULT_CONNECTION = "NOPE"
+      expect(() => resolveConnectionId()).toThrow(/default connection "NOPE" is not configured/)
+    } finally { delete process.env.ABAP_MCP_DEFAULT_CONNECTION }
+  })
+
+  it("runSql renews the client's own system on a retry, not the first one", async () => {
+    const client = await runInSession("conv-r", () => ensureConnected("CAR")) as any
+    client.statelessClone = { runQuery: vi.fn().mockRejectedValueOnce(new Error("HTTP 500")).mockResolvedValue({ columns: [], values: [] }) }
+    calls.length = 0
+    await runInSession("conv-r", () => runSql(client, "SELECT 1 FROM t000"))
+    expect(created).toHaveLength(1)            // no client for S4 was made
+    expect(calls).toEqual(["drop", "login"])   // CAR's own session was renewed
   })
 })
 

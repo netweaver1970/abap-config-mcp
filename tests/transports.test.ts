@@ -15,18 +15,19 @@ vi.mock("../src/connections", async (importOriginal) => ({
 }))
 
 // SQL answers keyed by a fragment of the statement.
-const sqlAnswers: Array<[RegExp, Array<Record<string, string>>]> = []
+const { sqlAnswers, answerSql } = vi.hoisted(() => {
+  const sqlAnswers: Array<[RegExp, Array<Record<string, string>>]> = []
+  const answerSql = async (_c: unknown, sql: string) => {
+    const hit = sqlAnswers.find(([re]) => re.test(sql))
+    const rows = hit ? hit[1] : []
+    const columns = rows.length ? Object.keys(rows[0]).map(name => ({ name })) : [{ name: "X" }]
+    return { columns, values: rows }
+  }
+  return { sqlAnswers, answerSql }
+})
 vi.mock("../src/tools/customizing", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/tools/customizing")>()
-  return {
-    ...actual,
-    runSql: vi.fn(async (_c: unknown, sql: string) => {
-      const hit = sqlAnswers.find(([re]) => re.test(sql))
-      const rows = hit ? hit[1] : []
-      const columns = rows.length ? Object.keys(rows[0]).map(name => ({ name })) : [{ name: "X" }]
-      return { columns, values: rows }
-    }),
-  }
+  return { ...actual, runSql: vi.fn(answerSql) }
 })
 import * as os from "os"
 import * as path from "path"
@@ -43,6 +44,9 @@ const mockClient = {
   transportSetOwner: vi.fn(),
   transportInfo: vi.fn(),
   systemUsers: vi.fn(),
+  // transportSql.ts reaches the real runSql (the mock above does not cover it),
+  // which queries through the stateless clone: answer from the same fixtures.
+  statelessClone: { runQuery: vi.fn((sql: string) => answerSql(undefined, sql)) },
 }
 
 beforeEach(() => {

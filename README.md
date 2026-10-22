@@ -99,6 +99,8 @@ This step is the first one. Create `connections.json` in the project directory:
 }
 ```
 
+A call that names no `connectionId` goes to the first connection listed. To pick another, add `"defaultConnection": "<id>"` at the top level (or set `ABAP_MCP_DEFAULT_CONNECTION`); `connected_systems` shows which one it is.
+
 > `connections.json` is gitignored and never committed — it holds SAP passwords and the shared secret. See `config/connections.example.json` for reference.
 
 The `server.apiKey` is the **shared secret** every AI client must present to use the server. **Generate a strong one now** and paste the same value into both this file and each client config later:

@@ -14,7 +14,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, forceReconnect, isRequestError, log } from "../connections"
+import { ensureConnected, forceReconnect, isRequestError, log, connectionIdOf } from "../connections"
 import { formatQueryResult } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import type { ADTClient, QueryResult } from "abap-adt-api"
@@ -29,9 +29,12 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // reliable instead of silently falling back to a wrong answer.
 export async function runSql(client: ADTClient, sql: string, maxRows = 200): Promise<QueryResult> {
   let lastErr: unknown
+  // Reconnect the system this client belongs to: a bare forceReconnect() renewed
+  // — and re-ran the query on — the FIRST configured system instead.
+  const connectionId = connectionIdOf(client)
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const c = attempt === 0 ? client : await forceReconnect()
+      const c = attempt === 0 || !connectionId ? client : await forceReconnect(connectionId)
       // Run freestyle SQL on the STATELESS clone, not the long-lived stateful
       // session.  ADT's Data Preview (CL_ADT_DP_OPEN_SQL_HANDLER) does a
       // GENERATE SUBROUTINE POOL per query; ABAP caps those at 36 per internal

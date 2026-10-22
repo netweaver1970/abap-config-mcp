@@ -98,8 +98,29 @@ function buildClient(cfg: ConnectionConfig, timeoutMs?: number): ADTClient {
   )
 }
 
+/**
+ * The connection a call means: the one it names, else the configured default
+ * (ABAP_MCP_DEFAULT_CONNECTION, then defaultConnection in connections.json),
+ * else the first one listed.
+ */
 export function resolveConnectionId(connectionId?: string): string {
-  return connectionId ?? loadConfig().connections[0].id
+  if (connectionId) return connectionId
+  const config = loadConfig()
+  const configured = process.env.ABAP_MCP_DEFAULT_CONNECTION?.trim() || config.defaultConnection
+  if (configured) {
+    if (!config.connections.some(c => c.id === configured)) {
+      throw new Error(`The default connection "${configured}" is not configured. Available: ${config.connections.map(c => c.id).join(", ")}`)
+    }
+    return configured
+  }
+  return config.connections[0].id
+}
+
+/** Which connection a client from ensureConnected() belongs to. */
+const clientConnection = new WeakMap<ADTClient, string>()
+
+export function connectionIdOf(client: ADTClient): string | undefined {
+  return clientConnection.get(client)
 }
 
 /** Unlock every lock this ADT session tracks (best-effort; ending the session releases them too). */
@@ -158,6 +179,7 @@ function managedFor(connectionId?: string): ManagedConnection {
     const cfg = getConnectionConfig(id)
     managed = { config: cfg, client: buildClient(cfg), sessionId, loggedIn: false, lastActivityAt: 0, lastUsedAt: Date.now(), locks: new Map(), hadContext: false }
     connections.set(connKey(id, sessionId), managed)
+    clientConnection.set(managed.client, id)
     log("DEBUG", `New ADT session for ${id} / MCP session ${sessionId.slice(0, 8)}`)
   }
   return managed

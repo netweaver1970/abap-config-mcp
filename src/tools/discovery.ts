@@ -4,8 +4,10 @@ import { ensureConnected, forceReconnect, listConnections, resolveConnectionId }
 
 export async function handleConnectedSystems() {
   const conns = listConnections()
+  let def: string | undefined
+  try { def = resolveConnectionId() } catch { /* misconfigured default: listed without a marker */ }
   const lines = conns.map(c =>
-    `- ${c.id}: ${c.url} (user: ${c.username}, client: ${c.client ?? "default"})`
+    `- ${c.id}: ${c.url} (user: ${c.username}, client: ${c.client ?? "default"})${c.id === def ? " — default when connectionId is omitted" : ""}`
   )
   return {
     content: [{ type: "text" as const, text: `Available SAP systems:\n${lines.join("\n")}` }]
