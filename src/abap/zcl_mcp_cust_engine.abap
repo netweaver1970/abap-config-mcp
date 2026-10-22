@@ -761,9 +761,62 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       IF sy-subrc = 0.
         lv_desc = <desc>.
       ENDIF.
+
+      " The dependent tables the copier would process: ECOP_GET_TABLES_TO_ORGUNIT
+      " fills PS_ORGUNIT-TABLES (and -EXTTABLES), references to ECOP_TABLES_TAB
+      " (rows ECOP_TAB2DOMAIN: TABNAME, DDTEXT). Read generically, so the class
+      " still compiles where ECOP is absent. Without this every dry run reported
+      " 0 tables (seen for WERKS).
+      TYPES: BEGIN OF ty_deptab,
+               tabname TYPE string,
+               text    TYPE string,
+             END OF ty_deptab.
+      DATA: lt_deptabs TYPE STANDARD TABLE OF ty_deptab WITH DEFAULT KEY,
+            lr_tabs    TYPE REF TO data.
+      " The components are typed REF TO ECOP_TABLES_TAB: a field symbol typed
+      " REF TO data refuses them (ASSIGN_TYPE_CONFLICT), a widening move takes them.
+      FIELD-SYMBOLS: <tref> TYPE any,
+                     <tabs> TYPE ANY TABLE,
+                     <trow> TYPE any,
+                     <tnam> TYPE any,
+                     <ttxt> TYPE any.
+      LOOP AT VALUE stringtab( ( `TABLES` ) ( `EXTTABLES` ) ) INTO DATA(lv_comp).
+        ASSIGN COMPONENT lv_comp OF STRUCTURE <orgunit> TO <tref>.
+        IF sy-subrc <> 0.
+          CONTINUE.
+        ENDIF.
+        TRY.
+            lr_tabs = <tref>.
+          CATCH cx_root.
+            CONTINUE.
+        ENDTRY.
+        IF lr_tabs IS NOT BOUND.
+          CONTINUE.
+        ENDIF.
+        ASSIGN lr_tabs->* TO <tabs>.
+        IF sy-subrc <> 0.
+          CONTINUE.
+        ENDIF.
+        LOOP AT <tabs> ASSIGNING <trow>.
+          ASSIGN COMPONENT 'TABNAME' OF STRUCTURE <trow> TO <tnam>.
+          CHECK sy-subrc = 0 AND <tnam> IS NOT INITIAL.
+          READ TABLE lt_deptabs TRANSPORTING NO FIELDS WITH KEY tabname = CONV string( <tnam> ).
+          CHECK sy-subrc <> 0.
+          APPEND VALUE #( tabname = <tnam> ) TO lt_deptabs ASSIGNING FIELD-SYMBOL(<dt>).
+          ASSIGN COMPONENT 'DDTEXT' OF STRUCTURE <trow> TO <ttxt>.
+          IF sy-subrc = 0.
+            <dt>-text = <ttxt>.
+          ENDIF.
+        ENDLOOP.
+      ENDLOOP.
+      rs_resp-rows_planned = lines( lt_deptabs ).
+      IF lt_deptabs IS NOT INITIAL.
+        rs_resp-data_json = /ui2/cl_json=>serialize( data = lt_deptabs pretty_name = /ui2/cl_json=>pretty_mode-none ).
+      ENDIF.
+
       rs_resp-status = 'ok'.
       APPEND |DRY RUN — { lv_action } '{ lv_desc }' ({ lv_org_unit }): { lv_source } → { lv_target } | &&
-             |— commit to copy the org unit with its dependent customizing|
+             |— { lines( lt_deptabs ) } dependent table(s); commit to copy the org unit with its dependent customizing|
         TO rs_resp-messages.
       RETURN.
     ENDIF.

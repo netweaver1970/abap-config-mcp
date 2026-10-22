@@ -701,7 +701,9 @@ export async function handleOrgCopy(args: {
     // ROWS_WRITTEN is the E071K object-key count, NOT a table count (the real
     // dependent-table count is in the messages, e.g. "91 dependent tables processed").
     ...(isDry
-      ? [`   Dependent tables: not enumerated on dry run (resolved by the copier at commit)`]
+      ? [r.ROWS_PLANNED
+          ? `   Dependent tables: ${r.ROWS_PLANNED}`
+          : `   Dependent tables: not enumerated (an engine before 0.9.31, or the copier listed none)`]
       : r.STATUS === "ok"
         ? [`   Object keys recorded: ${r.ROWS_WRITTEN ?? 0}  (on the transport task; see messages for the table count)`]
         : []),
