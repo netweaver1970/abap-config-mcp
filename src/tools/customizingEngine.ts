@@ -17,7 +17,7 @@ import * as nodeHttp from "http"
 import * as nodeHttps from "https"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, dropSessionLocks, log, getConnectionConfig } from "../connections"
+import { ensureConnected, dropSessionLocks, log, getConnectionConfig, isSessionDegradedError } from "../connections"
 import { handleCreateAbapObject, handleWriteAbapObjectSource, handleDeleteAbapObject } from "./write"
 import { handleAbapActivate } from "./activate"
 import {
@@ -836,6 +836,10 @@ export async function handleCustomizingApply(args: {
         resolveNote = `(no generated maintenance for ${args.table}; dry-run only)\n`
       }
     } catch (err) {
+      // A degraded ADT session goes to the session recovery (it renews the session
+      // and says so); carrying on without the maintenance object would not be the
+      // same write.
+      if (isSessionDegradedError(err)) throw err
       log("WARN", "maintenance-object resolution failed", err)
     }
   }
@@ -1029,6 +1033,10 @@ export async function handleCustomizingCreate(args: {
         resolveNote = `(no generated maintenance for ${args.table}; dry-run only)\n`
       }
     } catch (err) {
+      // A degraded ADT session goes to the session recovery (it renews the session
+      // and says so); carrying on without the maintenance object would not be the
+      // same write.
+      if (isSessionDegradedError(err)) throw err
       log("WARN", "maintenance-object resolution failed", err)
     }
   }
