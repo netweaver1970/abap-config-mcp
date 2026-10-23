@@ -17,7 +17,7 @@ import * as nodeHttp from "http"
 import * as nodeHttps from "https"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected, dropSessionLocks, log, getConnectionConfig, isSessionDegradedError } from "../connections"
+import { ensureConnected, dropSessionLocks, log, getConnectionConfig, isSessionDegradedError, assertAdt } from "../connections"
 import { handleCreateAbapObject, handleWriteAbapObjectSource, handleDeleteAbapObject } from "./write"
 import { handleAbapActivate } from "./activate"
 import {
@@ -155,6 +155,7 @@ function engineHttpPost(
   timeoutMs: number,
 ): Promise<EngineHttpResponse> {
   const cfg = getConnectionConfig(connectionId)
+  assertAdt(cfg)   // the engine lives on ADT systems; never send a logon to a SOAP RFC one
   const u = new URL(cfg.url)
   const isHttps = u.protocol === "https:"
   const lib = isHttps ? nodeHttps : nodeHttp

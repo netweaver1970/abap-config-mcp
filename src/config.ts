@@ -15,6 +15,12 @@ export interface ConnectionConfig {
   ca?: string
   /** Request timeout in milliseconds (default: library default). */
   timeout?: number
+  /**
+   * How the server talks to this system. "adt" (default): the ADT REST API.
+   * "soap-rfc": SAP's SOAP RFC service (/sap/bc/soap/rfc) for releases without
+   * ADT — read-only, a subset of the tools (see docs/soap-rfc-connections.md).
+   */
+  protocol?: "adt" | "soap-rfc"
 }
 
 export interface ServerConfig {
@@ -105,6 +111,13 @@ export function loadConfig(): Config {
 
   if (!_config.connections || _config.connections.length === 0) {
     console.error("No connections defined in config file.")
+    process.exit(1)
+  }
+
+  // A mistyped protocol must not silently mean ADT: ADT logons would then go to a system without ADT.
+  const badProtocol = _config.connections.find(c => c.protocol !== undefined && c.protocol !== "adt" && c.protocol !== "soap-rfc")
+  if (badProtocol) {
+    console.error(`Connection ${badProtocol.id}: unknown protocol ${JSON.stringify(badProtocol.protocol)} (use "adt" or "soap-rfc").`)
     process.exit(1)
   }
 

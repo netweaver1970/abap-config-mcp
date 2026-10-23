@@ -15,6 +15,7 @@ import { registerCustomizingTools } from "./customizing"
 import { registerCustomizingEngineTools } from "./customizingEngine"
 import { registerEngineDeployTools } from "./engineDeploy"
 import { wrapServerWithSessionRecovery, wrapServerWithSessionScope } from "./sessionRecovery"
+import { wrapServerWithSoapRfcRouting } from "./soapRfcRouting"
 import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
 import { log } from "../connections"
 
@@ -25,7 +26,11 @@ export function registerAllTools(server: McpServer): void {
   //
   // Innermost: bind each call to its MCP session, so the recovery retry (which
   // reconnects) also acts on that session's own ADT session only.
-  const guarded = wrapServerWithSessionRecovery(wrapServerWithSessionScope(server))
+  //
+  // Between the two: a call for a SOAP RFC connection (a system without ADT) goes
+  // to its read-only SOAP handler or is refused, before any ADT reconnect logic
+  // can run — see soapRfcRouting.ts. ADT calls pass through unchanged.
+  const guarded = wrapServerWithSessionRecovery(wrapServerWithSoapRfcRouting(wrapServerWithSessionScope(server)))
 
   // Risk-tier gating: ABAP_MCP_MAX_TIER caps which tools are exposed (0 = read-
   // only/diagnostics, 1 = + customizing writes, 2/unset = full incl. code

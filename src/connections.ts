@@ -170,6 +170,18 @@ async function doLogin(managed: ManagedConnection): Promise<void> {
   startKeepAlive()
 }
 
+/** True when the connection talks SOAP RFC instead of ADT (config protocol "soap-rfc"). */
+export function isSoapRfcConnection(connectionId?: string): boolean {
+  return getConnectionConfig(connectionId).protocol === "soap-rfc"
+}
+
+/** Refuse ADT on a SOAP RFC connection: its system has no /sap/bc/adt, and a login attempt would only fail there. */
+export function assertAdt(cfg: ConnectionConfig): void {
+  if (cfg.protocol === "soap-rfc") {
+    throw new Error(`${cfg.id} is a SOAP RFC connection (no ADT on that system): this operation needs ADT and is not supported there.`)
+  }
+}
+
 /** This MCP session's connection entry for connectionId, created (not logged in) when missing. */
 function managedFor(connectionId?: string): ManagedConnection {
   const id = resolveConnectionId(connectionId)
@@ -177,6 +189,7 @@ function managedFor(connectionId?: string): ManagedConnection {
   let managed = connections.get(connKey(id, sessionId))
   if (!managed) {
     const cfg = getConnectionConfig(id)
+    assertAdt(cfg)
     managed = { config: cfg, client: buildClient(cfg), sessionId, loggedIn: false, lastActivityAt: 0, lastUsedAt: Date.now(), locks: new Map(), hadContext: false }
     connections.set(connKey(id, sessionId), managed)
     clientConnection.set(managed.client, id)
@@ -233,7 +246,9 @@ export async function forceReconnect(connectionId?: string): Promise<ADTClient> 
  * timeout on it leaves that context untouched. The caller logs it out.
  */
 export async function newIsolatedClient(connectionId: string | undefined, timeoutMs: number): Promise<ADTClient> {
-  const client = buildClient(getConnectionConfig(connectionId), timeoutMs)
+  const cfg = getConnectionConfig(connectionId)
+  assertAdt(cfg)
+  const client = buildClient(cfg, timeoutMs)
   await client.login()
   return client
 }

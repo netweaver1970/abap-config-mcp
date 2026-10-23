@@ -311,7 +311,8 @@ async function start(): Promise<void> {
   // Disable with ABAP_NO_WARMUP=1.
   if (!process.env.ABAP_NO_WARMUP) {
     const conns = listConnections()
-    if (conns.length > 0) {
+    // A SOAP RFC connection has no session to warm up.
+    if (conns.length > 0 && conns[0].protocol !== "soap-rfc") {
       const warmId = conns[0].id
       const tw = Date.now()
       log("INFO", `Warming up SAP session for ${warmId}…`)
