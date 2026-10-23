@@ -197,6 +197,12 @@ describe("logon protection", () => {
     expect(calls).toHaveLength(1)
   })
 
+  it("names the function module when the connection drops, and does not latch", async () => {
+    setSoapTransport(async () => { throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) })
+    await expect(callRfc("OLD", "RFC_READ_TABLE", {})).rejects.toThrow("OLD: RFC_READ_TABLE got no answer: socket hang up (ECONNRESET)")
+    await expect(callRfc("OLD", "RFC_READ_TABLE", {})).rejects.toThrow(/got no answer/)
+  })
+
   it("does not latch on a 5xx error page (proxy, ICM, dump)", async () => {
     httpStatus = 503
     httpBody = "<html>Service unavailable</html>"

@@ -4,12 +4,17 @@
  * system without /sap/bc/adt can still be read: RFC_READ_TABLE for tables, the
  * program read FMs for sources (see readTable.ts, source.ts).
  *
- * Each call is its own HTTP request with Basic auth, no cookies, Connection:
- * close — there is no session to keep alive or degrade. Calls to one connection
- * run one at a time, and a 401 — or any answer that is not a SOAP envelope, such
- * as a logon page — stops every further call to that connection until the server
- * process restarts: each failed logon counts towards locking the SAP user, so a
- * wrong password must cost one attempt, not one per queued call.
+ * Each call is its own HTTP request on its own socket (a fresh agent per call,
+ * destroyed when the answer is in), with Basic auth and no cookies: there is no
+ * session to keep alive or degrade. It sends no "Connection: close": an old CAR
+ * system (2026-10-23) dropped the first logged-on call from Node 24 that carried
+ * it ("socket hang up"), while curl's same request without it was answered.
+ *
+ * Calls to one connection run one at a time, and a 401 — or any answer that is
+ * not a SOAP envelope, such as a logon page — stops every further call to that
+ * connection until the server process restarts: each failed logon counts towards
+ * locking the SAP user, so a wrong password must cost one attempt, not one per
+ * queued call.
  *
  * Callers must only invoke function modules that read. The tool layer
  * (tools/soapRfcRouting.ts) never exposes anything else on such a connection.
@@ -48,7 +53,9 @@ const defaultTransport: SoapTransport = (cfg, path, body, timeoutMs) => {
   const isHttps = u.protocol === "https:"
   const lib = isHttps ? nodeHttps : nodeHttp
   const auth = Buffer.from(`${cfg.username}:${cfg.password}`).toString("base64")
-  return new Promise((resolve, reject) => {
+  // keepAlive: Node then sends no "Connection: close" (agent: false or a plain agent would).
+  const agent = new lib.Agent({ keepAlive: true, maxSockets: 1 })
+  return new Promise<SoapHttpResponse>((resolve, reject) => {
     const req = lib.request(
       {
         protocol: u.protocol,
@@ -61,8 +68,8 @@ const defaultTransport: SoapTransport = (cfg, path, body, timeoutMs) => {
           "Content-Type": "text/xml; charset=utf-8",
           SOAPAction: `"${RFC_NS}"`,
           "Content-Length": Buffer.byteLength(body),
-          Connection: "close",
         },
+        agent,
         ...(isHttps && cfg.allowSelfSigned ? { rejectUnauthorized: false } : {}),
         ...(isHttps && cfg.ca ? { ca: cfg.ca } : {}),
       },
@@ -75,7 +82,7 @@ const defaultTransport: SoapTransport = (cfg, path, body, timeoutMs) => {
     req.setTimeout(timeoutMs, () => req.destroy(new Error(`SOAP RFC request timed out after ${timeoutMs} ms`)))
     req.on("error", reject)
     req.end(body)
-  })
+  }).finally(() => agent.destroy())
 }
 
 let transport: SoapTransport = defaultTransport
@@ -157,8 +164,15 @@ async function callOnce(cfg: ConnectionConfig, fm: string, params: RfcParams): P
   const refused = logonRefused.get(cfg.id)
   if (refused) throw new SoapRfcError(refused, "LOGON_REFUSED", 401)
   const t0 = Date.now()
-  const resp = await transport(cfg, soapPath(cfg), buildEnvelope(fm, params), cfg.timeout ?? 60_000)
-  log("DEBUG", `SOAP RFC ${cfg.id} ${fm} → HTTP ${resp.status} (${Date.now() - t0} ms)`)
+  let resp: SoapHttpResponse
+  try {
+    resp = await transport(cfg, soapPath(cfg), buildEnvelope(fm, params), cfg.timeout ?? 60_000)
+  } catch (err) {
+    const e = err as { message?: string; code?: string }
+    log("WARN", `SOAP RFC ${cfg.id} ${fm} failed after ${Date.now() - t0} ms: ${e?.message ?? err}${e?.code ? ` (${e.code})` : ""}`)
+    throw new SoapRfcError(`${cfg.id}: ${fm} got no answer: ${e?.message ?? err}${e?.code ? ` (${e.code})` : ""}`, e?.code)
+  }
+  log("INFO", `SOAP RFC ${cfg.id} ${fm} → HTTP ${resp.status} (${Date.now() - t0} ms)`)
   if (resp.status === 401) {
     throw refuseFurtherCalls(cfg, `${cfg.id}: SAP refused the logon of ${cfg.username} (HTTP 401). No further calls go to ${cfg.id} until the ` +
       `server restarts, so a wrong password cannot lock the user. Check the user and password for ${cfg.id} in connections.json, then restart the server.`)
