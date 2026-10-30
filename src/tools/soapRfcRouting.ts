@@ -41,6 +41,8 @@ async function soapExecuteDataQuery(a: Args): Promise<ToolResult> {
   const limits = [q.maxRows, typeof a.maxRows === "number" ? a.maxRows : undefined].filter((n): n is number => typeof n === "number" && n > 0)
   const maxRows = limits.length ? Math.min(...limits) : 100
   const r = await readTable(a.connectionId, q.table, { fields: q.fields, where: q.where, maxRows })
+  // json: every value in full, as on the ADT route (the table view cuts cells at 50 characters)
+  if (a.format === "json") return text(JSON.stringify({ columns: r.columns, rows: r.rows, notes: r.notes }))
   return text(tableText(r, maxRows))
 }
 

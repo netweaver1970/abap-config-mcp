@@ -90,6 +90,7 @@ export function formatQueryResult(result: QueryResult): string {
 export async function handleExecuteDataQuery(args: {
   sql: string
   maxRows?: number
+  format?: "table" | "json"
   connectionId?: string
 }) {
   validateSql(args.sql)
@@ -102,7 +103,11 @@ export async function handleExecuteDataQuery(args: {
   // into JS Dates (and crashes on an empty one: "reading 'substr'") and NUMC /
   // DEC into floats (a 23-digit request TSN came back as 2.0261021213305e+22).
   const result = await freestyleQuery(client, args.sql, args.maxRows ?? 100)
-  return { content: [{ type: "text" as const, text: formatQueryResult(result) }] }
+  // json: every value in full (the table view cuts cells at 50 characters), for scripts and long texts.
+  const text = args.format === "json"
+    ? JSON.stringify({ columns: (result.columns ?? []).map(c => c.name), rows: result.values ?? [] })
+    : formatQueryResult(result)
+  return { content: [{ type: "text" as const, text }] }
 }
 
 export async function handleReadTableContents(args: {
@@ -139,6 +144,7 @@ export function registerDataTools(server: McpServer): void {
       inputSchema: {
         sql: z.string().describe("SQL SELECT statement (e.g. SELECT * FROM MARA WHERE MATNR LIKE 'Z%' UP TO 100 ROWS)"),
         maxRows: z.number().optional().describe("Maximum rows to return (default: 100)"),
+        format: z.enum(["table", "json"]).optional().describe("table (default): aligned text, cells cut at 50 characters. json: { columns, rows } with every value in full"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

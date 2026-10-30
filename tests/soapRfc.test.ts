@@ -541,6 +541,17 @@ describe("SOAP RFC routing", () => {
     await expect(q({ sql: "SELECT * FROM T000 ORDER BY MANDT", connectionId: "OLD" })).rejects.toThrow(/ORDER BY/)
   })
 
+  it("execute_data_query with format json gives every value in full, the table view cuts at 50", async () => {
+    const long = "x".repeat(60)
+    tables.T000.fields[1].length = 60
+    tables.T000.rows[1].MTEXT = long
+    const sql = "SELECT MANDT, MTEXT FROM T000 UP TO 5 ROWS"
+    const json = await SOAP_RFC_HANDLERS.execute_data_query({ sql, format: "json", connectionId: "OLD" })
+    expect(JSON.parse(json.content[0].text)).toMatchObject({ columns: ["MANDT", "MTEXT"], rows: [{ MANDT: "000" }, { MANDT: "200", MTEXT: long }] })
+    const table = await SOAP_RFC_HANDLERS.execute_data_query({ sql, connectionId: "OLD" })
+    expect(table.content[0].text).not.toContain(long)
+  })
+
   it("execute_data_query takes the smaller of UP TO and maxRows and says when it stopped", async () => {
     const r = await SOAP_RFC_HANDLERS.execute_data_query({ sql: "SELECT * FROM T000 UP TO 5 ROWS", maxRows: 1, connectionId: "OLD" })
     expect(r.content[0].text).toContain("(1 row(s))")
