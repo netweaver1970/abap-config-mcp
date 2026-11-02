@@ -380,7 +380,14 @@ The **desktop app** (the Claude GUI). It speaks MCP over stdio, so it uses the
 (create it if it doesn't exist) — this is **not** the same file Claude Code uses:
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json` (Microsoft Store install:
+  `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude\claude_desktop_config.json`)
+
+The easiest way to find the right file is **Settings → Developer → Edit Config** in the app.
+On Windows that opens File Explorer with the file selected — right-click it →
+**Open with → Notepad**.
+
+#### macOS
 
 ```json
 {
@@ -390,7 +397,7 @@ The **desktop app** (the Claude GUI). It speaks MCP over stdio, so it uses the
       "args": [
         "-y",
         "mcp-remote",
-        "http://localhost:4847/mcp",
+        "http://127.0.0.1:4847/mcp",
         "--header",
         "Authorization: Bearer replace-with-a-random-secret"
       ]
@@ -399,7 +406,49 @@ The **desktop app** (the Claude GUI). It speaks MCP over stdio, so it uses the
 }
 ```
 
-Restart Claude Desktop after saving. The ABAP tools will appear in the tools list.
+#### Windows
+
+```json
+{
+  "mcpServers": {
+    "abap": {
+      "command": "cmd",
+      "args": [
+        "/c", "npx", "-y", "mcp-remote@latest",
+        "http://127.0.0.1:4847/mcp",
+        "--transport", "http-only",
+        "--header", "Authorization:${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer replace-with-a-random-secret"
+      }
+    }
+  }
+}
+```
+
+Why the Windows version differs:
+
+- **`cmd /c npx`** — Claude Desktop can't launch `npx` directly on Windows (`spawn npx ENOENT`).
+- **Token in `env`, no space after `Authorization:`** — Windows splits arguments that
+  contain spaces, so `"Authorization: Bearer …"` arrives mangled and the server answers 401.
+- **`127.0.0.1`, not `localhost`** (both platforms) — the server listens on IPv4
+  `127.0.0.1` only, and recent Node resolves `localhost` to IPv6 `::1` first →
+  `ECONNREFUSED`.
+
+The secret must match the one the server was started with. Start the server **before**
+Claude Desktop, then **fully quit** Claude (tray / menu-bar icon → Quit — closing the
+window isn't enough) and reopen it. The ABAP tools will appear in the tools list.
+
+**Troubleshooting:** test the bridge on its own from a terminal — if this lists the ABAP
+tools, the server and secret are fine and any remaining problem is in the Claude config:
+
+```bash
+npx -y -p mcp-remote@latest mcp-remote-client http://127.0.0.1:4847/mcp --header "Authorization:Bearer replace-with-a-random-secret"
+```
+
+Claude Desktop's own log is `mcp-server-abap.log` in `%APPDATA%\Claude\logs\` (Windows)
+or `~/Library/Logs/Claude/` (macOS).
 
 ---
 
