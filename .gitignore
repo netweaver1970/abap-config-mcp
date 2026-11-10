@@ -6,3 +6,6 @@ connections.json
 *.log
 engine-deploy.json
 release/
+
+# Internal working log, kept on the machine only
+HANDOFF.md
