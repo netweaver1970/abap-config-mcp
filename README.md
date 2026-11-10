@@ -172,10 +172,12 @@ you close the terminal or log out. For day-to-day use you usually want the serve
 Install the bundled LaunchAgent ([`deploy/com.abap-config-mcp.server.plist`](deploy/com.abap-config-mcp.server.plist)):
 
 ```bash
-# 1. Edit the two absolute paths in the plist first (node binary + repo root):
-#      which node            # e.g. /opt/homebrew/bin/node
-# 2. Install and start it:
-cp deploy/com.abap-config-mcp.server.plist ~/Library/LaunchAgents/
+# 1. Check the node path in the plist (which node, e.g. /opt/homebrew/bin/node).
+#    The plist expects the repo at ~/github/abap-config-mcp; edit it if yours is elsewhere.
+# 2. Install it with YOUR_USER replaced by your home folder (launchd does not expand ~),
+#    then start it:
+sed "s|/Users/YOUR_USER|$HOME|g" deploy/com.abap-config-mcp.server.plist \
+  > ~/Library/LaunchAgents/com.abap-config-mcp.server.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.abap-config-mcp.server.plist
 launchctl enable   gui/$(id -u)/com.abap-config-mcp.server
 ```

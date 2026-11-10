@@ -4,9 +4,12 @@
   macOS LaunchAgent for the ABAP Config MCP server.
 
   Install:
-    1. Edit the two absolute paths below (node binary + repo) to match your machine.
-       Find node with:  which node
-    2. cp deploy/com.abap-config-mcp.server.plist ~/Library/LaunchAgents/
+    1. Check the node path below (find yours with: which node). If you cloned the
+       repo somewhere other than ~/github/abap-config-mcp, edit that path too.
+    2. Copy it into place, with YOUR_USER replaced by your home folder (launchd
+       does not expand ~ or $HOME itself):
+         sed "s|/Users/YOUR_USER|$HOME|g" deploy/com.abap-config-mcp.server.plist \
+           > ~/Library/LaunchAgents/com.abap-config-mcp.server.plist
     3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.abap-config-mcp.server.plist
     4. launchctl enable gui/$(id -u)/com.abap-config-mcp.server
 
@@ -21,11 +24,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/node</string>
-        <string>/Users/geertsteyaert/github/abap-config-mcp/dist/index.js</string>
+        <string>/Users/YOUR_USER/github/abap-config-mcp/dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/geertsteyaert/github/abap-config-mcp</string>
+    <string>/Users/YOUR_USER/github/abap-config-mcp</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -45,8 +48,8 @@
     <string>Background</string>
 
     <key>StandardOutPath</key>
-    <string>/Users/geertsteyaert/Library/Logs/abap-config-mcp.log</string>
+    <string>/Users/YOUR_USER/Library/Logs/abap-config-mcp.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/geertsteyaert/Library/Logs/abap-config-mcp.log</string>
+    <string>/Users/YOUR_USER/Library/Logs/abap-config-mcp.log</string>
 </dict>
 </plist>
