@@ -36,6 +36,9 @@ CLASS zcl_mcp_cust_engine DEFINITION
              rows_json        TYPE string,     " create: JSON array of rows, each row a JSON array of {FIELD,VALUE} (full key + data)
              items_json       TYPE string,     " listing: JSON array of {PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO} listing items
              extras_json      TYPE string,     " create (internal): JSON array of {ROW,FIELD,VALUE} — view fields outside the base table
+             from_trkorr      TYPE string,     " transport_move: source task (TASK) — OBJECTS takes each entry's own TRKORR
+             to_trkorr        TYPE string,     " transport_move: target request or task
+             objects_json     TYPE string,     " transport_move OBJECTS: JSON array of {TRKORR,PGMID,OBJECT,OBJ_NAME}
            END OF ty_request.
 
     " Field override for handle_write: applied to each planned row after the
@@ -240,6 +243,16 @@ CLASS zcl_mcp_cust_engine DEFINITION
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
+    " Move object entries between requests/tasks (TR_MOVE_OBJECTS, with SAP's own
+    " test mode on a dry run), or reassign a whole task to another request
+    " (TR_REASSIGN_TASK). The MCP layer plans and checks; this only executes.
+    METHODS handle_transport_move
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    METHODS sy_message_text
+      RETURNING VALUE(rv_text) TYPE string.
+
     METHODS run_hana_sql
       IMPORTING iv_tag   TYPE string
                 iv_sql   TYPE string
@@ -410,6 +423,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
             WHEN 'hana_memory'.    ls_resp = handle_hana_memory( ).
             WHEN 'abap_memory'.    ls_resp = handle_abap_memory( ).
             WHEN 'org_copy'.       ls_resp = handle_org_copy( ls_req ).
+            WHEN 'transport_move'. ls_resp = handle_transport_move( ls_req ).
             WHEN OTHERS.
               ls_resp-status = 'error'.
               APPEND |Unknown operation: '{ ls_req-operation }'|
@@ -2926,6 +2940,182 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
     ENDIF.
     COMMIT WORK AND WAIT.
     ev_created = abap_true.
+  ENDMETHOD.
+
+  METHOD sy_message_text.
+    IF sy-msgid IS INITIAL.
+      RETURN.
+    ENDIF.
+    DATA lv_text TYPE string.
+    MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4 INTO lv_text.
+    rv_text = |{ sy-msgid }{ sy-msgno }: { lv_text }|.
+  ENDMETHOD.
+
+
+  METHOD handle_transport_move.
+    TYPES: BEGIN OF ty_move_obj,
+             trkorr   TYPE trkorr,
+             pgmid    TYPE pgmid,
+             object   TYPE trobjtype,
+             obj_name TYPE trobj_name,
+           END OF ty_move_obj,
+           ty_move_obj_tt TYPE STANDARD TABLE OF ty_move_obj WITH DEFAULT KEY.
+
+    DATA lv_to   TYPE trkorr.
+    DATA lv_test TYPE abap_bool.
+
+    rs_resp-operation = 'transport_move'.
+    rs_resp-version   = c_version.
+    lv_to   = to_upper( is_req-to_trkorr ).
+    lv_test = xsdbool( is_req-commit <> abap_true ).
+    rs_resp-dry_run   = lv_test.
+    rs_resp-transport = lv_to.
+
+    IF lv_to IS INITIAL.
+      rs_resp-status = 'error'.
+      APPEND `No target request (TO_TRKORR) given.` TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    CASE to_upper( is_req-action ).
+
+      WHEN 'TASK'.
+        DATA lv_task TYPE trkorr.
+        lv_task = to_upper( is_req-from_trkorr ).
+        IF lv_test = abap_true.
+          rs_resp-status = 'ok'.
+          APPEND |Test: task { lv_task } → request { lv_to }. SAP has no test mode for reassigning a task; | &&
+                 |it checks at commit.| TO rs_resp-messages.
+          RETURN.
+        ENDIF.
+        CALL FUNCTION 'TR_REASSIGN_TASK'
+          EXPORTING
+            iv_dialog              = abap_false
+          CHANGING
+            cv_task                = lv_task
+            cv_new_request         = lv_to
+          EXCEPTIONS
+            no_authorization       = 1
+            enqueue_failure        = 2
+            db_access_error        = 3
+            invalid_request        = 4
+            invalid_task           = 5
+            shared_objects         = 6
+            action_aborted_by_user = 7
+            OTHERS                 = 8.
+        IF sy-subrc <> 0.
+          DATA(lv_task_rc) = sy-subrc.
+          DATA(lv_task_msg) = sy_message_text( ).
+          ROLLBACK WORK.
+          rs_resp-status = 'error'.
+          APPEND |TR_REASSIGN_TASK rc { lv_task_rc }{ COND string( WHEN lv_task_msg IS NOT INITIAL THEN | — { lv_task_msg }| ) }|
+            TO rs_resp-messages.
+          RETURN.
+        ENDIF.
+        COMMIT WORK AND WAIT.
+        rs_resp-status = 'ok'.
+        rs_resp-rows_written = 1.
+        APPEND |Task { lv_task } now belongs to request { lv_to }.| TO rs_resp-messages.
+
+      WHEN 'OBJECTS'.
+        DATA lt_objs TYPE ty_move_obj_tt.
+        TRY.
+            /ui2/cl_json=>deserialize( EXPORTING json = is_req-objects_json
+                                                 pretty_name = /ui2/cl_json=>pretty_mode-none
+                                       CHANGING  data = lt_objs ).
+          CATCH cx_root INTO DATA(lx_json).
+            rs_resp-status = 'error'.
+            APPEND |Cannot read OBJECTS_JSON: { lx_json->get_text( ) }| TO rs_resp-messages.
+            RETURN.
+        ENDTRY.
+        IF lt_objs IS INITIAL.
+          rs_resp-status = 'error'.
+          APPEND `No objects to move.` TO rs_resp-messages.
+          RETURN.
+        ENDIF.
+
+        DATA lt_sources TYPE STANDARD TABLE OF trkorr WITH DEFAULT KEY.
+        LOOP AT lt_objs ASSIGNING FIELD-SYMBOL(<ls_o>).
+          <ls_o>-trkorr = to_upper( <ls_o>-trkorr ).
+          COLLECT <ls_o>-trkorr INTO lt_sources.
+        ENDLOOP.
+
+        DATA lv_failed TYPE abap_bool.
+        LOOP AT lt_sources INTO DATA(lv_src).
+          DATA(lt_keys) = VALUE ty_move_obj_tt( FOR o IN lt_objs WHERE ( trkorr = lv_src ) ( o ) ).
+          DATA lt_e071 TYPE tr_objects.
+          CLEAR lt_e071.
+          SELECT * FROM e071 INTO TABLE @lt_e071
+            FOR ALL ENTRIES IN @lt_keys
+            WHERE trkorr   = @lv_src
+              AND pgmid    = @lt_keys-pgmid
+              AND object   = @lt_keys-object
+              AND obj_name = @lt_keys-obj_name.
+          IF lines( lt_e071 ) <> lines( lt_keys ).
+            lv_failed = abap_true.
+            APPEND |{ lv_src }: { lines( lt_keys ) } entries asked, { lines( lt_e071 ) } found in E071 — | &&
+                   |the request changed since it was read.| TO rs_resp-messages.
+            CONTINUE.
+          ENDIF.
+
+          DATA ls_from TYPE trwbo_request.
+          DATA ls_to   TYPE trwbo_request_header.
+          CLEAR: ls_from, ls_to.
+          ls_from-h-trkorr = lv_src.
+          ls_to-trkorr     = lv_to.
+          CALL FUNCTION 'TR_MOVE_OBJECTS'
+            EXPORTING
+              it_e071                      = lt_e071
+              iv_suppress_dialog           = abap_true
+              iv_testmode                  = lv_test
+            CHANGING
+              cs_request_from              = ls_from
+              cs_request_to_header         = ls_to
+            EXCEPTIONS
+              database_access_error        = 1
+              no_authorization             = 2
+              request_from_other_system    = 3
+              request_already_released     = 4
+              wrong_source_client          = 5
+              user_not_owner               = 6
+              no_move_of_corr_entry        = 7
+              object_entry_doesnt_exist    = 8
+              duplicate_entry              = 9
+              empty_lockkey                = 10
+              foreign_lock                 = 11
+              request_types_not_consistent = 12
+              canceled_by_user             = 13
+              OTHERS                       = 14.
+          IF sy-subrc <> 0.
+            DATA(lv_rc) = sy-subrc.
+            DATA(lv_msg) = sy_message_text( ).
+            lv_failed = abap_true.
+            APPEND |{ lv_src } → { lv_to }: TR_MOVE_OBJECTS rc { lv_rc }| &&
+                   |{ COND string( WHEN lv_msg IS NOT INITIAL THEN | — { lv_msg }| ) }| TO rs_resp-messages.
+          ELSE.
+            rs_resp-rows_planned = rs_resp-rows_planned + lines( lt_e071 ).
+            APPEND |{ lv_src } → { lv_to }: { lines( lt_e071 ) } entr{ COND string( WHEN lines( lt_e071 ) = 1 THEN `y` ELSE `ies` ) } | &&
+                   |{ COND string( WHEN lv_test = abap_true AND lines( lt_e071 ) = 1 THEN `passes SAP's test move`
+                                   WHEN lv_test = abap_true THEN `pass SAP's test move` ELSE `moved` ) }.| TO rs_resp-messages.
+          ENDIF.
+        ENDLOOP.
+
+        IF lv_failed = abap_true OR lv_test = abap_true.
+          ROLLBACK WORK.
+        ELSE.
+          COMMIT WORK AND WAIT.
+          rs_resp-rows_written = rs_resp-rows_planned.
+        ENDIF.
+        rs_resp-status = COND #( WHEN lv_failed = abap_true THEN 'error' ELSE 'ok' ).
+        IF lv_failed = abap_true AND lv_test = abap_false.
+          APPEND `Nothing was moved: every group is rolled back when one fails.` TO rs_resp-messages.
+        ENDIF.
+
+      WHEN OTHERS.
+        rs_resp-status = 'error'.
+        APPEND |Unknown action '{ is_req-action }' — expected OBJECTS or TASK.| TO rs_resp-messages.
+    ENDCASE.
   ENDMETHOD.
 
 ENDCLASS.

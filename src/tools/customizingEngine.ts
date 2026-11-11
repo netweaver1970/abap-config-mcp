@@ -35,8 +35,8 @@ import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
 // authenticated session's raw HTTP client (AdtHTTP.request).
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
-interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy"
+export interface EngineRequest {
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move"
   table?: string
   key_field?: string
   source_key?: string
@@ -58,6 +58,9 @@ interface EngineRequest {
   action?: string             // org_copy: "COPY" | "DELE"
   org_unit?: string           // org_copy: org-key DOMAIN name (BUKRS, WERKS, VKORG, VTWEG, SPART, EKORG, …)
   values_json?: string        // write: JSON array of {FIELD,VALUE} overrides applied to every planned row
+  from_trkorr?: string        // transport_move TASK: the task to reassign
+  to_trkorr?: string          // transport_move: target request or task
+  objects_json?: string       // transport_move OBJECTS: JSON array of {TRKORR,PGMID,OBJECT,OBJ_NAME}
   rows_json?: string          // create: JSON array of rows, each a JSON array of {FIELD,VALUE} (full key + data)
   items_json?: string         // listing: JSON array of {PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO}
 }
@@ -130,7 +133,7 @@ async function resolveCustomizingTransport(
 }
 
 // Response keys come back uppercase from /ui2/cl_json pretty_mode-none serialize.
-interface EngineResponse {
+export interface EngineResponse {
   STATUS?: string
   OPERATION?: string
   VERSION?: string
@@ -215,7 +218,7 @@ function engineHttpPost(
   })
 }
 
-async function callEngine(
+export async function callEngine(
   connectionId: string | undefined,
   body: EngineRequest,
   icfPath: string = ENGINE_ICF_PATH,
@@ -322,7 +325,7 @@ export async function imgIndexRead(
 // is invoked.  Only handles the ABAP side — the one-time SICF service registration
 // is manual and surfaced to the user when ping fails.
 
-async function ensureEngineClass(connectionId?: string): Promise<{ changed: boolean; action: string }> {
+export async function ensureEngineClass(connectionId?: string): Promise<{ changed: boolean; action: string }> {
   const client = await ensureConnected(connectionId)
   let current: string | undefined
   try {

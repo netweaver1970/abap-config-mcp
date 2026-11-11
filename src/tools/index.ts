@@ -5,6 +5,7 @@ import { registerWriteTools } from "./write"
 import { registerActivateTools } from "./activate"
 import { registerQualityTools } from "./quality"
 import { registerTransportTools } from "./transports"
+import { registerTransportMoveTools } from "./transportMove"
 import { registerDataTools } from "./data"
 import { registerAnalysisTools } from "./analysis"
 import { registerDebugTools } from "./debug"
@@ -46,6 +47,7 @@ export function registerAllTools(server: McpServer): void {
   registerActivateTools(target)
   registerQualityTools(target)
   registerTransportTools(target)
+  registerTransportMoveTools(target)
   registerDataTools(target)
   registerAnalysisTools(target)
   registerDebugTools(target)

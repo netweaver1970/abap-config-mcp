@@ -44,7 +44,7 @@ export const TOOL_TIERS: Record<string, RiskTier> = {
 
   // ── Tier 1 — config / data writes ─────────────────────────────────────────
   customizing_apply: 1, customizing_create: 1, customizing_plan_change: 1,
-  org_copy: 1, retail_listing: 1, manage_transport_requests: 1,
+  org_copy: 1, retail_listing: 1, manage_transport_requests: 1, transport_move: 1,
   customizing_selftest: 1,   // can auto-deploy the engine class → not pure read
 
   // ── Tier 2 — repository / code writes, execution, debug ───────────────────

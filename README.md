@@ -1,7 +1,7 @@
 # abap-config-mcp
 
 > A standalone [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for SAP ABAP development **and customizing**.
-> Connects directly to your SAP system via the ADT REST API and exposes **58 tools** to any MCP-compatible AI client — **no VS Code, no Copilot subscription required**.
+> Connects directly to your SAP system via the ADT REST API and exposes **59 tools** to any MCP-compatible AI client — **no VS Code, no Copilot subscription required**.
 
 It does two things that, together, let an AI assistant work in an SAP system the way a developer/consultant does:
 
@@ -47,7 +47,7 @@ The AI handles the full workflow autonomously: search → read → write → che
 | **Write** | 5 tools | Lock objects, write source, unlock/discard, create new objects, delete objects |
 | **Activate** | 2 tools | Activate single objects, batch-activate all inactive objects |
 | **Quality** | 3 tools | ATC checks with findings and locations, unit test execution, create test includes |
-| **Transports** | 3 tools | List transports across all users with their objects (read from E070/E071), create/release/delete/change owner, find which transport an object needs. Every write picks its transport by one rule — see [Transport selection](#transport-selection) |
+| **Transports** | 4 tools | List transports across all users with their objects (read from E070/E071), create/release/delete/change owner, find which transport an object needs, move objects or a whole task to another request with dependency and release-order checks. Every write picks its transport by one rule — see [Transport selection](#transport-selection) |
 | **Data** | 4 tools | Search tables by description keyword, describe table structure, run SELECT queries, read table contents |
 | **Analysis** | 4 tools | Where-used cross-reference, version history, runtime dumps (ST22), inactive objects list |
 | **Text elements** | 2 tools | Read/write selection screen texts, text symbols, and list headings |
@@ -310,7 +310,7 @@ customizing is the point. It is **not** meant to perform development or customiz
 ### 4. Risk tiers — cap the tool surface with `ABAP_MCP_MAX_TIER`
 
 SAP authorizations are the *real* control, but the server can also hide whole classes of
-tool so a deployment exposes only what corporate security accepts. All 58 tools are
+tool so a deployment exposes only what corporate security accepts. All 59 tools are
 classified into three risk tiers (full registry: **[docs/TIERS.md](docs/TIERS.md)**):
 
 | Tier | What it does | Examples |
@@ -541,7 +541,7 @@ M365 Copilot connects to MCP servers through **Copilot Studio**, which then surf
    | Authentication | **API Key** |
    | API Key | your `server.apiKey` value from `connections.json` |
 
-5. Copilot Studio auto-discovers all 58 tools via the MCP handshake — no manual tool registration needed
+5. Copilot Studio auto-discovers all 59 tools via the MCP handshake — no manual tool registration needed
 
 6. **Publish** the agent and deploy it to Microsoft 365
 
@@ -579,7 +579,7 @@ IBM Bob is IBM's AI coding IDE (1.0 released March 2026). It has native MCP supp
 
 > If Bob and the SAP system are on the same network (e.g. both inside your corporate VPN), use the plain `http://` URL directly — no need to expose the server externally.
 
-Once configured, Bob's chat and agent modes can call all 58 tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
+Once configured, Bob's chat and agent modes can call all 59 tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
 
 ---
 
@@ -643,7 +643,7 @@ Replace `CAR` with the `id` of any connection in your `connections.json`.
 
 ---
 
-## All 58 tools — detailed reference
+## All 59 tools — detailed reference
 
 ### Discovery
 
@@ -950,6 +950,21 @@ Parameters:
 ```
 
 ---
+
+#### `transport_move`
+Move object entries from one request or task to another, or reassign a whole task to another request — with the checks a careful Basis colleague makes first. **Dry run by default.**
+
+- **What moves:** name entries as `"R3TR CLAS ZCL_X"`, `"CLAS ZCL_X"`, `"ZCL_X"` or a wildcard `"ZCL_FOO*"`. An object's parts (methods, class sections, includes, a function group's modules) move with it unless `includeParts: false`. With a task as `from` and no objects, the whole task moves (`TR_REASSIGN_TASK`). Entries go into your own task in the target request when you have one there.
+- **Stops before SAP is called** when a request is released, the kinds differ (Workbench vs Customizing), the clients differ, or a named object is not on the source. **Warns** when the target goes to another system, or when an object would be split over two requests. Entries the target already holds are left out.
+- **Dependencies:** from the where-used index (`WBCROSSGT`, `CROSS`), what the moved objects use and what uses them, among objects on other open requests — and the release order that follows ("release ZTAB's request before or together with the target"; "release the target before the source, ZREPORT stays there and uses ZCL_X"). It follows ABAP code references, not DDIC structure, and only as far as the where-used index is current — on some systems a fresh activation is indexed later.
+- **SAP checks it too:** the dry run calls SAP's own test move (`TR_MOVE_OBJECTS` test mode) through the in-system engine (v0.9.35+, deployed automatically). `commit: true` moves, then verifies in `E071` that every entry is on the target and gone from the source.
+
+```
+transport_move  from: "DEVK900123"  to: "DEVK900456"  objects: ["ZCL_ORDER_API"]
+→ plan, stops/warnings, dependencies, release order, SAP test result
+transport_move  … commit: true
+→ moved, verified in E071
+```
 
 ### Data
 
