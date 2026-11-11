@@ -29,6 +29,7 @@ import { selectTransport, rememberTransport, workKey } from "./transportSelectio
 import { lookupRequest, listOpenRequests as listOpenRequestsSql } from "./transportSql"
 import { resolveConnectionId } from "../connections"
 import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
+import { buildOrgScope, formatOrgScope } from "./orgScope"
 
 // ─── Raw HTTP helper ───────────────────────────────────────────────────────────
 // The engine is reached via its SICF node, not an ADT endpoint, so we use the
@@ -600,6 +601,20 @@ const ORG_UNIT_DOMAINS: Record<string, string> = {
   EKORG: "purchasing organization (EC13)", LGORT: "storage location (EC14)", MTART: "material type (EC15)",
 }
 
+// The scope probe stops counting here, measured from the start of the call: the
+// whole tool call has to come back inside the MCP client's 60 s.
+const SCOPE_BUDGET_MS = 45_000
+
+function parseCopiedSet(json?: string): Array<{ tab: string; text?: string }> | undefined {
+  if (!json) return undefined
+  try {
+    const tabs = JSON.parse(json) as Array<{ TABNAME?: string; TEXT?: string }>
+    return Array.isArray(tabs)
+      ? tabs.filter(t => t.TABNAME).map(t => ({ tab: String(t.TABNAME), text: t.TEXT || undefined }))
+      : undefined
+  } catch { return undefined }
+}
+
 export async function handleOrgCopy(args: {
   orgUnit: string
   sourceKey: string
@@ -612,7 +627,9 @@ export async function handleOrgCopy(args: {
   autoDeploy?: boolean
   icfPath?: string
   connectionId?: string
+  retestScope?: boolean
 }) {
+  const started = Date.now()
   const commit = args.commit === true
   const isDelete = args.action === "delete"
   const orgUnit = args.orgUnit.toUpperCase()
@@ -733,16 +750,47 @@ export async function handleOrgCopy(args: {
     ...(r.MESSAGES?.length ? ["", "   Messages:", ...r.MESSAGES.map(m => `     • ${m}`)] : []),
   ]
 
-  if (isDry && r.DATA_JSON) {
-    try {
-      const tabs = JSON.parse(r.DATA_JSON) as Array<{ TABNAME?: string; TEXT?: string }>
-      if (Array.isArray(tabs) && tabs.length) {
-        lines.push("", `   Dependent tables (first 40 of ${tabs.length}):`)
-        for (const t of tabs.slice(0, 40)) lines.push(`     ${t.TABNAME ?? "?"}  ${t.TEXT ?? ""}`)
+  // Retest scope: the copier's set, the org-keyed customizing it leaves alone,
+  // and the application data — counted live for source and target. Run on a
+  // copy's dry run, and after a successful commit when the time budget allows
+  // (a dry run against an existing target is the post-copy diff).
+  const wantScope = !isDelete && args.retestScope !== false && !!args.targetKey && r.STATUS === "ok"
+  if (wantScope) {
+    let copiedSet = isDry ? parseCopiedSet(r.DATA_JSON) : undefined
+    const deadline = started + SCOPE_BUDGET_MS
+    if (!isDry && deadline - Date.now() > 15_000) {
+      try {
+        const dr = await callEngine(args.connectionId, {
+          operation: "org_copy", org_unit: orgUnit, source_key: args.sourceKey,
+          target_key: args.targetKey ?? "", action: "COPY", commit: "", create_transport: "",
+        }, args.icfPath)
+        if (dr.STATUS === "ok") copiedSet = parseCopiedSet(dr.DATA_JSON)
+      } catch (err) { log("WARN", "org_copy scope: copier table set not read", err) }
+    }
+    if (copiedSet && deadline - Date.now() > 10_000) {
+      try {
+        const client = await ensureConnected(args.connectionId)
+        const scope = await buildOrgScope(client, {
+          domain: orgUnit, sourceKey: args.sourceKey, targetKey: args.targetKey!, copiedSet, deadline })
+        lines.push(...formatOrgScope(scope))
+      } catch (err) {
+        lines.push("", `   Retest scope not available: ${String((err as Error).message ?? err)}`)
       }
-    } catch { /* leave table list out if unparseable */ }
-    lines.push("", `   To apply: re-run with commit: true and transport: <W request>`)
+    } else if (isDry) {
+      lines.push("", `   Retest scope: not available — the engine did not list the copier's tables ` +
+        `(engine v0.9.31+ does; run customizing_engine_bootstrap).`)
+    } else {
+      lines.push("", `   Retest scope: re-run this call without commit (same source and target) — the dry run ` +
+        `compares the source with the new unit table by table, copied and not copied.`)
+    }
+  } else if (isDry && r.DATA_JSON) {
+    const tabs = parseCopiedSet(r.DATA_JSON) ?? []
+    if (tabs.length) {
+      lines.push("", `   Dependent tables (first 40 of ${tabs.length}):`)
+      for (const t of tabs.slice(0, 40)) lines.push(`     ${t.tab}  ${t.text ?? ""}`)
+    }
   }
+  if (isDry && r.STATUS === "ok") lines.push("", `   To apply: re-run with commit: true and createTransport: true`)
 
   if (r.STATUS === "error") {
     log("WARN", `org_copy error ${orgUnit} ${args.sourceKey}→${args.targetKey}`, r.MESSAGES)
@@ -1428,8 +1476,12 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         "CACCD controlling area (EC03), VKORG sales org (EC04), VTWEG distribution channel (EC05), " +
         "SPART division (EC06), VSTEL shipping point (EC07), LGNUM warehouse no. (EC09), " +
         "EKORG purchasing org (EC13), LGORT storage location (EC14), MTART material type (EC15).\n\n" +
-        "DRY RUN by default (the dependent-table set is resolved by the copier at commit, " +
-        "not enumerated on the dry run). commit: true performs the copy and commits.\n\n" +
+        "DRY RUN by default: lists the copier's dependent tables, then the RETEST SCOPE — every " +
+        "customizing table (delivery class C/G/E) keyed on the org domain that the copier does NOT " +
+        "copy, with live source/target row counts (source has rows, target none = retest first), and " +
+        "a summary of application/master-data tables (class A) keyed on it. Run the dry run again " +
+        "after the copy, same source and target, to diff the new unit against the source. " +
+        "commit: true performs the copy and commits.\n\n" +
         "TRANSPORT: the entity copier records onto a Customizing request it MINTS ITSELF and " +
         "reports back — it cannot record into a request you supply (a passed transport is " +
         "ignored). On commit set createTransport: true to acknowledge that; the copier names " +
@@ -1438,10 +1490,11 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         "customizing_apply using values + onlyMissing: false. Needs engine v0.9.9+.",
       inputSchema: {
         orgUnit:     z.string().describe("Org-key domain: BUKRS, WERKS, VKORG, VTWEG, SPART, EKORG, LGORT, CACCD, VSTEL, LGNUM, MTART"),
-        sourceKey:   z.string().describe("Source unit to copy from (e.g. company code 2510). For action: \"delete\" — the unit to remove."),
-        targetKey:   z.string().optional().describe("New unit to create (e.g. Z100). Not used for delete."),
+        sourceKey:   z.string().describe("Source unit to copy from (e.g. plant 1000). For action: \"delete\" — the unit to remove."),
+        targetKey:   z.string().optional().describe("New unit to create (e.g. 1010). Not used for delete. On a dry run it may already exist: the retest scope then compares source and target."),
         action:      z.enum(["copy", "delete"]).optional().describe("\"copy\" (default) duplicates source→target; \"delete\" removes sourceKey's unit with all dependent entries"),
         commit:           z.boolean().optional().describe("Actually copy (default: false = dry run)"),
+        retestScope:      z.boolean().optional().describe("List the org-keyed tables the copier leaves alone, with source/target row counts (default: true for a copy; false = just the copier's table set, faster)"),
         createTransport:  z.boolean().optional().describe("Required on commit in a recording client: acknowledge that the copier mints its OWN Customizing request (a supplied transport is not honored). The copier names the request; transportText is not applied. The new request number is reported on completion."),
         autoDeploy:       z.boolean().optional().describe("Auto-deploy/update the engine class if missing or outdated (default: true)"),
         icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),

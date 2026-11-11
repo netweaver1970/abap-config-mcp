@@ -1363,16 +1363,27 @@ Parameters:
 ```
 
 #### `org_copy`
-Headless copy of an organizational unit and its EC01-style dependent customizing (the "org units in the dark" copier) — e.g. clone a company code or sales org with its dependent tables, recorded on a transport. Runs the write in a background job.
+Headless copy of an organizational unit and its EC01-style dependent customizing, through SAP's standard entity copier (the "org units in the dark" engine behind EC01/EC02/EC04…) — e.g. clone a plant or sales org with its dependent tables. The commit runs in a background job; the copier records onto a Customizing request it creates itself.
 
 ```
 Parameters:
-  orgType, sourceKey, targetKey   Org unit to copy (e.g. BUKRS 2510 → Z100)
-  values                          Field overrides on the copied org unit
-  commit, transport, createTransport, showAllTransports
+  orgUnit, sourceKey, targetKey   Org-key domain and units (e.g. WERKS 1000 → 1010)
+  action                          "copy" (default) | "delete"
+  commit, createTransport         commit: true copies; createTransport: true acknowledges the copier's own request
+  retestScope                     false = only the copier's table set (default: true for a copy)
   connectionId                    System id
-→ Returns: dependent tables copied, transport, batch run id / result
+→ Returns: the copier's dependent tables, the retest scope (below), transport, run id / result
 ```
+
+**Retest scope.** Copying the org unit is rarely what breaks; the entries keyed on it that sit *outside* the copier's set are. The new plant looks complete in SPRO, then the first goods movement or pricing run fails. So the dry run lists, with live row counts for the source and the target:
+
+- **Copied** — the copier's dependent tables (from the copier itself).
+- **Not copied — check these** — every customizing table (delivery class C, G or E; client-dependent, transparent) with a key field on the org-key domain (DD03L `DOMNAME` = `WERKS`, `BUKRS`, `VKORG`…) that the copier leaves alone. Those where the source has rows and the target has none come first: that is the retest list. Then tables where both have rows, and a count of tables with nothing for the source.
+- **Not customizing** — application and master-data tables (class A) keyed on the domain where the source has rows, summarised (count and the largest few): created by business processes (material extension, postings…), not copied by design.
+
+The counts run as `UNION ALL` statements of 40 tables, four at a time, customizing first; a statement that fails is split until the table that breaks it is found and reported as unreadable. The probe stops at 45 s into the call and says how many tables it did not count. A plant on a demo S/4 system: ~1,800 keyed tables in about 25 s.
+
+**Diff after the copy.** Run the same dry run again — same source and target — once the copy is committed: the copier does not object to an existing target on a dry run, so the three sections then compare the source with the new unit table by table (copier tables still empty on the target, non-copied tables to fill by hand). A commit also appends the scope when the copy finished with enough time left; otherwise it says to run the dry run. For row-level differences in one table, use `customizing_diff`.
 
 #### `customizing_status`
 Poll a background write job started by `customizing_apply` / `org_copy` and return its result (rows written, E071K entries, messages) when it finishes.
