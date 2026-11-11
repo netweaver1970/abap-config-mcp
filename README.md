@@ -1370,7 +1370,7 @@ Parameters:
   orgUnit, sourceKey, targetKey   Org-key domain and units (e.g. WERKS 1000 → 1010)
   action                          "copy" (default) | "delete"
   commit, createTransport         commit: true copies; createTransport: true acknowledges the copier's own request
-  retestScope                     false = only the copier's table set (default: true for a copy)
+  retestScope                     true (default for a copy) | "customizing" | "application" | false (only the copier's set)
   connectionId                    System id
 → Returns: the copier's dependent tables, the retest scope (below), transport, run id / result
 ```
@@ -1381,7 +1381,15 @@ Parameters:
 - **Not copied — check these** — every customizing table (delivery class C, G or E; client-dependent, transparent) with a key field on the org-key domain (DD03L `DOMNAME` = `WERKS`, `BUKRS`, `VKORG`…) that the copier leaves alone. Those where the source has rows and the target has none come first: that is the retest list. Then tables where both have rows, and a count of tables with nothing for the source.
 - **Not customizing** — application and master-data tables (class A) keyed on the domain where the source has rows, summarised (count and the largest few): created by business processes (material extension, postings…), not copied by design.
 
-The counts run as `UNION ALL` statements of 40 tables, four at a time, customizing first; a statement that fails is split until the table that breaks it is found and reported as unreadable. The probe stops at 45 s into the call and says how many tables it did not count. A plant on a demo S/4 system: ~1,800 keyed tables in about 25 s.
+The counts run as `UNION ALL` statements of 40 tables, six at a time, customizing first, then the copier's own tables, then application data; a statement that fails is split until the table that breaks it is found and reported as unreadable. The probe stops starting new counts 30 s into the call (below the server's 45 s request watchdog) and says how many tables it did not count. Measured on a demo S/4HANA system:
+
+| Org unit | Keyed tables | Copied by the copier | Not copied (C/G/E) | Time |
+|---|---|---|---|---|
+| Plant (`WERKS`) | ~1,800 | 385 | 363 | ~26 s, all counted |
+| Sales org (`VKORG`) | ~620 | 120 | 144 | ~7 s, all counted |
+| Company code (`BUKRS`) | ~6,600 | 1,587 | 1,573 | 30 s: customizing complete, application data partly |
+
+A company code has too many keyed tables for one call. The first run always completes the customizing part (the retest list); re-run with `retestScope: "application"` to count the application tables on their own.
 
 **Diff after the copy.** Run the same dry run again — same source and target — once the copy is committed: the copier does not object to an existing target on a dry run, so the three sections then compare the source with the new unit table by table (copier tables still empty on the target, non-copied tables to fill by hand). A commit also appends the scope when the copy finished with enough time left; otherwise it says to run the dry run. For row-level differences in one table, use `customizing_diff`.
 

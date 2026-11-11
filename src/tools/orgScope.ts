@@ -30,8 +30,10 @@ import { log } from "../connections"
 
 export const CUST_CLASSES = ["C", "G", "E"]
 const BATCH = 40
-const PARALLEL = 4
-const MAX_CANDIDATES = 5000
+// Measured on S4 (1,000 tables): 4 parallel 10 s, 6 parallel 6 s, 10 parallel 5 s.
+// Six keeps most dialog work processes free for everyone else.
+const PARALLEL = 6
+const MAX_CANDIDATES = 8000   // per delivery-class group; a company code has ~3,500 of each
 
 export interface ScopeTable {
   tab: string
@@ -52,28 +54,36 @@ export interface OrgScope {
   application: ScopeTable[]   // A, counted
   notProbed: ScopeTable[]     // ran out of time before these were counted
   candidates: number          // tables keyed on the domain (client-dependent, transparent)
-  truncated: boolean          // more candidates than MAX_CANDIDATES
+  truncated: boolean
+  only?: "customizing" | "application"          // more candidates than MAX_CANDIDATES
 }
 
 const q = (s: string) => s.replace(/'/g, "''")
 const isName = (s: string) => /^[A-Z0-9_/]+$/.test(s)
 
-/** Tables (client-dependent, transparent, active) with a KEY field on the domain. First such field per table. */
+/**
+ * Tables (client-dependent, transparent, active) with a KEY field on the domain.
+ * First such field per table. Customizing and application classes are read
+ * separately so neither cuts the other off.
+ */
 export async function findKeyedTables(client: ADTClient, domain: string): Promise<{ tables: ScopeTable[]; truncated: boolean }> {
-  const sql =
+  const sql = (classes: string) =>
     `SELECT a~TABNAME, a~FIELDNAME, a~POSITION, b~CONTFLAG FROM DD03L AS a` +
     ` INNER JOIN DD02L AS b ON b~TABNAME = a~TABNAME AND b~AS4LOCAL = a~AS4LOCAL AND b~AS4VERS = a~AS4VERS` +
     ` WHERE a~DOMNAME = '${q(domain)}' AND a~KEYFLAG = 'X' AND a~AS4LOCAL = 'A'` +
-    ` AND b~TABCLASS = 'TRANSP' AND b~CLIDEP = 'X' AND b~CONTFLAG IN ('C','G','E','A')` +
+    ` AND b~TABCLASS = 'TRANSP' AND b~CLIDEP = 'X' AND b~CONTFLAG IN (${classes})` +
     ` ORDER BY a~TABNAME, a~POSITION`
-  const rows = tableRows(await runSql(client, sql, MAX_CANDIDATES))
+  const groups = await Promise.all([
+    runSql(client, sql(CUST_CLASSES.map(c => `'${c}'`).join(",")), MAX_CANDIDATES).then(tableRows),
+    runSql(client, sql("'A'"), MAX_CANDIDATES).then(tableRows),
+  ])
   const byTab = new Map<string, ScopeTable>()
-  for (const r of rows) {
+  for (const r of groups.flat()) {
     const tab = col(r, "TABNAME"), field = col(r, "FIELDNAME")
     if (!tab || !field || byTab.has(tab) || !isName(tab) || !isName(field)) continue
     byTab.set(tab, { tab, field, cls: col(r, "CONTFLAG") })
   }
-  return { tables: [...byTab.values()], truncated: rows.length >= MAX_CANDIDATES }
+  return { tables: [...byTab.values()], truncated: groups.some(g => g.length >= MAX_CANDIDATES) }
 }
 
 /** One statement counting source and target rows for each table. */
@@ -147,6 +157,8 @@ export async function buildOrgScope(client: ADTClient, args: {
   domain: string; sourceKey: string; targetKey: string
   copiedSet: Array<{ tab: string; text?: string }>
   deadline: number
+  /** Count only this part (a re-run when the budget ran out). Default: all, customizing first. */
+  only?: "customizing" | "application"
 }): Promise<OrgScope> {
   const { domain, sourceKey, targetKey, deadline } = args
   const { tables, truncated } = await findKeyedTables(client, domain)
@@ -163,7 +175,10 @@ export async function buildOrgScope(client: ADTClient, args: {
 
   // Priority under the deadline: customizing first (the retest list), then the
   // copier's own tables, then application data (a summary only).
-  await countRows(client, [...cust, ...copied.filter(c => c.field), ...app], sourceKey, targetKey, deadline)
+  const order = args.only === "application" ? app
+    : args.only === "customizing" ? [...cust, ...copied.filter(c => c.field)]
+    : [...cust, ...copied.filter(c => c.field), ...app]
+  await countRows(client, order, sourceKey, targetKey, deadline)
 
   const counted = (t: ScopeTable) => t.src !== undefined || t.unreadable
   const scope: OrgScope = {
@@ -173,13 +188,16 @@ export async function buildOrgScope(client: ADTClient, args: {
     notProbed: [...cust, ...app].filter(t => !counted(t)),
     candidates: tables.length,
     truncated,
+    only: args.only,
   }
   // Texts only for what gets listed by name.
   const listed = [
     ...retestList(scope).slice(0, LIST_RETEST),
     ...scope.notCopied.filter(t => (t.src ?? 0) > 0 && (t.tgt ?? 0) > 0).slice(0, LIST_BOTH),
   ]
-  if (Date.now() < deadline) await tableTexts(client, listed)
+  // A few small DD02T reads: allowed a short grace past the counting deadline
+  // (the caller's budget leaves room below the HTTP watchdog).
+  if (Date.now() < deadline + 8_000) await tableTexts(client, listed)
   return scope
 }
 
@@ -201,6 +219,10 @@ const row = (t: ScopeTable) =>
 export function formatOrgScope(s: OrgScope): string[] {
   const out: string[] = ["", `   ═══ Retest scope: ${s.domain} ${s.sourceKey} → ${s.targetKey}  (rows: source → target, read live) ═══`]
 
+  const custMissed = s.notProbed.filter(t => t.cls !== "A").length
+  const appMissed = s.notProbed.length - custMissed
+
+  if (s.only !== "application") {
   // 1 — copied
   const cop = [...s.copied].sort((a, b) => (b.src ?? -1) - (a.src ?? -1) || a.tab.localeCompare(b.tab))
   const skipped = s.copied.filter(t => (t.src ?? 0) > 0 && t.tgt === 0)
@@ -217,8 +239,8 @@ export function formatOrgScope(s: OrgScope): string[] {
   const tgtOnly = s.notCopied.filter(t => (t.src ?? 0) === 0 && (t.tgt ?? 0) > 0)
   const empty = s.notCopied.filter(t => (t.src ?? 0) === 0 && (t.tgt ?? 0) === 0 && !t.unreadable)
   const unreadable = s.notCopied.filter(t => t.unreadable)
-  out.push("", `   ⚠️  Not copied — check these: ${s.notCopied.length} customizing table(s) (class C/G/E) ` +
-    `keyed on ${s.domain} outside the copier's set`)
+  out.push("", `   ⚠️  Not copied — check these: ${s.notCopied.length + custMissed} customizing table(s) (class C/G/E) ` +
+    `keyed on ${s.domain} outside the copier's set` + (custMissed ? ` — ${s.notCopied.length} counted` : ""))
   out.push(`     RETEST FIRST — source has rows, target has none: ${retest.length}` +
     (retest.length > LIST_RETEST ? ` (first ${LIST_RETEST})` : ""))
   for (const t of retest.slice(0, LIST_RETEST)) out.push(row(t))
@@ -230,19 +252,24 @@ export function formatOrgScope(s: OrgScope): string[] {
   if (tgtOnly.length) out.push(`     Target only: ${tgtOnly.length} — ${names(tgtOnly)}`)
   out.push(`     Source has no rows (nothing to carry over): ${empty.length}`)
   if (unreadable.length) out.push(`     Could not be read: ${unreadable.length} — ${names(unreadable)}`)
+  }
 
+  if (s.only !== "customizing") {
   // 3 — application
   const appSrc = s.application.filter(t => (t.src ?? 0) > 0).sort((a, b) => (b.src ?? 0) - (a.src ?? 0))
   out.push("", `   ℹ️  Not customizing — application / master data (class A) keyed on ${s.domain}: ` +
-    `${appSrc.length} of ${s.application.length} table(s) have source rows` +
+    `${appSrc.length} of ${s.application.length} counted table(s) have source rows` +
     (appSrc.some(t => (t.tgt ?? 0) > 0) ? ` (target has rows in ${appSrc.filter(t => (t.tgt ?? 0) > 0).length})` : "") +
     (appSrc.length ? `, e.g. ${appSrc.slice(0, LIST_APP).map(t => `${t.tab} (${t.src})`).join(", ")}` : ""))
   out.push(`     Created by business processes (material extension, postings, …), not copied by design.`)
+  }
 
-  if (s.notProbed.length) {
-    const c = s.notProbed.filter(t => CUST_CLASSES.includes(t.cls ?? "")).length
-    out.push("", `   ⏱  Time budget reached: ${s.notProbed.length} table(s) not counted ` +
-      `(${c} customizing, ${s.notProbed.length - c} application). Re-run for the rest, or check them with execute_data_query.`)
+  const c = s.only === "application" ? 0 : custMissed
+  const a = s.only === "customizing" ? 0 : appMissed
+  if (c || a) {
+    out.push("", `   ⏱  Time budget reached, not counted: ${[c && `${c} customizing`, a && `${a} application`].filter(Boolean).join(", ")} table(s). ` +
+      (c ? `Re-run with retestScope: "customizing" to count only the customizing part.`
+         : `Re-run with retestScope: "application" to count only the application part.`))
   }
   if (s.truncated) out.push(`   (More than ${MAX_CANDIDATES} key fields on ${s.domain}; the list was cut there.)`)
   return out

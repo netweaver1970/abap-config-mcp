@@ -601,9 +601,11 @@ const ORG_UNIT_DOMAINS: Record<string, string> = {
   EKORG: "purchasing organization (EC13)", LGORT: "storage location (EC14)", MTART: "material type (EC15)",
 }
 
-// The scope probe stops counting here, measured from the start of the call: the
-// whole tool call has to come back inside the MCP client's 60 s.
-const SCOPE_BUDGET_MS = 45_000
+// The scope probe stops starting new counts here, measured from the start of the
+// call. The HTTP server answers 504 at ABAP_REQUEST_WATCHDOG_MS (default 45 s),
+// so leave room for the statements still running and the table texts.
+const SCOPE_BUDGET_MS = Math.min(30_000,
+  (parseInt(process.env.ABAP_REQUEST_WATCHDOG_MS ?? "", 10) || 45_000) - 15_000)
 
 function parseCopiedSet(json?: string): Array<{ tab: string; text?: string }> | undefined {
   if (!json) return undefined
@@ -627,7 +629,7 @@ export async function handleOrgCopy(args: {
   autoDeploy?: boolean
   icfPath?: string
   connectionId?: string
-  retestScope?: boolean
+  retestScope?: boolean | "customizing" | "application"
 }) {
   const started = Date.now()
   const commit = args.commit === true
@@ -771,7 +773,8 @@ export async function handleOrgCopy(args: {
       try {
         const client = await ensureConnected(args.connectionId)
         const scope = await buildOrgScope(client, {
-          domain: orgUnit, sourceKey: args.sourceKey, targetKey: args.targetKey!, copiedSet, deadline })
+          domain: orgUnit, sourceKey: args.sourceKey, targetKey: args.targetKey!, copiedSet, deadline,
+          only: typeof args.retestScope === "string" ? args.retestScope : undefined })
         lines.push(...formatOrgScope(scope))
       } catch (err) {
         lines.push("", `   Retest scope not available: ${String((err as Error).message ?? err)}`)
@@ -1494,7 +1497,7 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         targetKey:   z.string().optional().describe("New unit to create (e.g. 1010). Not used for delete. On a dry run it may already exist: the retest scope then compares source and target."),
         action:      z.enum(["copy", "delete"]).optional().describe("\"copy\" (default) duplicates source→target; \"delete\" removes sourceKey's unit with all dependent entries"),
         commit:           z.boolean().optional().describe("Actually copy (default: false = dry run)"),
-        retestScope:      z.boolean().optional().describe("List the org-keyed tables the copier leaves alone, with source/target row counts (default: true for a copy; false = just the copier's table set, faster)"),
+        retestScope:      z.union([z.boolean(), z.enum(["customizing", "application"])]).optional().describe("List the org-keyed tables the copier leaves alone, with source/target row counts (default: true for a copy, customizing first, then application data, within ~30 s). \"customizing\" or \"application\" counts only that part — for a re-run when a large unit (a company code has ~6,000 keyed tables) runs out of time. false = just the copier's table set."),
         createTransport:  z.boolean().optional().describe("Required on commit in a recording client: acknowledge that the copier mints its OWN Customizing request (a supplied transport is not honored). The copier names the request; transportText is not applied. The new request number is reported on completion."),
         autoDeploy:       z.boolean().optional().describe("Auto-deploy/update the engine class if missing or outdated (default: true)"),
         icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),

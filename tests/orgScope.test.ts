@@ -17,8 +17,8 @@ const { db, keyed, broken, statements, answerSql } = vi.hoisted(() => {
   const answerSql = async (_c: unknown, sql: string) => {
     statements.push(sql)
     if (sql.includes("FROM DD03L")) {
-      const dom = /DOMNAME = '(\w+)'/.exec(sql)![1]
-      return res(keyed.filter(k => (k as any).DOMNAME === dom || !(k as any).DOMNAME), ["TABNAME", "FIELDNAME", "POSITION", "CONTFLAG"])
+      const classes = [.../CONTFLAG IN \(([^)]*)\)/.exec(sql)![1].matchAll(/'(\w)'/g)].map(m => m[1])
+      return res(keyed.filter(k => classes.includes(k.CONTFLAG)), ["TABNAME", "FIELDNAME", "POSITION", "CONTFLAG"])
     }
     if (sql.includes("FROM DD02T")) {
       const names = [...sql.matchAll(/'([A-Z0-9_/]+)'/g)].map(m => m[1])
@@ -100,7 +100,26 @@ describe("buildOrgScope", () => {
     expect(text).toMatch(/RETEST FIRST — source has rows, target has none: 1\n\s+MDLW\s+WERKS\s+1 → 0\s+MDLW text/)
     expect(text).toMatch(/Both have rows .*: 1\n\s+T320/)
     expect(text).toMatch(/Source has no rows .*: 1/)
-    expect(text).toMatch(/class A\) keyed on WERKS: 1 of 2 table\(s\) have source rows, e\.g\. MARC \(3\)/)
+    expect(text).toMatch(/class A\) keyed on WERKS: 1 of 2 counted table\(s\) have source rows, e\.g\. MARC \(3\)/)
+  })
+
+  it("reads customizing and application candidates separately, so neither cuts the other off", async () => {
+    await buildOrgScope(client, { domain: "WERKS", sourceKey: "1000", targetKey: "1010", copiedSet: [], deadline: far() })
+    const dd = statements.filter(x => x.includes("FROM DD03L"))
+    expect(dd).toHaveLength(2)
+    expect(dd.some(x => x.includes("CONTFLAG IN ('C','G','E')"))).toBe(true)
+    expect(dd.some(x => x.includes("CONTFLAG IN ('A')"))).toBe(true)
+  })
+
+  it("only: application counts the application part and shows only that section", async () => {
+    const s = await buildOrgScope(client, { domain: "WERKS", sourceKey: "1000", targetKey: "1010",
+      copiedSet: [{ tab: "T001L" }], deadline: far(), only: "application" })
+    expect(s.application.find(t => t.tab === "MARC")!.src).toBe(3)
+    expect(s.notCopied).toEqual([])
+    const text = formatOrgScope(s).join("\n")
+    expect(text).not.toMatch(/Not copied — check these/)
+    expect(text).not.toMatch(/Time budget/)
+    expect(text).toMatch(/Not customizing/)
   })
 
   it("orders the probe customizing first, so the retest list survives a short budget", async () => {
@@ -109,7 +128,7 @@ describe("buildOrgScope", () => {
       copiedSet: [], deadline: Date.now() - 1 })
     expect(s.notCopied).toEqual([])                   // nothing counted: deadline already passed
     expect(s.notProbed.length).toBe(106)              // T001L, MDLW, T320, TEMPTY (none copied here) + 102 A
-    expect(formatOrgScope(s).join("\n")).toMatch(/Time budget reached: 106 table\(s\) not counted \(4 customizing, 102 application\)/)
+    expect(formatOrgScope(s).join("\n")).toMatch(/Time budget reached, not counted: 4 customizing, 102 application table\(s\)\. Re-run with retestScope: "customizing"/)
     const first = statements.find(x => x.includes("UNION") || x.includes("COUNT"))
     expect(first).toBeUndefined()
   })
