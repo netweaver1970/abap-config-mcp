@@ -437,8 +437,25 @@ export function isRequestError(err: unknown): boolean {
  * degraded" in place of SAP's own reason (S4, deleting A4HK900247, 2026-11-11).
  */
 export function isTransportRefusal(err: unknown): boolean {
-  const msg = String((err as { message?: unknown })?.message ?? "")
-  return /request\/task|contains locked objects|cannot be (deleted|released|changed)|already (released|locked in request)|not modifiable|is released/i.test(msg)
+  const e = err as { namespace?: unknown; type?: unknown; properties?: Record<string, unknown>; message?: unknown }
+  // Keyed on what SAP sends in every logon language: the transport-management
+  // exception namespace/type, or a T100 message class of the transport system.
+  if (e?.namespace === "com.sap.adt.tm" || /^ADT_TM_/.test(String(e?.type ?? ""))) return true
+  const msgClass = String(e?.properties?.["T100KEY-ID"] ?? "")
+  if (/^(SCTS|TR|TK|TO)(_|$)/.test(msgClass)) return true
+  // Fallback for errors that arrive without those keys (English logon only).
+  const msg = String(e?.message ?? "")
+  return /request\/task|contains locked objects|cannot be (deleted|released|changed)|locked in request|already released|not modifiable|is released/i.test(msg)
+}
+
+/** The original SAP message number (e.g. "TR861") of an ADT error, when SAP sent one. */
+export function sapMessageNumber(err: unknown): string | undefined {
+  const p = (err as { properties?: Record<string, unknown> })?.properties
+  const id = String(p?.["T100KEY-ID"] ?? ""), no = String(p?.["T100KEY-NO"] ?? "")
+  // ADT wraps CTS messages in its own class (SCTS_ADT_MSG); the original number is in the long text.
+  const fromLongText = /Message No\.\s*([A-Z0-9_/]+?)(\d{3})\b/.exec(String(p?.["LONGTEXT"] ?? ""))
+  if (fromLongText) return `${fromLongText[1]}${fromLongText[2]}`
+  return id && no ? `${id}${no.padStart(3, "0")}` : undefined
 }
 
 export function isSessionDegradedError(err: unknown): boolean {

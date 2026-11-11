@@ -74,6 +74,7 @@ interface CustomizingTransport {
   note?: string
   prompt?: string
   engineCreates?: boolean
+  confirm?: () => void   // call after a successful commit: remembers the choice for the piece of work
 }
 
 async function resolveCustomizingTransport(
@@ -87,10 +88,23 @@ async function resolveCustomizingTransport(
   const client = await ensureConnected(args.connectionId)
   const cfg = getConnectionConfig(args.connectionId)
   try {
-    const dd02 = tableRows(await runSql(client, `SELECT CONTFLAG FROM DD02L WHERE TABNAME = '${args.table.toUpperCase().replace(/'/g, "''")}' AND AS4LOCAL = 'A'`, 1))[0]
+    const dd02 = tableRows(await runSql(client, `SELECT CONTFLAG, CLIDEP FROM DD02L WHERE TABNAME = '${args.table.toUpperCase().replace(/'/g, "''")}' AND AS4LOCAL = 'A'`, 1))[0]
     if (dd02 && col(dd02, "CONTFLAG") === "A") return { note: `No transport — ${args.table} is application data (delivery class A).` }
-    const t000 = tableRows(await runSql(client, `SELECT CCCORACTIV FROM T000 WHERE MANDT = '${(cfg.client ?? "").replace(/'/g, "''")}'`, 1))[0]
-    if (t000 && col(t000, "CCCORACTIV") !== "1") return { note: `No transport — client ${cfg.client} does not record changes.` }
+    // The client's recording setting (SCC4) governs client-specific customizing
+    // only. A cross-client table is governed by T000-CCNOCLIIND and the engine
+    // records it whatever CCCORACTIV says, so it goes through selection.
+    const clientSpecific = !dd02 || col(dd02, "CLIDEP") === "X"
+    const t000 = tableRows(await runSql(client, `SELECT CCCORACTIV, CCNOCLIIND FROM T000 WHERE MANDT = '${(cfg.client ?? "").replace(/'/g, "''")}'`, 1))[0]
+    if (t000 && clientSpecific) {
+      const rec = col(t000, "CCCORACTIV")
+      if (rec === "2") return { prompt:
+        `❌ ${what} stopped: client ${cfg.client} allows no customizing changes (SCC4: "No changes allowed"). Nothing was written.\n` +
+        `Change the client setting in SCC4, or make the change in a client that allows it.` }
+      if (rec !== "1") return { note: `No transport — client ${cfg.client} does not record changes (SCC4).` }
+    }
+    if (t000 && !clientSpecific && ["1", "3"].includes(col(t000, "CCNOCLIIND"))) return { prompt:
+      `❌ ${what} stopped: ${args.table} is cross-client, and client ${cfg.client} allows no changes to cross-client customizing ` +
+      `(SCC4). Nothing was written.\nChange the client setting in SCC4, or make the change in a client that allows it.` }
   } catch (err) {
     log("WARN", "delivery class / client recording check failed — continuing with transport selection", err)
   }
@@ -103,7 +117,7 @@ async function resolveCustomizingTransport(
     supplied: args.transport,
     workItem: args.workItem,
     sessionId,
-    candidates: await listOpenRequestsSql(args.connectionId, "W", args.showAllTransports ? undefined : cfg.username),
+    candidates: await listOpenRequestsSql(args.connectionId, "W", args.showAllTransports ? undefined : cfg.username, cfg.client),
     lookup: trkorr => lookupRequest(args.connectionId, trkorr),
   })
   if (sel.kind === "ask") {
@@ -111,7 +125,8 @@ async function resolveCustomizingTransport(
       `recordTransport: false for a direct untransported write` +
       (args.showAllTransports ? "." : `, showAllTransports: true to list everyone's requests.`) }
   }
-  return { transport: sel.trkorr, note: sel.note }
+  const ignored = args.createTransport ? " createTransport was not used: a transport was named." : ""
+  return { transport: sel.trkorr, note: sel.note + ignored, confirm: sel.confirm }
 }
 
 // Response keys come back uppercase from /ui2/cl_json pretty_mode-none serialize.
@@ -874,6 +889,7 @@ export async function handleCustomizingApply(args: {
     `the customizing write (${args.table} ${args.keyField}=${args.targetKey})`, extra?.sessionId)
   if (tsel.prompt) return { content: [{ type: "text" as const, text: `${deployNote}${resolveNote}${tsel.prompt}` }] }
   body.transport = tsel.transport
+  body.create_transport = tsel.engineCreates ? "X" : ""
   if (tsel.note) resolveNote += `${tsel.note}\n`
   // Pass the optional request name through to the engine for the create path.
   if (args.transportText) body.transport_text = args.transportText
@@ -918,6 +934,7 @@ export async function handleCustomizingApply(args: {
   const isDry = r.DRY_RUN === "X" || !commit
   const stillGoing = isRunStillGoing(r.STATUS)
 
+  if (commit && r.STATUS === "ok") tsel.confirm?.()
   if (commit && r.STATUS === "ok" && r.TRANSPORT && tsel.engineCreates) {
     rememberTransport(resolveConnectionId(args.connectionId), "W", workKey(args.workItem, extra?.sessionId), r.TRANSPORT)
     resolveNote += `Transport ${r.TRANSPORT} — created as asked, now the transport for ${args.workItem ? `work item ${args.workItem.toUpperCase()}` : "this session"}.\n`
@@ -1069,6 +1086,7 @@ export async function handleCustomizingCreate(args: {
     `the customizing create (${args.rows.length} row(s) into ${args.table})`, extra?.sessionId)
   if (tsel.prompt) return { content: [{ type: "text" as const, text: `${deployNote}${resolveNote}${tsel.prompt}` }] }
   body.transport = tsel.transport
+  body.create_transport = tsel.engineCreates ? "X" : ""
   if (tsel.note) resolveNote += `${tsel.note}\n`
   if (args.transportText) body.transport_text = args.transportText
 
@@ -1103,6 +1121,7 @@ export async function handleCustomizingCreate(args: {
 
   const isDry = r.DRY_RUN === "X" || !commit
   const stillGoing = isRunStillGoing(r.STATUS)
+  if (commit && r.STATUS === "ok") tsel.confirm?.()
   if (commit && r.STATUS === "ok" && r.TRANSPORT && tsel.engineCreates) {
     rememberTransport(resolveConnectionId(args.connectionId), "W", workKey(args.workItem, extra?.sessionId), r.TRANSPORT)
     resolveNote += `Transport ${r.TRANSPORT} — created as asked, now the transport for ${args.workItem ? `work item ${args.workItem.toUpperCase()}` : "this session"}.\n`

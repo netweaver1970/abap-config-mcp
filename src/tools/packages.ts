@@ -118,6 +118,7 @@ export async function handleCreatePackage(args: {
     transportLayer: args.transportLayer ?? "",
     packagetype: args.packageType ?? "development",
   } as any)
+  t.confirm?.()
 
   return {
     content: [{

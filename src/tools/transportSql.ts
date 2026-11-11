@@ -48,13 +48,47 @@ export async function requestTexts(connectionId: string | undefined, trkorrs: st
   return out
 }
 
-/** Open (modifiable) requests of one kind, newest first; one user's unless owner is omitted. */
-export async function listOpenRequests(connectionId: string | undefined, fn: CtsFunction, owner?: string): Promise<TransportCandidate[]> {
-  const client = await ensureConnected(connectionId)
+/**
+ * Open (modifiable) requests of one kind, newest first.
+ * - owner: that user's requests, plus requests where that user owns a task (a
+ *   lead's request the user works in). Omit for everyone's.
+ * - client: only requests created in that client (E070C-CLIENT) — a request from
+ *   another client cannot record this client's changes. Omit for all clients.
+ */
+export async function listOpenRequests(connectionId: string | undefined, fn: CtsFunction, owner?: string, client?: string): Promise<TransportCandidate[]> {
+  const adt = await ensureConnected(connectionId)
   const ownerFilter = owner ? ` AND AS4USER = '${q(owner)}'` : ""
-  const rows = tableRows(await runSql(client,
+  const rows = tableRows(await runSql(adt,
     `SELECT TRKORR, AS4USER FROM E070 WHERE STRKORR = '' AND TRSTATUS = 'D' AND TRFUNCTION = '${fn}'${ownerFilter} ` +
     `ORDER BY TRKORR DESCENDING`, 200))
-  const texts = await requestTexts(connectionId, rows.map(r => col(r, "TRKORR")))
-  return rows.map(r => ({ trkorr: col(r, "TRKORR"), owner: col(r, "AS4USER"), text: texts.get(col(r, "TRKORR")) ?? "" }))
+  const found = new Map(rows.map(r => [col(r, "TRKORR"), col(r, "AS4USER")]))
+
+  if (owner) {
+    const viaTask = tableRows(await runSql(adt,
+      `SELECT STRKORR FROM E070 WHERE AS4USER = '${q(owner)}' AND STRKORR <> '' AND TRSTATUS = 'D'`, 200))
+    const parents = [...new Set(viaTask.map(r => col(r, "STRKORR")))].filter(t => !found.has(t))
+    for (let i = 0; i < parents.length; i += 8) {
+      const chunk = parents.slice(i, i + 8).map(t => `'${q(t)}'`).join(", ")
+      for (const r of tableRows(await runSql(adt,
+        `SELECT TRKORR, AS4USER FROM E070 WHERE TRKORR IN (${chunk}) AND TRSTATUS = 'D' AND TRFUNCTION = '${fn}'`, 50))) {
+        found.set(col(r, "TRKORR"), col(r, "AS4USER"))
+      }
+    }
+  }
+
+  let trkorrs = [...found.keys()].sort().reverse()
+  if (client && trkorrs.length) {
+    const other = new Set<string>()
+    for (let i = 0; i < trkorrs.length; i += 8) {
+      const chunk = trkorrs.slice(i, i + 8).map(t => `'${q(t)}'`).join(", ")
+      for (const r of tableRows(await runSql(adt, `SELECT TRKORR, CLIENT FROM E070C WHERE TRKORR IN (${chunk})`, 50))) {
+        const c = col(r, "CLIENT")
+        if (c && c !== client) other.add(col(r, "TRKORR"))
+      }
+    }
+    trkorrs = trkorrs.filter(t => !other.has(t))
+  }
+
+  const texts = await requestTexts(connectionId, trkorrs)
+  return trkorrs.map(t => ({ trkorr: t, owner: found.get(t), text: texts.get(t) ?? "" }))
 }

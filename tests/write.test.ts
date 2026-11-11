@@ -342,6 +342,33 @@ describe("transport when ADT reports no recording", () => {
     expect(mockClient.createObject.mock.calls[0][6]).toBe("A4HK900300")
   })
 
+  it("stops instead of writing when SAP's transport check fails", async () => {
+    mockClient.transportInfo.mockRejectedValue(new Error("Package ZNOPE does not exist"))
+    const r = await handleCreateAbapObject({ objectType: "CLAS", name: "ZCL_NEW", description: "x", packageName: "ZNOPE" })
+    expect(r.content[0].text).toContain("Nothing was written")
+    expect(r.content[0].text).toContain("Package ZNOPE does not exist")
+    expect(mockClient.createObject).not.toHaveBeenCalled()
+  })
+
+  it("keeps a function group's lock for an include created in it", async () => {
+    mockClient.transportInfo.mockResolvedValue({
+      RECORDING: "X", DEVCLASS: "ZBETRM", TRANSPORTS: [],
+      LOCKS: { HEADER: { TRKORR: "A4HK900198" }, TASKS: [],
+               OBJECT_KEY: { PGMID: "R3TR", OBJECT: "FUGR", OBJ_NAME: "ZFG" } },
+    })
+    await handleCreateAbapObject({
+      objectType: "FUGR/I", name: "LZFGF01", description: "x", packageName: "ZBETRM",
+      parentPath: "/sap/bc/adt/functions/groups/zfg", createTransport: true, workItem: "FGLOCK" })
+    expect(mockClient.createTransport).not.toHaveBeenCalled()
+    expect(mockClient.createObject.mock.calls[0][6]).toBe("A4HK900198")
+  })
+
+  it("does not treat an object with no package reported as local", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "", TRANSPORTS: [] })
+    await handleWriteAbapObjectSource({ url: "/sap/bc/adt/programs/zx", source: "REPORT zx.", transport: "A4HK900196" })
+    expect(mockClient.setObjectSource.mock.calls[0][3]).toBe("A4HK900196")
+  })
+
   it("still follows a lock that is on the object being created", async () => {
     mockClient.transportInfo.mockResolvedValue({
       RECORDING: "X", DEVCLASS: "ZBETRM", TRANSPORTS: [],

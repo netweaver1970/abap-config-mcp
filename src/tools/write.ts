@@ -11,6 +11,7 @@ interface ResolvedTransport {
   transport?: string   // request to record into (undefined = none needed / local package)
   note?: string        // human note for the success message
   prompt?: string      // set when the caller must STOP and return this (needs a choice)
+  confirm?: () => void // call after the write succeeded: remembers the choice for the piece of work
 }
 
 export interface TransportArgs {
@@ -43,26 +44,33 @@ export async function resolveWorkbenchTransport(
   try {
     info = await client.transportInfo(refUrl, devClass, operation)
   } catch (err) {
-    // Without transportInfo the object's needs are unknown: pass an explicit
-    // transport through and let SAP decide, rather than blocking the write.
-    log("WARN", `transportInfo failed for ${refUrl} — using the given transport as is`, err)
-    return { transport: args.transport, note: args.transport ? `Transport ${args.transport} (not checked: ${String((err as Error)?.message ?? err)})` : undefined }
+    // SAP's transport check refused or failed (abap-adt-api throws on an E/A/X
+    // message, not only on a network error). Never write without knowing where
+    // the change records: SAP would then pick a request itself, or fail later
+    // with a less helpful message.
+    const why = String((err as Error)?.message ?? err)
+    log("WARN", `transportInfo failed for ${refUrl}`, err)
+    return { prompt:
+      `❌ Choosing a transport for ${what} stopped: SAP's transport check for ${refUrl} answered "${why}". Nothing was written.\n` +
+      `Check the object and its package (SE80 / SE03 → Display object lock), then re-run` +
+      `${args.transport ? "" : ` with transport: "<request>"`}. If the object is new, check that its package exists and has a transport layer.` }
   }
 
-  // Local / non-transportable package ($TMP etc.) — no transport, whatever was
-  // passed. Only a package that really is local: ADT has answered with an empty
-  // RECORDING for a transportable package as well (S4, class source, 2026-09-18),
-  // and dropping the transport there leaves SAP to pick the user's default
-  // request, which then collides with the request the object is already locked
-  // in ("Object LIMU CPRI ... is already locked in request ...").
+  // Local / non-transportable package ($TMP and other $ packages) — no transport,
+  // whatever was passed. Only a package that really is local: ADT has answered
+  // with an empty RECORDING for a transportable package as well (S4, class
+  // source, 2026-09-18), and dropping the transport there leaves SAP to pick the
+  // user's default request, which then collides with the request the object is
+  // already locked in ("Object LIMU CPRI ... is already locked in request ...").
   const pkg = (info.DEVCLASS || devClass || "").trim()
-  if ((!info.RECORDING || info.RECORDING.trim() === "") && (pkg === "" || pkg.startsWith("$"))) {
-    return { note: `No transport — local package ${pkg || "$TMP"}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
+  if ((!info.RECORDING || info.RECORDING.trim() === "") && pkg.startsWith("$")) {
+    return { note: `No transport — local package ${pkg}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
   }
 
   let candidates: TransportCandidate[] = (info.TRANSPORTS ?? []).map(h => ({ trkorr: h.TRKORR, text: h.AS4TEXT, owner: h.AS4USER }))
   if (candidates.length === 0) {
-    candidates = await listOpenRequests(args.connectionId, "K", getConnectionConfig(args.connectionId).username)
+    const cfg = getConnectionConfig(args.connectionId)
+    candidates = await listOpenRequests(args.connectionId, "K", cfg.username, cfg.client)
   }
 
   // An object SAP already ties to a request is recorded through one of its
@@ -70,14 +78,16 @@ export async function resolveWorkbenchTransport(
   // with "already locked in request ...".
   //
   // A create asks ADT about the package (the new object does not exist yet), so
-  // LOCKS there is the package's own lock — the request its DEVC entry is in —
-  // and says nothing about where the new object may go. Taking it as the object's
-  // lock put every new object on whatever request last touched the package, even
-  // with createTransport: true (S4, 2026-11-11). Only a lock on the object itself
-  // counts.
-  const lockKey = info.LOCKS?.OBJECT_KEY?.OBJ_NAME?.trim().toUpperCase()
-  const lockIsElsewhere = !!creating && lockKey !== creating.trim().toUpperCase()
-  const lockedRequest = lockIsElsewhere ? undefined : (info.LOCKS?.HEADER?.TRKORR || undefined)
+  // LOCKS there can be the package's own lock — the request its DEVC entry is in —
+  // which says nothing about where the new object may go. Taking it as the
+  // object's lock put every new object on whatever request last touched the
+  // package, even with createTransport: true (S4, 2026-11-11). Only that case is
+  // set aside: a lock on a container the object really lives in (a function group,
+  // for an include or function module) still binds it.
+  const lockKey = info.LOCKS?.OBJECT_KEY
+  const packageLockOnly = !!creating && lockKey?.OBJECT === "DEVC" &&
+    (lockKey.OBJ_NAME ?? "").trim().toUpperCase() !== creating.trim().toUpperCase()
+  const lockedRequest = packageLockOnly ? undefined : (info.LOCKS?.HEADER?.TRKORR || undefined)
 
   // A transport named by the caller that is this same request (or one of its
   // tasks) is not a different choice: SAP's own assignment stands.
@@ -98,6 +108,7 @@ export async function resolveWorkbenchTransport(
     workItem: args.workItem,
     sessionId,
     forced: lockedRequest,
+    allowed: (info.TRANSPORTS ?? []).map(h => h.TRKORR),
     candidates,
     lookup: trkorr => lookupRequest(args.connectionId, trkorr),
     create: args.createTransport
@@ -109,7 +120,7 @@ export async function resolveWorkbenchTransport(
         }
       : undefined,
   })
-  return sel.kind === "use" ? { transport: sel.trkorr, note: sel.note } : { prompt: sel.text }
+  return sel.kind === "use" ? { transport: sel.trkorr, note: sel.note, confirm: sel.confirm } : { prompt: sel.text }
 }
 
 export const SOURCE_FILE_MAX_BYTES = 5 * 1024 * 1024
@@ -204,6 +215,7 @@ export async function handleWriteAbapObjectSource(args: {
 
     log("INFO", `setObjectSource ${sourceUrl} corrNr=${t.transport ?? "(none)"} note=${t.note ?? ""}`)
     await client.setObjectSource(sourceUrl, source, lockHandle, t.transport)
+    t.confirm?.()
 
     // Read it back. ADT has accepted writes it did not apply (a function group's
     // own URL instead of its main program), which only showed later.
@@ -362,6 +374,7 @@ export async function handleCreateAbapObject(args: {
       undefined,
       t.transport
     )
+    t.confirm?.()
   } finally {
     // ADT registers an implicit author edit-lock on creation.  Drop the session so
     // a subsequent write_abap_object_source can acquire a proper lock handle.
@@ -404,6 +417,7 @@ export async function handleDeleteAbapObject(args: {
 
   try {
     await client.deleteObject(args.url, lockHandle, t.transport)
+    t.confirm?.()
     try { await client.unLock(args.url, lockHandle) } catch { /* ignore — object gone, lock entry may already be cleared */ }
     forgetLock(args.connectionId, args.url)
     return {

@@ -332,13 +332,21 @@ Every tool that records onto a transport — `create_abap_object`, `write_abap_o
 
 1. **A transport you pass** is checked (exists, still modifiable, right kind: Workbench for
    repository objects, Customizing for customizing) and used. It becomes the transport of that
-   piece of work.
+   piece of work. If SAP already has the object locked in a *different* request, nothing is
+   written and the tool names the request SAP requires.
 2. **An object SAP already has locked into a request** records there — SAP allows nothing else.
+   That lock belongs to the one object: it does not become the transport for the rest of the work.
 3. **`createTransport: true`** creates a new request. Nothing else ever creates one.
 4. **The transport this piece of work already uses**, if still open, is used again, and the result
    says so. Pass another `transport` to change it.
 5. **Existing requests are preferred:** exactly one open request of the right kind is used; with
-   several, the tool lists them and asks which; with none, it asks, offering creation.
+   several, the tool lists them and asks which; with none, it asks, offering creation. The list holds
+   your own requests and those where you own a task, created in the logon client.
+
+A choice is remembered only after the write has gone through, so a refused write never moves a
+piece of work to another request. `createTransport: true` is ignored — and the result says so — when
+rule 1 or 2 applies. If SAP's own transport check fails, nothing is written and the tool says why;
+it never leaves SAP to pick a request on its own.
 
 A piece of work is `workItem` (any short name — `HPM`, a ticket number). Without one it is the MCP
 session, so two conversations never share a transport by accident. The choices are kept per SAP

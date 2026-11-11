@@ -261,6 +261,7 @@ export async function handleCreateTestInclude(args: {
 
   try {
     await client.createTestInclude(className, lockHandle, t.transport)
+    t.confirm?.()
     await client.unLock(args.classUrl, lockHandle)
     return {
       content: [{

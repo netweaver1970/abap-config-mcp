@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { TransportRequest, TransportTask, TransportObject } from "abap-adt-api"
-import { ensureConnected, getConnectionConfig } from "../connections"
+import { ensureConnected, getConnectionConfig, sapMessageNumber } from "../connections"
 import { runSql, tableRows, col } from "./customizing"
 import { listRemembered } from "./transportSelection"
 import { requestTexts } from "./transportSql"
@@ -164,7 +164,8 @@ export async function handleManageTransportRequests(args: {
         await client.transportDelete(args.transportNumber)
       } catch (err) {
         const msg = String((err as Error)?.message ?? err)
-        if (!/contains locked objects/i.test(msg)) throw err
+        // TR861: request/task contains locked objects (keyed on the number, any logon language).
+        if (sapMessageNumber(err) !== "TR861" && !/contains locked objects/i.test(msg)) throw err
         return { content: [{ type: "text" as const, text:
           `❌ Deleting transport ${args.transportNumber} stopped: SAP still holds object locks on it ("${msg}").\n` +
           `An object created or changed on a request stays locked to it — also after the object itself is deleted.\n` +
@@ -221,13 +222,20 @@ export async function handleGetTransportForObject(args: {
 }) {
   const client = await ensureConnected(args.connectionId)
   const info = await client.transportInfo(args.url, args.packageName)
+  const local = (!info.RECORDING || info.RECORDING.trim() === "") && (info.DEVCLASS ?? "").trim().startsWith("$")
+  const lock = info.LOCKS?.HEADER?.TRKORR
+  const allowed = (info.TRANSPORTS ?? []).map(h => `  ${h.TRKORR}  ${h.AS4TEXT ?? ""}${h.AS4USER ? `  (${h.AS4USER})` : ""}`)
 
   const lines = [
-    `PGMID:    ${info.PGMID}`,
-    `Object:   ${info.OBJECT} / ${info.OBJECTNAME}`,
-    `DevClass: ${info.DEVCLASS}`,
-    `Operation:${info.OPERATION}`,
-    info.CTEXT ? `Text:     ${info.CTEXT}` : "",
+    `Object:     ${info.PGMID} ${info.OBJECT} ${info.OBJECTNAME}`,
+    `Package:    ${info.DEVCLASS || "(none)"}${info.CTEXT ? ` — ${info.CTEXT}` : ""}`,
+    `Operation:  ${info.OPERATION}`,
+    `Recording:  ${local ? "none — local package, no transport needed"
+      : info.RECORDING?.trim() ? "yes — changes are recorded on a Workbench request" : "not reported by ADT (treated as recorded)"}`,
+    lock ? `Locked in:  ${lock}${info.LOCKS?.HEADER?.AS4USER ? ` (${info.LOCKS.HEADER.AS4USER})` : ""} — SAP records every change to this object there until it is released`
+         : `Locked in:  no request yet`,
+    info.EXISTING_REQ_ONLY === "X" ? `Only an existing request can be used (no new one).` : "",
+    allowed.length ? `Requests the transport layer allows:\n${allowed.join("\n")}` : "",
   ].filter(Boolean)
 
   return { content: [{ type: "text" as const, text: lines.join("\n") }] }

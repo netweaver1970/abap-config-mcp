@@ -249,7 +249,10 @@ export async function handleSetTextElements(args: {
       }
     }
   }
-  const doWrite = (handle: string) => writeCategory(client, textUrl, args.category, target, handle, t.transport)
+  const doWrite = async (handle: string) => {
+    await writeCategory(client, textUrl, args.category, target, handle, t.transport)
+    t.confirm?.()
+  }
 
   let lockHandle = await lockResource()
   try {

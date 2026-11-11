@@ -14,6 +14,12 @@ vi.mock("../src/connections", () => ({
 }))
 import { ensureConnected, isInvalidLockError, isEditingError } from "../src/connections"
 
+// Transport selection has its own tests (write.test.ts, transportSelection.test.ts).
+vi.mock("../src/tools/write", () => ({
+  resolveWorkbenchTransport: vi.fn(async (_c: unknown, _u: string, _d: unknown, _o: unknown, args: { transport?: string }) =>
+    ({ transport: args.transport, confirm: () => {} })),
+}))
+
 vi.mock("../src/tools/activate", () => ({
   handleAbapActivate: vi.fn(async () => ({ content: [{ type: "text", text: "✅ Activation successful" }] })),
 }))

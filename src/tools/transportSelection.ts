@@ -4,9 +4,11 @@
  *
  *   1. A transport the caller names is used — after checking it exists, is still
  *      modifiable and is of the right kind. It becomes the transport of that piece
- *      of work.
+ *      of work. If SAP already ties the object to another request, nothing is
+ *      written and the caller is told which request SAP requires.
  *   2. If SAP already ties the object to a request (it is locked into one), that
- *      request is used: SAP would refuse any other.
+ *      request is used: SAP would refuse any other. It does NOT become the
+ *      transport of the piece of work — the lock belongs to that one object.
  *   3. A new request is created only when the caller explicitly asks for one.
  *   4. If this piece of work already has a transport and it is still open, it is
  *      used again, and the result says so. Naming another transport (rule 1)
@@ -14,6 +16,9 @@
  *   5. Otherwise existing requests are preferred: exactly one open request → used;
  *      several → the caller is asked which; none → the caller is asked, with the
  *      option to create one.
+ *
+ * A choice is remembered only once the write has gone through (`confirm()`), so a
+ * refused write never re-points a piece of work.
  *
  * "A piece of work" is the caller's `workItem` (any short name — "HPM", a ticket
  * number). Without one it is the MCP session, so separate conversations never
@@ -52,6 +57,8 @@ export interface SelectionInput {
   sessionId?: string
   /** A request SAP already ties the object to (workbench lock). */
   forced?: string
+  /** Requests the object's transport layer allows (ADT's list). Empty/undefined = not known. */
+  allowed?: string[]
   /** Open requests the change may record onto (already filtered to the right kind). */
   candidates: TransportCandidate[]
   /** Look up one request or task. Undefined when it does not exist. */
@@ -61,7 +68,8 @@ export interface SelectionInput {
 }
 
 export type Selection =
-  | { kind: "use"; trkorr: string; note: string }
+  /** confirm(): call once the write has succeeded — only then is the choice remembered. */
+  | { kind: "use"; trkorr: string; note: string; confirm: () => void }
   | { kind: "ask"; text: string }
 
 const FN_LABEL: Record<CtsFunction, string> = { K: "Workbench", W: "Customizing" }
@@ -77,18 +85,32 @@ export function memoryPath(): string {
   return process.env.ABAP_MCP_TRANSPORT_MEMORY ?? path.join(os.homedir(), ".abap-mcp", "transport-memory.json")
 }
 
-function loadMemory(): Memory {
+/** The memory file, {} when there is none. Undefined when it exists but cannot be read — never overwrite it then. */
+function loadMemory(): Memory | undefined {
+  let text: string
   try {
-    return JSON.parse(fs.readFileSync(memoryPath(), "utf8")) as Memory
-  } catch {
-    return {}
+    text = fs.readFileSync(memoryPath(), "utf8")
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return {}
+    log("WARN", `Transport memory ${memoryPath()} cannot be read — choices will not be remembered until it is fixed`, err)
+    return undefined
+  }
+  try {
+    return JSON.parse(text) as Memory
+  } catch (err) {
+    log("WARN", `Transport memory ${memoryPath()} is not valid JSON — left as it is; choices will not be remembered until it is fixed or removed`, err)
+    return undefined
   }
 }
 
+/** Write to a temporary file and rename, so another server process never reads half a file. */
 function saveMemory(mem: Memory): void {
   try {
-    fs.mkdirSync(path.dirname(memoryPath()), { recursive: true })
-    fs.writeFileSync(memoryPath(), JSON.stringify(mem, null, 2))
+    const file = memoryPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(mem, null, 2))
+    fs.renameSync(tmp, file)
   } catch (err) {
     log("WARN", "Could not save transport memory — selection still works, it just will not be remembered", err)
   }
@@ -100,12 +122,13 @@ export function workKey(workItem?: string, sessionId?: string): string {
 }
 
 export function recallTransport(connectionId: string, fn: CtsFunction, key: string): string | undefined {
-  return loadMemory()[connectionId]?.[key]?.[fn]?.trkorr
+  return loadMemory()?.[connectionId]?.[key]?.[fn]?.trkorr
 }
 
 export function rememberTransport(connectionId: string, fn: CtsFunction, key: string, trkorr: string): void {
   if (!trkorr) return
   const mem = loadMemory()
+  if (!mem) return
   const now = Date.now()
   // Prune stale entries so the file does not grow with every session.
   for (const conn of Object.values(mem)) {
@@ -124,7 +147,7 @@ export function rememberTransport(connectionId: string, fn: CtsFunction, key: st
 
 /** Every piece of work that currently has a transport on this connection. */
 export function listRemembered(connectionId: string): Array<{ key: string; fn: CtsFunction; trkorr: string; at: string }> {
-  const conn = loadMemory()[connectionId] ?? {}
+  const conn = loadMemory()?.[connectionId] ?? {}
   return Object.entries(conn).flatMap(([key, byFn]) =>
     (Object.entries(byFn) as Array<[CtsFunction, MemoryEntry]>).map(([fn, e]) => ({ key, fn, trkorr: e.trkorr, at: e.at })))
 }
@@ -141,10 +164,15 @@ function list(candidates: TransportCandidate[], mark?: string): string {
     .join("\n")
 }
 
+/** Modifiable for CTS purposes: D (modifiable) and L (modifiable, protected — SAP decides who may record). */
+const OPEN = new Set(["D", "L"])
+
 export async function selectTransport(i: SelectionInput): Promise<Selection> {
   const key = workKey(i.workItem, i.sessionId)
   const kind = FN_LABEL[i.fn]
   const pin = i.workItem ? "" : `\n   (Pass workItem: "<name>" to keep one transport for a piece of work across sessions.)`
+  const remember = (trkorr: string) => () => rememberTransport(i.connectionId, i.fn, key, trkorr)
+  const createIgnored = (why: string) => i.create ? ` createTransport was not used: ${why}.` : ""
 
   // 1. Named by the caller.
   if (i.supplied) {
@@ -152,39 +180,48 @@ export async function selectTransport(i: SelectionInput): Promise<Selection> {
     if (!info) {
       return { kind: "ask", text: `❌ Transport ${i.supplied} does not exist. Nothing was written.\n\n` + chooseText(i, key) }
     }
-    if (info.status !== "D") {
-      return { kind: "ask", text: `❌ Transport ${info.trkorr} is not modifiable (status ${info.status} — released or locked). Nothing was written.\n\n` + chooseText(i, key) }
+    if (!OPEN.has(info.status)) {
+      return { kind: "ask", text: `❌ Transport ${info.trkorr} is not modifiable (status ${info.status} — released). Nothing was written.\n\n` + chooseText(i, key) }
     }
     if (info.fn !== i.fn) {
       return { kind: "ask", text:
         `❌ Transport ${info.trkorr} is a ${info.fn === "K" ? "Workbench" : info.fn === "W" ? "Customizing" : `type ${info.fn}`} request; ` +
         `${i.what} needs a ${kind} request. Nothing was written.\n\n` + chooseText(i, key) }
     }
+    if (i.forced && i.forced !== info.trkorr) {
+      return { kind: "ask", text:
+        `❌ ${i.what} cannot go on ${info.trkorr}: SAP already has the object locked in request ${i.forced}, and records ` +
+        `every change to it there until that request is released. Nothing was written.\n\n` +
+        `Re-run with transport: "${i.forced}" (or without transport), or release ${i.forced} first.` }
+    }
     const previous = recallTransport(i.connectionId, i.fn, key)
-    rememberTransport(i.connectionId, i.fn, key, info.trkorr)
     const switched = previous && previous !== info.trkorr ? ` (was ${previous} for ${label(key)})` : ""
-    return { kind: "use", trkorr: info.trkorr, note: `Transport ${info.trkorr} — as given${switched}, now the transport for ${label(key)}.` }
+    return { kind: "use", trkorr: info.trkorr, confirm: remember(info.trkorr),
+      note: `Transport ${info.trkorr} — as given${switched}, now the transport for ${label(key)}.${createIgnored("a transport was named")}` }
   }
 
-  // 2. SAP already ties the object to a request.
+  // 2. SAP already ties the object to a request. Not remembered: the lock is this
+  //    object's, and must not pull the rest of the work onto that request.
   if (i.forced) {
-    rememberTransport(i.connectionId, i.fn, key, i.forced)
-    return { kind: "use", trkorr: i.forced, note: `Transport ${i.forced} — the object is already locked into it.` }
+    return { kind: "use", trkorr: i.forced, confirm: () => {},
+      note: `Transport ${i.forced} — the object is already locked into it.${createIgnored(`SAP records this object only on ${i.forced}`)}` }
   }
 
   // 3. A new request, when the caller explicitly asked for one.
   if (i.create) {
     const num = await i.create()
-    rememberTransport(i.connectionId, i.fn, key, num)
-    return { kind: "use", trkorr: num, note: `Transport ${num} — created as asked, now the transport for ${label(key)}.` }
+    return { kind: "use", trkorr: num, confirm: remember(num),
+      note: `Transport ${num} — created as asked, now the transport for ${label(key)}.` }
   }
 
-  // 4. The transport this piece of work already uses.
+  // 4. The transport this piece of work already uses — still open, of the right
+  //    kind, and (when ADT says which) one this object's transport layer allows.
   const remembered = recallTransport(i.connectionId, i.fn, key)
   if (remembered) {
     const info = await i.lookup(remembered)
-    if (info && info.status === "D" && info.fn === i.fn) {
-      return { kind: "use", trkorr: remembered,
+    const allowedHere = !i.allowed?.length || i.allowed.includes(remembered)
+    if (info && OPEN.has(info.status) && info.fn === i.fn && allowedHere) {
+      return { kind: "use", trkorr: remembered, confirm: remember(remembered),
         note: `Transport ${remembered} — the one already used for ${label(key)}. Pass transport: to use another.${pin}` }
     }
   }
@@ -192,8 +229,7 @@ export async function selectTransport(i: SelectionInput): Promise<Selection> {
   // 5. Prefer existing requests.
   if (i.candidates.length === 1) {
     const only = i.candidates[0]
-    rememberTransport(i.connectionId, i.fn, key, only.trkorr)
-    return { kind: "use", trkorr: only.trkorr,
+    return { kind: "use", trkorr: only.trkorr, confirm: remember(only.trkorr),
       note: `Transport ${only.trkorr} — the only open ${kind} request${only.text ? ` (${only.text})` : ""}, now the transport for ${label(key)}.${pin}` }
   }
 
@@ -212,6 +248,6 @@ function chooseText(i: SelectionInput, key: string, remembered?: string): string
     lines.push(`🚦 There is no open ${kind} request for ${i.what}.`, "",
       `Re-run with createTransport: true to create one, or create it in SE09 / SolMan / Cloud ALM and re-run with transport: "<number>".`)
   }
-  if (remembered) lines.push("", `(${remembered} was used for ${label(key)} but is no longer open.)`)
+  if (remembered) lines.push("", `(${remembered} was used for ${label(key)} but cannot be used here: it is no longer open, or this object's transport layer does not allow it.)`)
   return lines.join("\n")
 }

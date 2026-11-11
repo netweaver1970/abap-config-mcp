@@ -4,7 +4,7 @@ vi.mock("../src/connections", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/connections")>()
   return { ...actual, ensureConnected: vi.fn(), getHeldLock: vi.fn(), forgetLock: vi.fn(), trackLock: vi.fn(), log: vi.fn() }
 })
-import { ensureConnected, getHeldLock, isRequestError, isSessionDegradedError } from "../src/connections"
+import { ensureConnected, getHeldLock, isRequestError, isSessionDegradedError, sapMessageNumber } from "../src/connections"
 import { handleUnlockAbapObject } from "../src/tools/write"
 import { readSource } from "../src/tools/source"
 import { stillInactive, handleAbapActivateMultiple } from "../src/tools/activate"
@@ -34,6 +34,16 @@ describe("query errors are not session errors", () => {
     ]) {
       expect(isSessionDegradedError(Object.assign(new Error(message), { status: 400 }))).toBe(false)
     }
+  })
+
+  it("recognises a transport refusal by SAP's keys in any logon language", () => {
+    // As S4 sent it with a German logon (2026-11-11).
+    const err = Object.assign(new Error("Auftrag/Aufgabe A4HK900248 kann wegen gesperrter Objekte nicht gelöscht werden"), {
+      err: 400, type: "ADT_TM_COMMON_EXCEPTION", namespace: "com.sap.adt.tm",
+      properties: { "T100KEY-ID": "SCTS_ADT_MSG", "T100KEY-NO": "9", LONGTEXT: "<P>Message No. TR861</P>" },
+    })
+    expect(isSessionDegradedError(err)).toBe(false)
+    expect(sapMessageNumber(err)).toBe("TR861")
   })
 
   it("still treats a bare HTTP 400 as a degraded session", () => {
