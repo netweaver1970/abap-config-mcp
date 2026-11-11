@@ -208,6 +208,15 @@ describe("manage_transport_requests delete", () => {
     expect(result.content[0].text).toContain("deleted")
   })
 
+  it("explains a request that still holds object locks", async () => {
+    mockClient.transportDelete.mockRejectedValueOnce(Object.assign(
+      new Error("Request/task A4HK900248 cannot be deleted because it contains locked objects"), { status: 400 }))
+    const text = (await handleManageTransportRequests({ action: "delete", transportNumber: "A4HK900247" })).content[0].text
+    expect(text).toContain("stopped")
+    expect(text).toContain("contains locked objects")
+    expect(text).toContain("Unlock objects")
+  })
+
   it("returns error when transportNumber is missing", async () => {
     const result = await handleManageTransportRequests({ action: "delete" })
     expect(result.content[0].text).toContain("transportNumber required")

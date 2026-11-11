@@ -27,6 +27,15 @@ describe("query errors are not session errors", () => {
     }
   })
 
+  it("does not treat a transport-system refusal as a degraded session", () => {
+    for (const message of [
+      "Request/task A4HK900248 cannot be deleted because it contains locked objects",
+      "Request A4HK900198 is already released",
+    ]) {
+      expect(isSessionDegradedError(Object.assign(new Error(message), { status: 400 }))).toBe(false)
+    }
+  })
+
   it("still treats a bare HTTP 400 as a degraded session", () => {
     expect(isSessionDegradedError(Object.assign(new Error("Bad Request"), { status: 400 }))).toBe(true)
   })

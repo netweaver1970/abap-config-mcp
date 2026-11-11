@@ -429,8 +429,20 @@ export function isRequestError(err: unknown): boolean {
   return /unknown column|is invalid here|is expected|not allowed|literals? across|syntax|cannot find|does not exist|unknown table|not supported|only select|must start with select|invalid (table|field|name)/i.test(msg)
 }
 
+/**
+ * True for a refusal from the transport system (CTS) about a request or task — it
+ * contains locked objects, is already released, is not modifiable. ADT answers
+ * these with HTTP 400 as well; read as a degraded session they made the server
+ * renew the session (dropping every lock) and report "the SAP session had
+ * degraded" in place of SAP's own reason (S4, deleting A4HK900247, 2026-11-11).
+ */
+export function isTransportRefusal(err: unknown): boolean {
+  const msg = String((err as { message?: unknown })?.message ?? "")
+  return /request\/task|contains locked objects|cannot be (deleted|released|changed)|already (released|locked in request)|not modifiable|is released/i.test(msg)
+}
+
 export function isSessionDegradedError(err: unknown): boolean {
-  if (isEditingError(err) || isInvalidLockError(err) || isRequestError(err)) return false
+  if (isEditingError(err) || isInvalidLockError(err) || isRequestError(err) || isTransportRefusal(err)) return false
   const e = err as {
     err?: unknown
     status?: unknown

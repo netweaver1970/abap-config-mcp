@@ -160,7 +160,17 @@ export async function handleManageTransportRequests(args: {
 
     case "delete": {
       if (!args.transportNumber) return { content: [{ type: "text" as const, text: "transportNumber required" }] }
-      await client.transportDelete(args.transportNumber)
+      try {
+        await client.transportDelete(args.transportNumber)
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err)
+        if (!/contains locked objects/i.test(msg)) throw err
+        return { content: [{ type: "text" as const, text:
+          `❌ Deleting transport ${args.transportNumber} stopped: SAP still holds object locks on it ("${msg}").\n` +
+          `An object created or changed on a request stays locked to it — also after the object itself is deleted.\n` +
+          `To delete the request: in SE09/SE01 open it and run Utilities → Unlock objects (or remove the object entries), then delete it again. ` +
+          `Or leave it: an open request with only deleted objects on it does no harm.` }] }
+      }
       return { content: [{ type: "text" as const, text: `✅ Transport ${args.transportNumber} deleted.` }] }
     }
 
