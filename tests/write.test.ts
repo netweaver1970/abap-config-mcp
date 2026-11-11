@@ -325,4 +325,33 @@ describe("transport when ADT reports no recording", () => {
     const corrNr = mockClient.createObject.mock.calls[0][6]
     expect(corrNr).toBe("A4HK900196")
   })
+
+  it("creates a new request when asked, even though the package is locked in another one", async () => {
+    // ADT is asked about the package for a create, so LOCKS is the package's own
+    // DEVC lock. It must not pull the new object onto that request.
+    mockClient.transportInfo.mockResolvedValue({
+      RECORDING: "X", DEVCLASS: "ZBETRM", TRANSPORTS: [],
+      LOCKS: { HEADER: { TRKORR: "A4HK900198" }, TASKS: [{ TRKORR: "A4HK900199", AS4USER: "DEV" }],
+               OBJECT_KEY: { PGMID: "R3TR", OBJECT: "DEVC", OBJ_NAME: "ZBETRM" } },
+    })
+    mockClient.createTransport.mockResolvedValue("A4HK900300")
+    await handleCreateAbapObject({
+      objectType: "CLAS", name: "ZCL_NEW", description: "x",
+      packageName: "ZBETRM", createTransport: true, workItem: "PKGLOCK" })
+    expect(mockClient.createTransport).toHaveBeenCalled()
+    expect(mockClient.createObject.mock.calls[0][6]).toBe("A4HK900300")
+  })
+
+  it("still follows a lock that is on the object being created", async () => {
+    mockClient.transportInfo.mockResolvedValue({
+      RECORDING: "X", DEVCLASS: "ZBETRM", TRANSPORTS: [],
+      LOCKS: { HEADER: { TRKORR: "A4HK900198" }, TASKS: [],
+               OBJECT_KEY: { PGMID: "R3TR", OBJECT: "CLAS", OBJ_NAME: "ZCL_NEW" } },
+    })
+    await handleCreateAbapObject({
+      objectType: "CLAS", name: "ZCL_NEW", description: "x",
+      packageName: "ZBETRM", createTransport: true, workItem: "OBJLOCK" })
+    expect(mockClient.createTransport).not.toHaveBeenCalled()
+    expect(mockClient.createObject.mock.calls[0][6]).toBe("A4HK900198")
+  })
 })

@@ -122,6 +122,17 @@ describe("abap_activate_multiple", () => {
     expect(result.content[0].text).toContain("ZPROG")
   })
 
+  it("does not report a failed activation as activated", async () => {
+    mockClient.inactiveObjects.mockResolvedValue([{
+      object: { "adtcore:name": "ZCL_X", "adtcore:uri": "/uri/ZCL_X", "adtcore:type": "CLAS/OC", "adtcore:parentUri": "/" }
+    }])
+    mockClient.activate.mockResolvedValue({ success: false, messages: [{ type: "E", shortText: "A RETURNING parameter must be fully typed." }], inactive: [] })
+    const text = (await handleAbapActivateMultiple({ urls: ["/uri/ZCL_X"] })).content[0].text
+    expect(text).toContain("Activation failed")
+    expect(text).toContain("Not activated: ZCL_X")
+    expect(text).not.toMatch(/^Activated:/m)
+  })
+
   it("returns not-found message when none of the urls match the inactive list", async () => {
     mockClient.inactiveObjects.mockResolvedValue([])
     const result = await handleAbapActivateMultiple({ urls: ["/uri/ZPROG"] })

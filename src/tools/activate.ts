@@ -162,7 +162,7 @@ export async function handleAbapActivateMultiple(args: {
   return {
     content: [{
       type: "text" as const,
-      text: `${formatActivationResult(result)}\nActivated: ${names}${inactiveWarning(left)}`
+      text: `${formatActivationResult(result)}\n${result.success ? "Activated" : "Not activated"}: ${names}${inactiveWarning(left)}`
     }]
   }
 }

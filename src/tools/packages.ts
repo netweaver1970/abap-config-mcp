@@ -103,7 +103,7 @@ export async function handleCreatePackage(args: {
 
   const t = await resolveWorkbenchTransport(
     client, `/sap/bc/adt/packages/${encodeURIComponent(args.name.toLowerCase())}`, args.name, "I", args, extra?.sessionId,
-    `creating package ${args.name}`, `MCP create package ${args.name}`)
+    `creating package ${args.name}`, `MCP create package ${args.name}`, args.name)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   await client.createObject({

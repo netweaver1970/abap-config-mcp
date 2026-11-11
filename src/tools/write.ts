@@ -36,6 +36,8 @@ export async function resolveWorkbenchTransport(
   sessionId: string | undefined,
   what: string,
   requestText: string,
+  /** Name of the object being created, when this is a create. */
+  creating?: string,
 ): Promise<ResolvedTransport> {
   let info
   try {
@@ -66,7 +68,16 @@ export async function resolveWorkbenchTransport(
   // An object SAP already ties to a request is recorded through one of its
   // tasks; the number ADT accepts is the REQUEST, and a task of it is refused
   // with "already locked in request ...".
-  const lockedRequest = info.LOCKS?.HEADER?.TRKORR || undefined
+  //
+  // A create asks ADT about the package (the new object does not exist yet), so
+  // LOCKS there is the package's own lock — the request its DEVC entry is in —
+  // and says nothing about where the new object may go. Taking it as the object's
+  // lock put every new object on whatever request last touched the package, even
+  // with createTransport: true (S4, 2026-11-11). Only a lock on the object itself
+  // counts.
+  const lockKey = info.LOCKS?.OBJECT_KEY?.OBJ_NAME?.trim().toUpperCase()
+  const lockIsElsewhere = !!creating && lockKey !== creating.trim().toUpperCase()
+  const lockedRequest = lockIsElsewhere ? undefined : (info.LOCKS?.HEADER?.TRKORR || undefined)
 
   // A transport named by the caller that is this same request (or one of its
   // tasks) is not a different choice: SAP's own assignment stands.
@@ -338,7 +349,7 @@ export async function handleCreateAbapObject(args: {
   // any determination failure falls back to the supplied transport.
   const t = await resolveWorkbenchTransport(
     client, parentPath, args.packageName, "I", args, extra?.sessionId,
-    `creating ${args.name}`, `MCP create ${args.name}`)
+    `creating ${args.name}`, `MCP create ${args.name}`, args.name)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   try {
