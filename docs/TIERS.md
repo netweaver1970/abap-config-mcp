@@ -31,7 +31,7 @@ System-management reads only — no data, config, or repository change.
 Customizing/data changes through the standard SM30 view runtime + transport
 recording; **no ABAP source creation**.
 `customizing_apply`, `customizing_create`, `customizing_plan_change`, `org_copy`,
-`retail_listing`, `manage_transport_requests`, `customizing_selftest` *(can
+`retail_listing`, `manage_transport_requests`, `transport_move`, `customizing_selftest` *(can
 auto-deploy the engine class, so it is not pure-read)*.
 
 ## Tier 2 — repository / code writes, execution, debug (Development only)
