@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+// The SOAP routes for the two data tools are under test here; they are opt-in (ABAP_MCP_DATA_TOOLS).
+vi.hoisted(() => { process.env.ABAP_MCP_DATA_TOOLS = "1" })
 
 vi.mock("../src/config", () => ({
   loadConfig: () => ({

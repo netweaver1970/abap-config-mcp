@@ -7,7 +7,7 @@ import {
 } from "../src/tools/data"
 import type { QueryResult } from "abap-adt-api"
 
-vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn() }))
+vi.mock("../src/connections", () => ({ ensureConnected: vi.fn(), getHeldLock: vi.fn(), trackLock: vi.fn(), forgetLock: vi.fn(), log: vi.fn() }))
 import { ensureConnected } from "../src/connections"
 
 // statelessClone points back at the mock so the read handlers (which run on the
@@ -158,5 +158,33 @@ describe("wrapSqlLines", () => {
     expect(out.split("\n").every(l => l.length <= 255)).toBe(true)
     expect(out.replace(/\n/g, " ")).toBe(sql)
     expect(out).toContain(lit)
+  })
+})
+
+// ─── opt-in (SAP API Policy FAQ v1.3, Q33) ──────────────────────────────────
+
+describe("data tools are opt-in", () => {
+  const registered = async (env: string | undefined) => {
+    const prev = process.env.ABAP_MCP_DATA_TOOLS
+    if (env === undefined) delete process.env.ABAP_MCP_DATA_TOOLS
+    else process.env.ABAP_MCP_DATA_TOOLS = env
+    const names: string[] = []
+    const { registerDataTools } = await import("../src/tools/data")
+    registerDataTools({ registerTool: (name: string) => { names.push(name) } } as never)
+    if (prev === undefined) delete process.env.ABAP_MCP_DATA_TOOLS
+    else process.env.ABAP_MCP_DATA_TOOLS = prev
+    return names
+  }
+
+  it("registers neither tool by default", async () => {
+    expect(await registered(undefined)).toEqual([])
+  })
+
+  it("registers both with ABAP_MCP_DATA_TOOLS=1", async () => {
+    expect((await registered("1")).sort()).toEqual(["execute_data_query", "read_table_contents"])
+  })
+
+  it("stays off for any other value", async () => {
+    expect(await registered("0")).toEqual([])
   })
 })

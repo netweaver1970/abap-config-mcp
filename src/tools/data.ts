@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { ensureConnected } from "../connections"
+import { ensureConnected, log } from "../connections"
 import type { ADTClient, QueryResult } from "abap-adt-api"
 
 const DANGEROUS_PATTERN = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|EXEC|EXECUTE|TRUNCATE|MERGE)\b/i
@@ -135,7 +135,22 @@ export async function handleReadTableContents(args: {
   return { content: [{ type: "text" as const, text: formatQueryResult(result) }] }
 }
 
+/**
+ * execute_data_query and read_table_contents run SQL and read table rows through
+ * ADT's data preview (or RFC on SOAP RFC connections). SAP's API Policy FAQ v1.3,
+ * question 33, names reading application tables and SQL execution as outside the
+ * scope of ADT, so both tools are off unless the operator switches them on with
+ * ABAP_MCP_DATA_TOOLS=1, on their own system and at their own risk.
+ */
+export function dataToolsEnabled(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.ABAP_MCP_DATA_TOOLS?.trim() ?? "")
+}
+
 export function registerDataTools(server: McpServer): void {
+  if (!dataToolsEnabled()) {
+    log("INFO", "execute_data_query and read_table_contents are off (SAP API Policy FAQ v1.3, Q33); set ABAP_MCP_DATA_TOOLS=1 to switch them on")
+    return
+  }
   server.registerTool(
     "execute_data_query",
     {

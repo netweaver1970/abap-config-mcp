@@ -79,7 +79,7 @@ export async function handleSearchTables(args: {
       type: "text" as const,
       text: `Tables/views matching "${args.keyword}" (${all.length} result(s)):\n\n${header}\n${rows.join("\n")}\n\n` +
         `Use describe_database_table to see the fields of any table above, ` +
-        `then read_table_contents or execute_data_query to query it.`,
+        `then read_table_contents or execute_data_query to query it (both off unless ABAP_MCP_DATA_TOOLS=1).`,
     }]
   }
 }
@@ -163,7 +163,7 @@ export function registerTableDiscoveryTools(server: McpServer): void {
       description:
         "Find database tables and views by keyword when you do not know the technical name, via the ADT object search for types TABL and VIEW. " +
         "Returns kind, name, package and description per hit, sorted by name, for standard, industry and Z/Y objects alike. " +
-        "Follow with describe_database_table for the fields, then read_table_contents or execute_data_query for the rows; use search_abap_objects for other object types. Read-only; maxResults applies to tables and views separately.",
+        "Follow with describe_database_table for the fields, then read_table_contents or execute_data_query (off unless ABAP_MCP_DATA_TOOLS=1) for the rows; use search_abap_objects for other object types. Read-only; maxResults applies to tables and views separately.",
       inputSchema: {
         keyword: z.string().describe("Search text or name pattern; * is the wildcard (e.g. material*, *valuation*, T001*)"),
         maxResults: z.number().optional().describe("Maximum results per object type (default: 50)"),
