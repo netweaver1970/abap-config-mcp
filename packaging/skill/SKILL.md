@@ -55,7 +55,9 @@ transport), then the same loop. Run a console class with `abap_run_class`
 **Find data when the table name is unknown**
 `search_database_tables` (by description — works for IS-Retail, Z/Y tables) →
 `describe_database_table` → `execute_data_query` (Open SQL with `UP TO n ROWS`) or
-`read_table_contents`. Always limit rows.
+`read_table_contents`. Always limit rows. Both are off unless the server runs with
+`ABAP_MCP_DATA_TOOLS=1` (SAP API Policy FAQ v1.3, question 33); if they are missing, say so
+rather than working around it.
 
 **Investigate a problem**
 `analyze_dump` (ST22) → `get_abap_object_lines` around the failing line → `where_used` →

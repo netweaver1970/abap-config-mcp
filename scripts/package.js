@@ -122,7 +122,8 @@ function listTools(entry) {
     input: msgs.map(m => JSON.stringify(m)).join("\n") + "\n",
     cwd: OUT,   // not the repo: prove nothing is resolved from the working directory
     env: { PATH: process.env.PATH, HOME: process.env.HOME, ABAP_NO_WARMUP: "1",
-           SAP_URL: "http://sap.invalid:8000", SAP_USER: "X", SAP_PASSWORD: "X" },
+           SAP_URL: "http://sap.invalid:8000", SAP_USER: "X", SAP_PASSWORD: "X",
+           ABAP_MCP_DATA_TOOLS: "1" },   // the full surface, opt-in tools included, for the manifest and skill checks
     stdio: ["pipe", "pipe", "ignore"],
   }).toString()
   const res = out.trim().split("\n").map(l => JSON.parse(l)).find(m => m.id === 2)

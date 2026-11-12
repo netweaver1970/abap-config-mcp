@@ -59,9 +59,12 @@ async function start(): Promise<void> {
     log("INFO", `Shutting down (${why})…`)
     stopKeepAlive()
     // Ending the ADT sessions releases any locks this client still holds.
+    // Exit only once stdout has drained: a large last response (tools/list is ~65 KB)
+    // still sits in the pipe buffer when the client closes stdin.
+    const exitWhenFlushed = () => process.stdout.write("", () => process.exit(0))
     closeSessionConnections(sessionId)
       .catch(err => log("WARN", "Closing ADT sessions failed", err))
-      .finally(() => process.exit(0))
+      .finally(exitWhenFlushed)
     setTimeout(() => process.exit(0), 5_000).unref()
   }
   process.stdin.on("end", () => shutdown("client closed stdin"))
