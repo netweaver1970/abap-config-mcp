@@ -161,12 +161,11 @@ export function registerTableDiscoveryTools(server: McpServer): void {
     {
       title: "Search Database Tables",
       description:
-        "Search for SAP database tables and views by description keyword. " +
-        "Works for all installed tables — standard SAP, industry solutions (IS-Retail, IS-Automotive, IS-Mill, etc.), " +
-        "and custom Z/Y tables. Use this when you know what data you want but not the technical table name. " +
-        "Examples: 'article listing', 'vehicle order', 'warehouse transfer', 'purchase order header'.",
+        "Find database tables and views by keyword when you do not know the technical name, via the ADT object search for types TABL and VIEW. " +
+        "Returns kind, name, package and description per hit, sorted by name, for standard, industry and Z/Y objects alike. " +
+        "Follow with describe_database_table for the fields, then read_table_contents or execute_data_query for the rows; use search_abap_objects for other object types. Read-only; maxResults applies to tables and views separately.",
       inputSchema: {
-        keyword: z.string().describe("Description keyword to search for (e.g. 'article listing', 'transport request', 'material valuation')"),
+        keyword: z.string().describe("Search text or name pattern; * is the wildcard (e.g. material*, *valuation*, T001*)"),
         maxResults: z.number().optional().describe("Maximum results per object type (default: 50)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }

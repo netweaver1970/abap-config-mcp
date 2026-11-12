@@ -247,25 +247,24 @@ export function registerTransportTools(server: McpServer): void {
     {
       title: "Manage Transport Requests",
       description:
-        "View, create, and manage SAP transport requests. " +
-        "Actions: list (one user's open transports), details (full readable view with all objects), " +
-        "create (new transport), release (export transport), delete (remove transport), " +
-        "change_owner (reassign transport to another user).",
+        "Work with one transport request at a time through action: list (a user's open requests), details (header, tasks and objects of a request), create, release, delete, change_owner. " +
+        "release exports the request and cannot be undone; delete fails while SAP still holds object locks on it; create and change_owner change the CTS. " +
+        "Use list_all_transports to see other users' requests, get_transport_for_object for the request an object needs, and transport_move to move objects between requests. Needs CTS authorization (S_TRANSPRT).",
       inputSchema: {
         action: z.enum(["list", "create", "details", "release", "delete", "change_owner"])
-          .describe("Action to perform"),
+          .describe("list needs no transport number; details, release, delete and change_owner need transportNumber; create needs objectUrl, description and packageName; change_owner also needs newOwner"),
         username: z.string().optional()
-          .describe("Username for list action (defaults to current user)"),
+          .describe("list only: whose open requests to show (default: the connected user)"),
         newOwner: z.string().optional()
-          .describe("New owner username for change_owner action"),
+          .describe("change_owner only: SAP user who becomes the owner"),
         transportNumber: z.string().optional()
-          .describe("Transport number for details / release / delete / change_owner (e.g. DEVK123456)"),
+          .describe("Request number for details, release, delete and change_owner (e.g. DEVK900123)"),
         objectUrl: z.string().optional()
-          .describe("Object ADT URL (create action — determines target system)"),
+          .describe("create only: ADT URL of an object (e.g. /sap/bc/adt/programs/programs/ZREPORT) that the new request is created for"),
         description: z.string().optional()
-          .describe("Description for new transport (create action)"),
+          .describe("create only: short text of the new request"),
         packageName: z.string().optional()
-          .describe("Package name for new transport (create action)"),
+          .describe("create only: package of that object (e.g. ZORDER_API)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },
@@ -277,12 +276,13 @@ export function registerTransportTools(server: McpServer): void {
     {
       title: "List All Transports",
       description:
-        "List transport requests across all users, read from the CTS tables: owner, kind, status, date, description, " +
-        "the piece of work each is remembered for, and the objects in it (including its tasks' objects).",
+        "List transport requests of all users (or one owner), grouped by owner and newest first: number, kind, status, date, description, the piece of work it is remembered for, and optionally its objects including its tasks' objects. " +
+        "Reads the CTS tables E070, E07T and E071 with SQL through ADT, so it needs table read authorization (S_TABU_DIS). " +
+        "Use manage_transport_requests with list for one user's open requests and details for a single request. Read-only; at most 500 requests, objects for the newest 100.",
       inputSchema: {
         status: z.enum(["modifiable", "released", "all"]).optional()
           .describe("Which transports to show: modifiable (default, open/unreleased), released, or all"),
-        owner: z.string().optional().describe("Only this user's requests"),
+        owner: z.string().optional().describe("Only this SAP user's requests (e.g. DEVELOPER1); default: all users"),
         withObjects: z.boolean().optional().describe("List the objects in each request (default true; newest 100 requests)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
@@ -294,10 +294,10 @@ export function registerTransportTools(server: McpServer): void {
     "get_transport_for_object",
     {
       title: "Get Transport Info for Object",
-      description: "Determine which transport request is needed to modify an ABAP object",
+      description: "Report how a change to an ABAP object is transported: its package, whether recording is needed (a local $ package needs none), the request it is already locked into, and the open requests the transport layer allows. Use it before write_abap_object_source or delete_abap_object to pick a transport; list_all_transports shows open requests generally. Read-only; takes no lock and creates no request.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object"),
-        packageName: z.string().optional().describe("Package name of the object"),
+        url: z.string().describe("ADT URL of the object (e.g. /sap/bc/adt/programs/programs/ZREPORT)"),
+        packageName: z.string().optional().describe("Package of the object (e.g. ZORDER_API); optional, passed to ADT together with the URL"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },

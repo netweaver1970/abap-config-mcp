@@ -95,7 +95,7 @@ export function registerDiscoveryTools(server: McpServer): void {
     "connected_systems",
     {
       title: "Connected Systems",
-      description: "List all configured SAP ABAP systems available for connection",
+      description: "List the SAP systems this server is configured for: connection id, URL, user and client, with the default connection marked. Call this first when more than one system is configured, and pass the id as connectionId to any other tool. SOAP RFC connections are flagged as read-only (tables and sources only, no ADT). Only reads local configuration; does not contact SAP or log in.",
       inputSchema: {}
     },
     handleConnectedSystems
@@ -105,12 +105,12 @@ export function registerDiscoveryTools(server: McpServer): void {
     "search_abap_objects",
     {
       title: "Search ABAP Objects",
-      description: "Search for ABAP development objects (programs, classes, function modules, tables, etc.) by name or pattern",
+      description: "Search ABAP repository objects by name or wildcard pattern and return type, name, description and ADT URL for each hit. Use it to find the URL that get_abap_object_lines, write_abap_object_source or where_used need; use browse_package to list a package instead, search_abap_object_lines to search inside source, and search_database_tables for tables by keyword. Read-only; at most maxResults hits (default 50).",
       inputSchema: {
-        query: z.string().describe("Search query - name or wildcard pattern (e.g. Z_MY_PROG*, *_ORDER*)"),
-        objectType: z.string().optional().describe("ABAP object type filter: PROG, CLAS, FUGR, TABL, DTEL, DOMA, INTF, TRAN, etc."),
+        query: z.string().describe("Object name or pattern; * is the wildcard (e.g. ZCL_ORDER*, *_ORDER_*)"),
+        objectType: z.string().optional().describe("Restrict to one ADT object type: PROG, CLAS, FUGR, TABL, DTEL, DOMA, INTF, TRAN, etc. Default: all types"),
         maxResults: z.number().optional().describe("Max results (default 50)"),
-        connectionId: z.string().optional().describe("SAP system connection ID (uses first if omitted)")
+        connectionId: z.string().optional().describe("SAP system connection ID from connected_systems (default connection if omitted)")
       }
     },
     handleSearchAbapObjects
@@ -120,10 +120,10 @@ export function registerDiscoveryTools(server: McpServer): void {
     "get_abap_object_info",
     {
       title: "Get ABAP Object Info",
-      description: "Get detailed information about an ABAP object: type, package, responsible, includes, and structure",
+      description: "Read an ABAP object's metadata from its ADT URL: name, type, description, responsible user, language, version and URL, plus its includes for objects that have them (e.g. classes). Does not return source code; use get_abap_object_lines for that and get_transport_for_object for transport and lock state. Read-only. Find the URL with search_abap_objects.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG)"),
-        connectionId: z.string().optional().describe("SAP system connection ID")
+        url: z.string().describe("ADT object URL, without /source/main (e.g. /sap/bc/adt/programs/programs/ZREPORT, /sap/bc/adt/oo/classes/zcl_order_api)"),
+        connectionId: z.string().optional().describe("SAP system connection ID (default connection if omitted)")
       }
     },
     handleGetAbapObjectInfo
@@ -148,9 +148,9 @@ export function registerDiscoveryTools(server: McpServer): void {
     "adt_discovery",
     {
       title: "ADT Discovery",
-      description: "Discover available ADT features and services on the connected SAP system",
+      description: "List the ADT services the SAP system exposes, each with its collection titles or hrefs, from the ADT discovery document. Use it to check whether a feature (for example a data preview or ATC endpoint) exists on this release before relying on a tool that needs it, or when a tool fails with 404. Read-only; takes no object input and returns a plain list, which can be long.",
       inputSchema: {
-        connectionId: z.string().optional().describe("SAP system connection ID")
+        connectionId: z.string().optional().describe("SAP system connection ID (default connection if omitted)")
       }
     },
     handleAdtDiscovery

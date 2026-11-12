@@ -940,13 +940,13 @@ export function registerCustomizingTools(server: McpServer): void {
     {
       title: "Read Customizing Data",
       description:
-        "Read current customizing rows for a SAP table or maintenance view. " +
-        "Optionally filter by a single key field value (e.g. plant, company code, sales org). " +
-        "The result shows the live configuration — use customizing_diff to compare two org units.",
+        "Read the current rows of a customizing table or maintenance view (a view is resolved to its base table) as an aligned text table, optionally filtered to rows where one key field equals one value. " +
+        "The filter applies only when both keyField and keyValue are given. Use customizing_diff to compare two org units, customizing_describe for the field list, and read_table_contents for non-customizing tables. " +
+        "Read-only; needs table read authorization (S_TABU_DIS); returns at most maxRows rows.",
       inputSchema: {
-        objectName:  z.string().describe("Maintenance view or table name (e.g. V_T001W, T001, TVKO)"),
-        keyField:    z.string().optional().describe("Key field to filter on (e.g. WERKS, BUKRS, VKORG)"),
-        keyValue:    z.string().optional().describe("Value to filter for (e.g. '1000', 'DE01')"),
+        objectName:  z.string().describe("Maintenance view or table name (e.g. V_T001W, T001W, TCURR)"),
+        keyField:    z.string().optional().describe("Field to filter on, compared for equality (e.g. WERKS, BUKRS); used only together with keyValue"),
+        keyValue:    z.string().optional().describe("Value the field must equal, as stored (e.g. '0001'); used only together with keyField"),
         maxRows:     z.number().optional().describe("Maximum rows to return (default: 100)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }

@@ -455,10 +455,10 @@ export function registerWriteTools(server: McpServer): void {
     "lock_abap_object",
     {
       title: "Lock ABAP Object",
-      description: "Lock an ABAP object for editing. Returns the lock handle required for write and activate operations.",
+      description: "Take an exclusive edit lock (enqueue) on an ABAP object and return the lock handle; the lock belongs to this conversation's SAP session and blocks other users from changing the object. Rarely needed: write_abap_object_source locks and unlocks by itself, and abap_activate releases a held lock. Use it only to keep an object locked across several calls, and release it with unlock_abap_object. Fails if another user or session already holds the lock.",
       inputSchema: {
-        url: z.string().describe("ADT object URL"),
-        connectionId: z.string().optional().describe("SAP system connection ID")
+        url: z.string().describe("ADT object URL (e.g. /sap/bc/adt/programs/programs/ZREPORT, /sap/bc/adt/oo/classes/zcl_order_api)"),
+        connectionId: z.string().optional().describe("SAP system connection ID (default connection if omitted)")
       }
     },
     handleLockAbapObject
@@ -468,9 +468,9 @@ export function registerWriteTools(server: McpServer): void {
     "unlock_abap_object",
     {
       title: "Unlock ABAP Object",
-      description: "Unlock a previously locked ABAP object (discards any unsaved changes)",
+      description: "Release the edit lock this server holds on an ABAP object, taken by lock_abap_object or kept by write_abap_object_source with keepLock. Saved (inactive) source is not removed. Use it to free an object you will not activate; abap_activate releases a held lock itself. If this server holds no lock and no handle is given, nothing is released and the call explains why; force_relogin drops the whole session's locks as a last resort.",
       inputSchema: {
-        url: z.string().describe("ADT object URL"),
+        url: z.string().describe("ADT object URL that was locked (e.g. /sap/bc/adt/programs/programs/ZREPORT)"),
         lockHandle: z.string().optional().describe("Lock handle returned by lock_abap_object or write_abap_object_source. Optional: defaults to the lock this server holds on the object."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
@@ -502,9 +502,9 @@ export function registerWriteTools(server: McpServer): void {
     "delete_abap_object",
     {
       title: "Delete ABAP Object",
-      description: "Delete an ABAP development object. Locks the object, deletes it, and unlocks. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
+      description: "Delete an ABAP repository object from the SAP system and record the deletion on a Workbench request (not needed for a local $ package). Irreversible. The tool locks the object, deletes it and unlocks it. Check where_used first, since other objects may still reference it. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
-        url: z.string().describe("ADT object URL to delete"),
+        url: z.string().describe("ADT object URL to delete (e.g. /sap/bc/adt/programs/programs/ZREPORT)"),
         transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
         createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),
         workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),

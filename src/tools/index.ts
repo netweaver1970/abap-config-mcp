@@ -18,6 +18,7 @@ import { registerEngineDeployTools } from "./engineDeploy"
 import { wrapServerWithSessionRecovery, wrapServerWithSessionScope } from "./sessionRecovery"
 import { wrapServerWithSoapRfcRouting } from "./soapRfcRouting"
 import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
+import { wrapServerWithAnnotations } from "./toolAnnotations"
 import { log } from "../connections"
 
 export function registerAllTools(server: McpServer): void {
@@ -37,7 +38,11 @@ export function registerAllTools(server: McpServer): void {
   // only/diagnostics, 1 = + customizing writes, 2/unset = full incl. code
   // writes). Lets a Production-pointed server run reads only. See riskTiers.ts.
   const maxTier = getMaxTier()
-  const target = maxTier < 2 ? wrapServerWithTierGating(guarded, maxTier) : guarded
+  const gated = maxTier < 2 ? wrapServerWithTierGating(guarded, maxTier) : guarded
+
+  // Outermost: every tool carries MCP annotations (read-only, destructive,
+  // idempotent) from one hand-checked table — see toolAnnotations.ts.
+  const target = wrapServerWithAnnotations(gated)
   log("INFO", `Registering tools with ABAP_MCP_MAX_TIER=${maxTier}` +
     (maxTier < 2 ? " — higher-tier tools will be hidden" : " (full surface)"))
 

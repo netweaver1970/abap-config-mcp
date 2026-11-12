@@ -116,10 +116,10 @@ export function registerSourceTools(server: McpServer): void {
     "get_abap_object_lines",
     {
       title: "Get ABAP Object Source",
-      description: "Read the full source code of an ABAP object (program, class, function module, include, etc.)",
+      description: "Return the full ABAP source text of one object (program, class, function module, include, ...). Give the object URL and /source/main is appended automatically if you omit it. Use search_abap_object_lines to find a pattern instead of reading everything, get_abap_batch_lines for several objects at once, and get_abap_object_info for metadata only. Read-only; returns the stored version as one string, with no line numbers.",
       inputSchema: {
-        url: z.string().describe("ADT source URL (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG/source/main)"),
-        connectionId: z.string().optional().describe("SAP system connection ID")
+        url: z.string().describe("ADT URL of the object or its source (e.g. /sap/bc/adt/programs/programs/ZREPORT/source/main, /sap/bc/adt/oo/classes/zcl_order_api). Includes and function modules have their own URLs."),
+        connectionId: z.string().optional().describe("SAP system connection ID (default connection if omitted)")
       }
     },
     handleGetAbapObjectLines
@@ -129,10 +129,10 @@ export function registerSourceTools(server: McpServer): void {
     "search_abap_object_lines",
     {
       title: "Search ABAP Object Source Lines",
-      description: "Search for a pattern within the source of an ABAP object, returning matching lines with line numbers",
+      description: "Find lines in one object's source that match a case-insensitive regular expression and return them as numbered lines (line number, then text). Use it to locate a statement before editing or setting a breakpoint; use where_used for references across objects and get_abap_object_lines to read the whole source. Read-only; searches a single object per call and reads the full source first.",
       inputSchema: {
-        url: z.string().describe("ADT source URL of the object"),
-        pattern: z.string().describe("Search pattern (case-insensitive substring or regex)"),
+        url: z.string().describe("ADT URL of the object or its source (e.g. /sap/bc/adt/programs/programs/ZREPORT/source/main)"),
+        pattern: z.string().describe("Case-insensitive JavaScript regular expression; a plain word works as a substring (e.g. SELECT .* FROM MARA). An invalid expression fails the call."),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -143,9 +143,9 @@ export function registerSourceTools(server: McpServer): void {
     "get_abap_batch_lines",
     {
       title: "Get ABAP Batch Source",
-      description: "Read source code of multiple ABAP objects at once",
+      description: "Return the source of several ABAP objects in one call, each under a header line with its URL. One failing URL is reported as an error entry and does not stop the others. Use get_abap_object_lines for a single object. Read-only; the combined text can be large, so batch only what you need.",
       inputSchema: {
-        urls: z.array(z.string()).describe("Array of ADT source URLs to fetch"),
+        urls: z.array(z.string()).describe("ADT URLs of the objects or their sources, e.g. ['/sap/bc/adt/programs/programs/ZREPORT/source/main', '/sap/bc/adt/oo/classes/zcl_order_api']"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -156,11 +156,11 @@ export function registerSourceTools(server: McpServer): void {
     "syntax_check",
     {
       title: "ABAP Syntax Check",
-      description: "Check syntax of ABAP source code against the server without saving",
+      description: "Run the SAP syntax check on source text you supply, in the context of an existing object, without saving or locking anything. Returns each message as line:column, severity and text, or a no-errors confirmation. Use it before write_abap_object_source; use run_atc_analysis for quality checks on the saved object. Read-only; the object must already exist.",
       inputSchema: {
-        url: z.string().describe("ADT source URL of the object"),
+        url: z.string().describe("ADT source URL of the object being checked (e.g. /sap/bc/adt/programs/programs/ZREPORT/source/main)"),
         mainUrl: z.string().optional().describe("ADT URL of the main object. Default and almost always right: the object itself (url without /source/main) — also for function modules, includes and classes."),
-        source: z.string().describe("ABAP source code to check"),
+        source: z.string().describe("The complete ABAP source to check, as it would be saved (not a fragment)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },

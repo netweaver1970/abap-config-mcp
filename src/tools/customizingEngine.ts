@@ -1399,13 +1399,13 @@ export function registerCustomizingEngineTools(server: McpServer): void {
     {
       title: "Deploy/Update Customizing Engine",
       description:
-        "Deploy or update the in-system ABAP Customizing Engine (ZCL_MCP_CUST_ENGINE) " +
-        "using the server's own write+activate tooling. Run this once to install, and " +
-        "again whenever the engine version changes. After deploying, a one-time SICF " +
-        "service registration (handler = ZCL_MCP_CUST_ENGINE) is required.",
+        "Install or update the Customizing Engine in the SAP system: creates or overwrites the class ZCL_MCP_CUST_ENGINE and the batch writer report ZMCP_CUST_WRITE, writes their source and activates both. " +
+        "Run it once to install and again when the engine version changes; the first install then needs a one-time SICF service registration (handler ZCL_MCP_CUST_ENGINE), which the result spells out. " +
+        "Verify with customizing_engine_ping; remove with customizing_engine_cleanup; engine_deploy is the entry point that lets you choose transportable or local per unit. " +
+        "Writes repository objects and needs development authorization (S_DEVELOP).",
       inputSchema: {
-        packageName: z.string().optional().describe("Target package (default: $TMP; use a transportable Z package for production)"),
-        transport:   z.string().optional().describe("Transport request for the class (required if package is transportable)"),
+        packageName: z.string().optional().describe("Package for the new objects (default: $TMP, local and not transportable; use a transportable Z package such as ZORDER_API to move the engine between systems)"),
+        transport:   z.string().optional().describe("Workbench request for the class and report (e.g. DEVK900123); needed when the package is transportable"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },
@@ -1417,12 +1417,12 @@ export function registerCustomizingEngineTools(server: McpServer): void {
     {
       title: "Ping Customizing Engine",
       description:
-        "Call the deployed Customizing Engine over its SICF endpoint and report the " +
-        "running version. Use to confirm the engine is installed, the SICF service is " +
-        "active, and the deployed version matches the server's expected version.",
+        "Call the Customizing Engine's SICF endpoint with a ping and report the deployed version against the version this server expects, plus the release, client and which engine features the system offers. " +
+        "Use it to confirm customizing_engine_bootstrap worked and the SICF service is active; a version mismatch means run bootstrap again. " +
+        "Read-only: changes nothing in SAP. On failure, retry with rawDump to see the raw HTTP response.",
       inputSchema: {
-        icfPath:     z.string().optional().describe(`SICF path of the engine (default: ${ENGINE_ICF_PATH})`),
-        rawDump:     z.boolean().optional().describe("Return the raw HTTP body for diagnostics instead of parsing it (useful when the engine is reachable but returning unexpected content)"),
+        icfPath:     z.string().optional().describe(`SICF path the engine service is registered under (default: ${ENGINE_ICF_PATH})`),
+        rawDump:     z.boolean().optional().describe("Return the HTTP status, content type and first 2000 characters of the body instead of the parsed result (default false); use when the engine answers with unexpected content"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },
@@ -1658,10 +1658,11 @@ export function registerCustomizingEngineTools(server: McpServer): void {
     {
       title: "Remove Customizing Engine",
       description:
-        "Delete the ABAP Customizing Engine class from the system. Requires confirm: true. " +
-        "The SICF service node must be removed manually in transaction SICF.",
+        "Delete the Customizing Engine class ZCL_MCP_CUST_ENGINE from the SAP system. Without confirm: true it only shows what would happen and changes nothing. " +
+        "The report ZMCP_CUST_WRITE and the SICF service node are not removed; delete the node manually in SICF. " +
+        "Customizing tools that need the engine stop working until customizing_engine_bootstrap is run again. Deletion is irreversible and uses the same delete path as delete_abap_object.",
       inputSchema: {
-        confirm:     z.boolean().optional().describe("Must be true to actually delete (default: false = show what would happen)"),
+        confirm:     z.boolean().optional().describe("Set true to delete the class; false or omitted only prints the warning and deletes nothing (default: false)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
       }
     },

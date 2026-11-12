@@ -118,11 +118,11 @@ export function registerAnalysisTools(server: McpServer): void {
     "where_used",
     {
       title: "Where Used",
-      description: "Find all places where an ABAP object or symbol is used (cross-reference analysis). Returns source locations with line numbers.",
+      description: "List where an ABAP object, or a symbol inside it, is used (the where-used list). Returns each usage as a location with a source snippet when SAP provides snippets, otherwise as name, type and URL. For symbol-level search pass line and column of the symbol in the object's source. Use search_abap_object_lines to search text inside one object instead. Read-only.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object to find usages of"),
-        line: z.number().optional().describe("Line number for symbol-level where-used"),
-        column: z.number().optional().describe("Column number for symbol-level where-used"),
+        url: z.string().describe("ADT URL of the object (e.g. /sap/bc/adt/oo/classes/zcl_order_api) or, for a symbol, its source URL ending in /source/main"),
+        line: z.number().optional().describe("Line of the symbol in the source; give together with column for a symbol-level search, omit for the whole object"),
+        column: z.number().optional().describe("Column of the symbol in that line; give together with line"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -133,10 +133,10 @@ export function registerAnalysisTools(server: McpServer): void {
     "version_history",
     {
       title: "Version History",
-      description: "Get the version history of an ABAP object — all previous versions with timestamps and authors",
+      description: "List the stored revisions of an ABAP object, one line per revision: version id, date, author and version title. Lists metadata only, not the source of each version. Use it to see who changed an object and when; use get_transport_for_object for its current transport. Read-only. Returns a no-history message for objects without revisions.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object"),
-        connectionId: z.string().optional().describe("SAP system connection ID")
+        url: z.string().describe("ADT URL of the object (e.g. /sap/bc/adt/programs/programs/ZREPORT)"),
+        connectionId: z.string().optional().describe("SAP system connection ID (default connection if omitted)")
       }
     },
     handleVersionHistory
@@ -146,9 +146,9 @@ export function registerAnalysisTools(server: McpServer): void {
     "analyze_dump",
     {
       title: "Analyze Runtime Dump",
-      description: "List ABAP runtime dumps (ST22 short dumps) from the SAP system",
+      description: "List ABAP runtime dumps (the short dumps shown in ST22) from the SAP system: category, short text, dump id and user. Lists them only; it does not return the dump text or stack. Use it to find a failing run after abap_run_class or run_unit_tests, then open the dump in ST22. Read-only; the optional query narrows the feed.",
       inputSchema: {
-        query: z.string().optional().describe("Optional search filter"),
+        query: z.string().optional().describe("Free-text filter passed to the ADT dump feed; omit to list the dumps ADT returns by default"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -159,7 +159,7 @@ export function registerAnalysisTools(server: McpServer): void {
     "check_inactive_objects",
     {
       title: "Check Inactive Objects",
-      description: "List all currently inactive (not yet activated) ABAP objects in the system",
+      description: "List ABAP objects with an inactive version (saved but not activated): type, name and ADT URL, for the connected user's inactive worklist. Use it after write_abap_object_source to find what still needs activating, then pass the URLs to abap_activate or abap_activate_multiple. Read-only; takes no object input.",
       inputSchema: {
         connectionId: z.string().optional().describe("SAP system connection ID")
       }

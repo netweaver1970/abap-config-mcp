@@ -140,9 +140,9 @@ export function registerDataTools(server: McpServer): void {
     "execute_data_query",
     {
       title: "Execute Data Query",
-      description: "Execute a SELECT SQL query against SAP ABAP dictionary tables or CDS views. Read-only — DML statements are blocked.",
+      description: "Run one freestyle SELECT (ABAP SQL, as in the ADT data preview) against dictionary tables or CDS views and return the rows as an aligned text table or JSON. Statements containing INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, EXEC, EXECUTE, TRUNCATE or MERGE are rejected, and the query must start with SELECT. Use read_table_contents for a plain table read and describe_database_table to learn the field names. Needs data preview and table read authorization (S_TABU_DIS); returns at most maxRows rows.",
       inputSchema: {
-        sql: z.string().describe("SQL SELECT statement (e.g. SELECT * FROM MARA WHERE MATNR LIKE 'Z%' UP TO 100 ROWS)"),
+        sql: z.string().describe("ABAP SQL SELECT statement starting with SELECT (e.g. SELECT matnr, mtart FROM mara WHERE mtart = 'FERT' UP TO 10 ROWS, or SELECT * FROM t001w). Table names are those of the ABAP dictionary."),
         maxRows: z.number().optional().describe("Maximum rows to return (default: 100)"),
         format: z.enum(["table", "json"]).optional().describe("table (default): aligned text, cells cut at 50 characters. json: { columns, rows } with every value in full"),
         connectionId: z.string().optional().describe("SAP system connection ID")

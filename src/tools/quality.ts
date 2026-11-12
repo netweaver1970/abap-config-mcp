@@ -280,10 +280,10 @@ export function registerQualityTools(server: McpServer): void {
     "run_atc_analysis",
     {
       title: "Run ATC Analysis",
-      description: "Run ABAP Test Cockpit (ATC) quality checks on an ABAP object. Returns findings with priority, check name, message, and location.",
+      description: "Run an ABAP Test Cockpit (ATC) check on one object and return each finding as priority, check title and id, message, and object with line number, or a pass message when there are none. Use syntax_check for a quick compile check of unsaved source and run_unit_tests to execute tests. Starts an ATC run on the SAP system for the object; changes no object. Needs ATC authorization and a variant that exists in the system.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object to analyze"),
-        variant: z.string().optional().describe("ATC check variant name (default: DEFAULT)"),
+        url: z.string().describe("ADT URL of the object to check (e.g. /sap/bc/adt/oo/classes/zcl_order_api, /sap/bc/adt/programs/programs/ZREPORT)"),
+        variant: z.string().optional().describe("ATC check variant name as configured in the system (default: DEFAULT)"),
         maxResults: z.number().optional().describe("Maximum findings (default: 100)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
@@ -295,9 +295,9 @@ export function registerQualityTools(server: McpServer): void {
     "run_unit_tests",
     {
       title: "Run ABAP Unit Tests",
-      description: "Execute ABAP unit tests for an object and return test results with pass/fail status and error details",
+      description: "Run the ABAP Unit test classes of an object and report each test method as passed or failed with its alert details, plus a total. A class with no method results is reported as unknown, not passed. By default runs all risk levels and durations; narrow with riskLevels and durations. Executes the test code on the SAP system, which can change data if the tests do; use abap_run_class to run a console class instead and run_atc_analysis for static checks.",
       inputSchema: {
-        url: z.string().describe("ADT URL of the object containing unit tests"),
+        url: z.string().describe("ADT URL of the class or program that holds the tests (e.g. /sap/bc/adt/oo/classes/zcl_order_api)"),
         riskLevels: z.array(z.enum(["harmless", "dangerous", "critical"])).optional().describe("Only run test classes of these risk levels (default: all)"),
         durations: z.array(z.enum(["short", "medium", "long"])).optional().describe("Only run test classes of these durations (default: all)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
@@ -325,9 +325,9 @@ export function registerQualityTools(server: McpServer): void {
     "create_test_include",
     {
       title: "Create Test Include",
-      description: "Create a unit test include (local test class) for an ABAP class. The tool locks and unlocks the class itself. Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
+      description: "Create the local test include of an existing class so local test classes can be added to it; it adds no test code itself. Write the tests afterwards with write_abap_object_source, activate, then run them with run_unit_tests. The tool locks the class, creates the include and unlocks it again, and records the change on a Workbench request (not needed in a local package). Transport: a transport you pass is checked and used; an object already locked into a request uses it; createTransport: true creates a new one; otherwise the transport already used for this piece of work (workItem, else this session) is reused; otherwise exactly one open request is used, several are listed for you to choose, none offers creation.",
       inputSchema: {
-        classUrl: z.string().describe("ADT URL of the class to add a test include to"),
+        classUrl: z.string().describe("ADT URL of the class itself, not of an include (e.g. /sap/bc/adt/oo/classes/zcl_order_api)"),
         transport: z.string().optional().describe("Workbench request to record into. Checked before use; becomes the transport for this piece of work."),
         workItem: z.string().optional().describe("Name of the piece of work (e.g. HPM, a ticket). Keeps using the same transport for it across calls and sessions until you pass another."),
         createTransport: z.boolean().optional().describe("Create a NEW Workbench request (only when you mean it; existing requests are preferred)."),

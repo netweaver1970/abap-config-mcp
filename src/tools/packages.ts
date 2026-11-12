@@ -142,11 +142,11 @@ export function registerPackageTools(server: McpServer): void {
     {
       title: "Browse Package",
       description:
-        "List all development objects inside an ABAP package (development class). " +
-        "Results are grouped by object type. Sub-packages are marked with ▶ and can be expanded " +
-        "by setting includeSubPackages to true.",
+        "List the objects directly inside an ABAP package, grouped by object type, with name and description (at most maxObjects per package). " +
+        "Sub-packages appear as entries of type DEVC/K; includeSubPackages also lists the contents of those one level down. " +
+        "Use it to explore a package; use search_abap_objects to find an object by name across packages. Read-only.",
       inputSchema: {
-        packageName: z.string().describe("Package name to browse (e.g. ZCAR_MM, $TMP)"),
+        packageName: z.string().describe("Package name to browse (e.g. ZORDER_API, $TMP for local objects)"),
         includeSubPackages: z.boolean().optional()
           .describe(`Also fetch and display the contents of any sub-packages found (at most ${MAX_SUBPACKAGES}, one level). Default: false`),
         maxObjects: z.number().optional().describe(`Most objects listed per package (default ${DEFAULT_MAX_OBJECTS}); the count of the rest is shown.`),
@@ -161,12 +161,13 @@ export function registerPackageTools(server: McpServer): void {
     {
       title: "Create Package",
       description:
-        "Create a new ABAP development package (development class / DEVC). " +
-        "Packages are the containers that group related development objects and control transport behaviour.",
+        "Create a new ABAP package (DEVC) under an existing parent package and return its settings. " +
+        "Writes to the repository and is recorded on a Workbench request; the transport is chosen as described for write_abap_object_source, and a local package ($TMP) needs none. " +
+        "Add objects afterwards with create_abap_object. Needs development authorization (S_DEVELOP) and a software component and transport layer that exist in the system.",
       inputSchema: {
-        name: z.string().describe("Package name (e.g. ZCAR_MM_REPORTS)"),
+        name: z.string().describe("New package name, in the customer namespace (e.g. ZORDER_API_TESTS)"),
         description: z.string().describe("Short description of the package"),
-        parentPackage: z.string().describe("Parent package this package lives under (e.g. ZCAR_MM)"),
+        parentPackage: z.string().describe("Existing package to create it under (e.g. ZORDER_API)"),
         packageType: z.enum(["development", "structure", "main"]).optional()
           .describe("Package type: development (default, contains objects), structure (grouping only), main (top-level)"),
         swComponent: z.string().optional()

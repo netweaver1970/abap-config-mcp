@@ -189,10 +189,9 @@ export function registerActivateTools(server: McpServer): void {
     "abap_activate_multiple",
     {
       title: "Activate Multiple ABAP Objects",
-      description: "Activate several inactive ABAP objects in one batch operation. " +
-        "Only objects that are currently inactive can be activated; the full object metadata is resolved automatically.",
+      description: "Activate several inactive ABAP objects in one call. Only URLs that match the inactive worklist (check_inactive_objects) are activated; others are skipped, and if none match nothing happens. Releases any lock this server holds on them first. Reports success or failure with messages, and warns when SAP says success but an object is still inactive. Use abap_activate for a single object.",
       inputSchema: {
-        urls: z.array(z.string()).describe("Array of ADT object URLs to activate"),
+        urls: z.array(z.string()).describe("ADT object URLs exactly as check_inactive_objects lists them (e.g. ['/sap/bc/adt/oo/classes/zcl_order_api', '/sap/bc/adt/programs/programs/zreport'])"),
         connectionId: z.string().optional().describe("SAP system connection ID"),
         preaudit: z.boolean().optional().describe("Run pre-activation ATC checks. Default: false")
       }

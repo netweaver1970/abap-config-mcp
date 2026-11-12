@@ -177,10 +177,10 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_session",
     {
       title: "ABAP Debug Session",
-      description: "Manage an ABAP debugging session. Use 'listen' to wait for a breakpoint to be hit, 'status' to check state, or 'detach' to end.",
+      description: "Start, check or end the external ABAP debugger listener for a user. 'listen' registers a listener and then blocks until a program of that user hits a breakpoint (set one first with abap_debug_set_breakpoint) or the listener times out, and returns the debuggee details; then use abap_debug_step, abap_debug_variable and abap_debug_stack. 'status' shows the listener this server holds for the connection; 'detach' removes it. Reports a conflict if another debugger is already attached for that user. Does not change any object.",
       inputSchema: {
-        action: z.enum(["listen", "detach", "status"]).describe("listen: wait for breakpoint hit; detach: end session; status: show current state"),
-        username: z.string().optional().describe("SAP username to debug (listen action, default: connected user)"),
+        action: z.enum(["listen", "detach", "status"]).describe("listen: wait for a breakpoint hit (blocks); detach: remove the listener; status: show terminal id, IDE id and user of the current listener, if any"),
+        username: z.string().optional().describe("SAP user whose programs to debug (listen only; default: the connected user)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -191,10 +191,10 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_set_breakpoint",
     {
       title: "Set ABAP Breakpoint",
-      description: "Set a breakpoint in an ABAP program at a specific line. Returns the breakpoint id(s), which can be passed to abap_debug_delete_breakpoint.",
+      description: "Set an external breakpoint on one source line for a user. Returns the breakpoint id (or an error entry), which abap_debug_delete_breakpoint takes. Set breakpoints before abap_debug_session with action listen, then run the program as that user to trigger it. Registers the breakpoint in SAP for that user; it does not change the object's source.",
       inputSchema: {
-        sourceUrl: z.string().describe("ADT source URL of the object (e.g. /sap/bc/adt/programs/programs/Z_MY_PROG/source/main)"),
-        line: z.number().describe("Line number for the breakpoint"),
+        sourceUrl: z.string().describe("ADT source URL including /source/main (e.g. /sap/bc/adt/programs/programs/ZREPORT/source/main, /sap/bc/adt/oo/classes/zcl_order_api/source/main)"),
+        line: z.number().describe("1-based line number in that source; use get_abap_object_lines or search_abap_object_lines to find it"),
         username: z.string().optional().describe("SAP username (defaults to connected user)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
@@ -206,7 +206,7 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_delete_breakpoint",
     {
       title: "Delete ABAP Breakpoint",
-      description: "Delete a breakpoint by its id (returned from abap_debug_set_breakpoint)",
+      description: "Remove one external breakpoint by the id abap_debug_set_breakpoint returned. Use it when a breakpoint should no longer stop the program; it does not end a running debug session (use abap_debug_session with detach, or abap_debug_step with terminateDebuggee, for that). Removes the breakpoint registration in SAP only; source is untouched.",
       inputSchema: {
         breakpointId: z.string().describe("Breakpoint id returned by abap_debug_set_breakpoint"),
         username: z.string().optional().describe("SAP username (defaults to connected user)"),
@@ -220,10 +220,10 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_step",
     {
       title: "ABAP Debug Step",
-      description: "Step through ABAP code in an active debug session",
+      description: "Execute one debugger step in the active session and return the new position as JSON. stepInto, stepOver and stepReturn move one step; stepContinue runs on to the next breakpoint or to the end; terminateDebuggee ends the debugged program. Needs a debuggee stopped at a breakpoint, which abap_debug_session with action listen delivers. Changes the running program's state, so it cannot be undone.",
       inputSchema: {
         stepType: z.enum(["stepInto", "stepOver", "stepReturn", "stepContinue", "terminateDebuggee"])
-          .describe("Step type: stepInto (F5), stepOver (F6), stepReturn (F7), stepContinue (F8), terminateDebuggee"),
+          .describe("stepInto (F5): enter the called routine; stepOver (F6): next statement; stepReturn (F7): run to the end of the current routine; stepContinue (F8): run to the next breakpoint; terminateDebuggee: end the program"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -234,9 +234,9 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_variable",
     {
       title: "ABAP Debug Variable",
-      description: "Inspect variable values in an active ABAP debug session",
+      description: "Read the current values of named variables in the stopped debuggee, one line each as NAME (type) = value. Use abap_debug_stack first to see which frame you are in, and abap_debug_set_variable to change a value. Read-only; needs an active session stopped at a breakpoint (abap_debug_session with action listen).",
       inputSchema: {
-        variables: z.array(z.string()).describe("Variable names to inspect (e.g. ['LV_COUNT', 'WA_MARA', 'IT_TABLE'])"),
+        variables: z.array(z.string()).describe("Variable names as written in the source, visible in the current frame (e.g. ['LV_COUNT', 'WA_MARA', 'IT_TABLE'])"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
@@ -247,7 +247,7 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_stack",
     {
       title: "ABAP Debug Stack",
-      description: "Get the current call stack in an active ABAP debug session",
+      description: "Return the call stack of the stopped debuggee as JSON (the stack entries ADT reports). Use it after a breakpoint hit to see where you are before stepping or reading variables with abap_debug_variable. Read-only; needs an active session stopped at a breakpoint (abap_debug_session with action listen).",
       inputSchema: {
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
@@ -259,10 +259,10 @@ export function registerDebugTools(server: McpServer): void {
     "abap_debug_set_variable",
     {
       title: "ABAP Debug Set Variable",
-      description: "Change the value of a variable in an active ABAP debug session",
+      description: "Overwrite a variable in the stopped debuggee and return the value SAP reports back. Affects only the running program's memory for this debug session, not the database or source, but whatever the program does afterwards uses the new value. Needs an active session stopped at a breakpoint; check the current value first with abap_debug_variable.",
       inputSchema: {
-        variableName: z.string().describe("Variable name to change"),
-        value: z.string().describe("New value to set"),
+        variableName: z.string().describe("Variable name as written in the source (e.g. LV_COUNT)"),
+        value: z.string().describe("New value as text (e.g. 5, or ABC for a character field)"),
         connectionId: z.string().optional().describe("SAP system connection ID")
       }
     },
