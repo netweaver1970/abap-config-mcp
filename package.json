@@ -37,11 +37,11 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",
-    "abap-adt-api": "^8.4.0",
+    "abap-adt-api": "^8.5.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "esbuild": "^0.28.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.0",
