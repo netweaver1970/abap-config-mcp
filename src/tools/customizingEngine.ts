@@ -1401,7 +1401,7 @@ export function registerCustomizingEngineTools(server: McpServer): void {
       description:
         "Install or update the Customizing Engine in the SAP system: creates or overwrites the class ZCL_MCP_CUST_ENGINE and the batch writer report ZMCP_CUST_WRITE, writes their source and activates both. " +
         "Run it once to install and again when the engine version changes; the first install then needs a one-time SICF service registration (handler ZCL_MCP_CUST_ENGINE), which the result spells out. " +
-        "Verify with customizing_engine_ping; remove with customizing_engine_cleanup; engine_deploy is the entry point that lets you choose transportable or local per unit. " +
+        "Use it to update the engine in place (default package $TMP); for a first setup, or to make the engine transportable, use engine_deploy instead, which calls this and also registers SICF. The customizing tools with autoDeploy update the engine themselves, so this is rarely needed. Verify with customizing_engine_ping; remove with customizing_engine_cleanup. " +
         "Writes repository objects and needs development authorization (S_DEVELOP).",
       inputSchema: {
         packageName: z.string().optional().describe("Package for the new objects (default: $TMP, local and not transportable; use a transportable Z package such as ZORDER_API to move the engine between systems)"),
@@ -1515,7 +1515,9 @@ export function registerCustomizingEngineTools(server: McpServer): void {
         "Copy or delete customizing rows through the in-system engine, which drives the " +
         "SM30 maintenance-view runtime (VIEW_MAINTENANCE_SINGLE_ENTRY) so FK checks, " +
         "events, change docs and transport recording all run the standard way. " +
-        "DRY RUN by default — returns the exact rows affected. Set commit: true to apply.\n\n" +
+        "DRY RUN by default — returns the exact rows affected. Set commit: true to apply.\n" +
+        "Use it for one table or view; use org_copy to copy a whole org unit, customizing_create for new " +
+        "rows with no source row, and customizing_plan_change for a quick preview without the engine.\n\n" +
         "  action: \"copy\"  (default) — duplicate rows from sourceKey to targetKey.\n" +
         "  action: \"delete\"          — remove the entry whose keyField = targetKey " +
         "(sourceKey not needed), recording the deletion onto the transport like an SM30 delete.\n\n" +
@@ -1660,7 +1662,7 @@ export function registerCustomizingEngineTools(server: McpServer): void {
       description:
         "Delete the Customizing Engine class ZCL_MCP_CUST_ENGINE from the SAP system. Without confirm: true it only shows what would happen and changes nothing. " +
         "The report ZMCP_CUST_WRITE and the SICF service node are not removed; delete the node manually in SICF. " +
-        "Customizing tools that need the engine stop working until customizing_engine_bootstrap is run again. Deletion is irreversible and uses the same delete path as delete_abap_object.",
+        "Customizing tools that need the engine stop working until customizing_engine_bootstrap or engine_deploy installs it again. Use it only to remove the engine from a system; to update it, run customizing_engine_bootstrap. Deletion is irreversible and uses the same delete path as delete_abap_object.",
       inputSchema: {
         confirm:     z.boolean().optional().describe("Set true to delete the class; false or omitted only prints the warning and deletes nothing (default: false)"),
         connectionId: z.string().optional().describe("SAP system connection ID"),

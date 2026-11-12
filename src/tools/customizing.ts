@@ -979,11 +979,13 @@ export function registerCustomizingTools(server: McpServer): void {
     {
       title: "Plan Customizing Change (Dry Run)",
       description:
-        "Preview the rows that would be inserted to duplicate customizing from one org-unit key " +
-        "to another (e.g. copy plant 1000 config to new plant 2000). " +
-        "DRY RUN ONLY — nothing is written. Shows delivery class, maintenance flags, and the exact " +
-        "row set that a Phase-1 Z_CUST_WRITE call would INSERT. " +
-        "Review the plan carefully before wiring up the write layer.",
+        "Preview, from ADT reads alone, the rows that copying customizing from one org-unit key to " +
+        "another would insert (e.g. plant 1000 to a new plant 2000), with the maintenance view, " +
+        "delivery class and transport object. Nothing is written and the in-system engine is not " +
+        "needed, so it works before the engine is installed. " +
+        "Use it for a quick look at one table; for the plan of the write you will actually run, use " +
+        "customizing_apply without commit (its dry run goes through the engine and the SM30 runtime), " +
+        "and org_copy for a whole org unit across all its tables.",
       inputSchema: {
         objectName:  z.string().describe("Maintenance view or table name"),
         keyField:    z.string().describe("Org-unit key field (e.g. WERKS, BUKRS, VKORG)"),

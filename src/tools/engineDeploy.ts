@@ -393,7 +393,11 @@ export function registerEngineDeployTools(server: McpServer): void {
         "  engine_deploy unit:\"cust\" transportable:false\n" +
         "Re-run any time to flip a unit (e.g. promote a higher-tier unit to transportable). Units: " +
         "diag (Tier 0 read-only diagnostics) · cust (Tier 1 customizing engine). After a transportable " +
-        "deploy, register the unit's SICF node once (reported in the output).",
+        "deploy, register the unit's SICF node once (reported in the output).\n" +
+        "Which engine tool: engine_deploy for the first setup of a system and to choose or change where " +
+        "a unit lives (transportable or $TMP); customizing_engine_bootstrap only to install or update the " +
+        "customizing engine in place (the customizing tools also do that themselves via autoDeploy); " +
+        "customizing_engine_cleanup to remove it; customizing_engine_ping to check what is installed.",
       inputSchema: {
         unit:          z.string().optional().describe("Unit to deploy: 'diag' or 'cust'. Omit to see the setup prompt / status."),
         transportable: z.boolean().optional().describe("true = create in a Workbench Z package on a transport (CTS to Prod); false/omitted = $TMP (Dev-only)."),

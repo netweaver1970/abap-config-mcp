@@ -156,7 +156,10 @@ export function registerDataTools(server: McpServer): void {
     {
       title: "Read Table Contents",
       description:
-        "Read contents of an ABAP dictionary table or view by name. " +
+        "Read the rows of one ABAP dictionary table or view by name, optionally filtered with a WHERE " +
+        "clause, up to maxRows. Use it for a quick look at one table; use execute_data_query for joins, " +
+        "selected columns, aggregates or ORDER BY, describe_database_table for the field list, and " +
+        "customizing_read for a customizing table filtered on one key field. Read-only. " +
         "The optional whereClause filter requires the ADT Data Preview service " +
         "(SICF node /sap/bc/adt/datapreview, SAP_BASIS ≥ 7.40 SP08) to be active. " +
         "If whereClause returns an error, use execute_data_query with a full " +
