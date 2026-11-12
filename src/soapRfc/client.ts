@@ -23,6 +23,7 @@ import * as nodeHttp from "http"
 import * as nodeHttps from "https"
 import type { ConnectionConfig } from "../config"
 import { getConnectionConfig, log } from "../connections"
+import { fingerprint, isPerUser } from "../logon"
 import { escapeXml, find, parseXml, XmlNode } from "./xml"
 
 export const SOAP_RFC_PATH = "/sap/bc/soap/rfc"
@@ -94,6 +95,16 @@ export function setSoapTransport(t: SoapTransport | undefined): void {
 
 /** Connections whose logon was refused (HTTP 401, or a non-SOAP answer): never called again by this process. */
 const logonRefused = new Map<string, string>()
+
+/**
+ * The refusal state is per connection AND logon: with per-user logon, one person's wrong
+ * password must not lock out the others. A shared connection's user never changes, so its
+ * key is effectively the connection id. The password enters the key as a fingerprint only,
+ * so a corrected password for the same user is tried again.
+ */
+function refusalKey(cfg: ConnectionConfig): string {
+  return `${cfg.id}\u0000${cfg.username}\u0000${fingerprint(cfg.password)}`
+}
 /** Per-connection queue: one SOAP call at a time. */
 const queues = new Map<string, Promise<unknown>>()
 
@@ -155,13 +166,13 @@ function soapPath(cfg: ConnectionConfig): string {
 }
 
 function refuseFurtherCalls(cfg: ConnectionConfig, msg: string): SoapRfcError {
-  logonRefused.set(cfg.id, msg)
+  logonRefused.set(refusalKey(cfg), msg)
   log("ERROR", msg)
   return new SoapRfcError(msg, "LOGON_REFUSED", 401)
 }
 
 async function callOnce(cfg: ConnectionConfig, fm: string, params: RfcParams): Promise<RfcResult> {
-  const refused = logonRefused.get(cfg.id)
+  const refused = logonRefused.get(refusalKey(cfg))
   if (refused) throw new SoapRfcError(refused, "LOGON_REFUSED", 401)
   const t0 = Date.now()
   let resp: SoapHttpResponse
@@ -174,8 +185,10 @@ async function callOnce(cfg: ConnectionConfig, fm: string, params: RfcParams): P
   }
   log("INFO", `SOAP RFC ${cfg.id} ${fm} → HTTP ${resp.status} (${Date.now() - t0} ms)`)
   if (resp.status === 401) {
-    throw refuseFurtherCalls(cfg, `${cfg.id}: SAP refused the logon of ${cfg.username} (HTTP 401). No further calls go to ${cfg.id} until the ` +
-      `server restarts, so a wrong password cannot lock the user. Check the user and password for ${cfg.id} in connections.json, then restart the server.`)
+    throw refuseFurtherCalls(cfg, `${cfg.id}: SAP refused the logon of ${cfg.username} (HTTP 401). No further calls go to ${cfg.id} as this user until ` +
+      (isPerUser(cfg)
+        ? `this client sends a different password (X-SAP-Password header) or the server restarts, so a wrong password cannot lock the user. Other users of ${cfg.id} are not affected.`
+        : `the server restarts, so a wrong password cannot lock the user. Check the user and password for ${cfg.id} in connections.json, then restart the server.`))
   }
   if (resp.status === 403) {
     throw new SoapRfcError(`${cfg.id}: HTTP 403 on ${SOAP_RFC_PATH} — the SOAP RFC service is not active in SICF on this system, ` +
@@ -193,8 +206,10 @@ async function callOnce(cfg: ConnectionConfig, fm: string, params: RfcParams): P
     // Otherwise possibly a logon page (a form or SSO fallback answers a bad
     // password with HTTP 200 or a redirect), so it is treated like a 401.
     throw refuseFurtherCalls(cfg, `${cfg.id}: ${fm} got HTTP ${resp.status} with something that is not a SOAP answer` +
-      `${shown ? ` ("${shown}")` : ""} — possibly a logon page after a failed logon. No further calls go to ${cfg.id} until the server ` +
-      `restarts, so a wrong password cannot lock the user. Check ${SOAP_RFC_PATH} on ${cfg.id} and its user and password, then restart the server.`)
+      `${shown ? ` ("${shown}")` : ""} — possibly a logon page after a failed logon. No further calls go to ${cfg.id} ` +
+      (isPerUser(cfg)
+        ? `as this user until this client sends a different password or the server restarts, so a wrong password cannot lock the user. Check ${SOAP_RFC_PATH} on ${cfg.id} and the SAP user and password this client sends.`
+        : `until the server restarts, so a wrong password cannot lock the user. Check ${SOAP_RFC_PATH} on ${cfg.id} and its user and password, then restart the server.`))
   }
   return parseResponse(fm, resp.body, resp.status)
 }

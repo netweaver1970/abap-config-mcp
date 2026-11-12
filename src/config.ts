@@ -5,8 +5,15 @@ import * as os from "os"
 export interface ConnectionConfig {
   id: string
   url: string
+  /** Shared logon only. For a per-user connection the file's value is ignored and the client's header user is used. */
   username: string
   password: string
+  /**
+   * "shared" (default): every call logs on with username/password from this file.
+   * "per-user": each MCP client sends its own SAP user in X-SAP-User / X-SAP-Password
+   * headers (see src/logon.ts); username/password here are optional and ignored.
+   */
+  logon?: "shared" | "per-user"
   client?: string
   language?: string
   /** Accept self-signed / untrusted TLS certificates (common on SAP dev systems). */
@@ -119,6 +126,21 @@ export function loadConfig(): Config {
   if (badProtocol) {
     console.error(`Connection ${badProtocol.id}: unknown protocol ${JSON.stringify(badProtocol.protocol)} (use "adt" or "soap-rfc").`)
     process.exit(1)
+  }
+
+  // Shared connections log on with the file's user; a per-user one takes it from the client.
+  for (const c of _config.connections) {
+    if (c.logon !== undefined && c.logon !== "shared" && c.logon !== "per-user") {
+      console.error(`Connection ${c.id}: unknown logon ${JSON.stringify(c.logon)} (use "shared" or "per-user").`)
+      process.exit(1)
+    }
+    if (c.logon === "per-user") {
+      c.username = ""   // ignored: the user comes from the client's headers
+      c.password = ""
+    } else if (!c.username || !c.password) {
+      console.error(`Connection ${c.id}: username and password are required (or set "logon": "per-user" so each client sends its own).`)
+      process.exit(1)
+    }
   }
 
   return _config

@@ -1,6 +1,9 @@
-import { AsyncLocalStorage } from "async_hooks"
 import { ADTClient, createSSLConfig, session_types } from "abap-adt-api"
 import { loadConfig, ConnectionConfig } from "./config"
+import {
+  runInSession, currentSessionId, effectiveConfig, isPerUser, captureCredentials, clearSessionCredentials,
+  credentialsFor,
+} from "./logon"
 
 // ─── Logging ───────────────────────────────────────────────────────────────
 // Set ABAP_MCP_DEBUG=1 for verbose per-call logging (lock tracking, timings)
@@ -42,19 +45,7 @@ let _keepAliveTimer: ReturnType<typeof setInterval> | null = null
 // AsyncLocalStorage (set around every tool handler in tools/index.ts), so tool
 // handlers keep calling ensureConnected(connectionId) unchanged.
 
-const sessionScope = new AsyncLocalStorage<{ sessionId: string }>()
-
-/** Run fn with every ensureConnected() inside it bound to this MCP session. */
-export function runInSession<T>(sessionId: string | undefined, fn: () => T): T {
-  return sessionId ? sessionScope.run({ sessionId }, fn) : fn()
-}
-
-/** The MCP session the current call belongs to; "shared" outside any (startup, tests). */
-export function currentSessionId(): string {
-  return sessionScope.getStore()?.sessionId ?? SHARED_SESSION
-}
-
-const SHARED_SESSION = "shared"
+export { runInSession, currentSessionId }
 
 // A session whose MCP client vanished without closing is closed after this long
 // unused (its locks are released with it). Keep-alive pings do not count as use.
@@ -158,7 +149,7 @@ async function doLogin(managed: ManagedConnection): Promise<void> {
   // A re-login (idle refresh, failed keep-alive, force_relogin) first ends the
   // context the client is still in, so its locks are released, not orphaned.
   if (managed.hadContext) await endContext(managed)
-  log("INFO", `Connecting to ${managed.config.id} (${managed.config.url}) as ${managed.config.username}`)
+  log("INFO", `Connecting to ${managed.config.id} (${managed.config.url}) as ${managed.config.username}${isPerUser(managed.config) ? " (per-user)" : ""}`)
   await managed.client.login()
   managed.client.stateful = session_types.stateful
   managed.loggedIn = true
@@ -270,7 +261,44 @@ export function getConnectionConfig(connectionId?: string): ConnectionConfig {
   if (!cfg) {
     throw new Error(`Unknown connection: ${id}. Available: ${loadConfig().connections.map(c => c.id).join(", ")}`)
   }
-  return cfg
+  // The one place credentials are decided: a per-user connection takes this MCP
+  // session's user and password (and fails, with what to do, when it has none).
+  return effectiveConfig(cfg, currentSessionId())
+}
+
+let _credentialWarned = false
+let _bindLoopback = true
+
+/** Tell the logon layer whether the HTTP server listens on loopback only (the warning about headers is for the other case). */
+export function setServerBindLoopback(loopback: boolean): void {
+  _bindLoopback = loopback
+}
+
+/**
+ * Take the SAP credentials a request carries for its MCP session. When that changes
+ * the user (or password) a per-user connection of the session would log on with, the
+ * session's existing ADT connection for it is dropped (its locks released), so the
+ * next call logs on as the new user.
+ */
+export async function applySessionCredentials(sessionId: string, headers: Record<string, string | string[] | undefined>): Promise<void> {
+  if (!captureCredentials(sessionId, headers)) return
+  const perUser = loadConfig().connections.filter(isPerUser)
+  if (perUser.length === 0) return
+  if (!_credentialWarned && !_bindLoopback) {
+    _credentialWarned = true
+    log("WARN", "Per-user logon: SAP credentials travel in HTTP headers to this server, which is not bound to loopback only. Put it behind TLS.")
+  }
+  const stale = [...connections.entries()].filter(([, m]) => {
+    if (m.sessionId !== sessionId || !isPerUser(m.config)) return false
+    const now = credentialsFor(sessionId, m.config.id)
+    return !now || now.username !== m.config.username || now.password !== m.config.password
+  })
+  await Promise.all(stale.map(([k, m]) => closeManaged(k, m, "SAP user of this client changed")))
+}
+
+/** Forget the credentials of an MCP session that has ended. */
+export function endSessionCredentials(sessionId: string): void {
+  clearSessionCredentials(sessionId)
 }
 
 /**
@@ -330,6 +358,10 @@ export async function closeAllConnections(): Promise<void> {
 export async function evictIdleSessions(now = Date.now()): Promise<void> {
   const idle = [...connections.entries()].filter(([, m]) => now - m.lastUsedAt > SESSION_EVICT_MS)
   await Promise.all(idle.map(([k, m]) => closeManaged(k, m, `unused for ${Math.round((now - m.lastUsedAt) / 60_000)} min`)))
+  // An evicted session's credentials go with it; its client sends them again with its next request.
+  for (const sid of new Set(idle.map(([, m]) => m.sessionId))) {
+    if (![...connections.values()].some(m => m.sessionId === sid)) clearSessionCredentials(sid)
+  }
 }
 
 /** Open ADT sessions, for diagnostics. */

@@ -39,8 +39,8 @@ async function start(): Promise<void> {
   // background so the first tool call doesn't pay for it. ABAP_NO_WARMUP=1 skips it.
   if (!process.env.ABAP_NO_WARMUP) {
     const conns = listConnections()
-    // A SOAP RFC connection has no session to warm up.
-    if (conns.length > 0 && conns[0].protocol !== "soap-rfc") {
+    // A SOAP RFC connection has no session to warm up, and a per-user one has no user until a client sends one.
+    if (conns.length > 0 && conns[0].protocol !== "soap-rfc" && conns[0].logon !== "per-user") {
       const warmId = conns[0].id
       const tw = Date.now()
       ensureConnected(warmId)

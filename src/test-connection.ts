@@ -26,6 +26,11 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  if (target.logon === "per-user") {
+    console.error(`❌ ${target.id} is set to per-user logon: it has no SAP user of its own here. Each MCP client sends its own in the X-SAP-User and X-SAP-Password headers, so test it through an MCP client.`)
+    process.exit(1)
+  }
+
   console.log(`\n🔌 Testing connection "${target.id}" → ${target.url}`)
   console.log(`   user: ${target.username} | client: ${target.client ?? "(default)"} | language: ${target.language ?? "EN"}`)
   if (target.url.toLowerCase().startsWith("https:")) {

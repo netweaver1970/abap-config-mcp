@@ -6,7 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
 import { createMcpServer } from "./server"
-import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections, closeAllConnections } from "./connections"
+import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections, closeAllConnections, applySessionCredentials, endSessionCredentials, setServerBindLoopback } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
 import { version as SERVER_VERSION } from "../package.json"
 
@@ -82,7 +82,10 @@ function describeRequest(body: unknown): string {
 
 // ─── HTTP server ───────────────────────────────────────────────────────────
 
+const BIND_HOST = "127.0.0.1"
+
 async function start(): Promise<void> {
+  setServerBindLoopback(/^(127\.\d+\.\d+\.\d+|::1|localhost)$/.test(BIND_HOST))
   const cfg = getServerConfig()
   const port = cfg.port ?? 4847
   const apiKey = cfg.apiKey ?? ""
@@ -139,6 +142,8 @@ async function start(): Promise<void> {
 
         if (sessionId && transports[sessionId]) {
           transport = transports[sessionId]
+          // Per-user logon: this request's SAP headers (a changed user drops the session's connection).
+          await applySessionCredentials(sessionId, req.headers)
         } else if (!sessionId && isInitializeRequest(body)) {
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
@@ -152,6 +157,7 @@ async function start(): Promise<void> {
             onsessioninitialized: (sid: string) => {
               transports[sid] = transport
               servers[sid] = { server: mcpServer, toldToolList: false }
+              applySessionCredentials(sid, req.headers).catch(err => log("WARN", `Reading the SAP logon headers of ${sid.slice(0, 8)} failed`, err))
               log("INFO", `Session opened  ${sid.slice(0, 8)}… (active: ${Object.keys(transports).length})`)
             }
           })
@@ -162,7 +168,9 @@ async function start(): Promise<void> {
               delete servers[sid]
               log("INFO", `Session closed  ${sid.slice(0, 8)}… (active: ${Object.keys(transports).length})`)
               // Its SAP ADT sessions end with it, releasing its locks.
-              closeSessionConnections(sid).catch(err => log("WARN", `Closing ADT sessions of ${sid.slice(0, 8)} failed`, err))
+              closeSessionConnections(sid)
+                .catch(err => log("WARN", `Closing ADT sessions of ${sid.slice(0, 8)} failed`, err))
+                .finally(() => endSessionCredentials(sid))
             }
           }
           const mcpServer = createMcpServer()
@@ -271,7 +279,7 @@ async function start(): Promise<void> {
         if (err.code === "EADDRINUSE" && retries > 0) resolve(startOnPort(p + 1, retries - 1))
         else reject(err)
       })
-      httpServer.listen(p, "127.0.0.1", () => resolve(p))
+      httpServer.listen(p, BIND_HOST, () => resolve(p))
     })
 
   const actualPort = await startOnPort(port)
@@ -311,8 +319,8 @@ async function start(): Promise<void> {
   // Disable with ABAP_NO_WARMUP=1.
   if (!process.env.ABAP_NO_WARMUP) {
     const conns = listConnections()
-    // A SOAP RFC connection has no session to warm up.
-    if (conns.length > 0 && conns[0].protocol !== "soap-rfc") {
+    // A SOAP RFC connection has no session to warm up, and a per-user one has no user until a client sends one.
+    if (conns.length > 0 && conns[0].protocol !== "soap-rfc" && conns[0].logon !== "per-user") {
       const warmId = conns[0].id
       const tw = Date.now()
       log("INFO", `Warming up SAP session for ${warmId}…`)
