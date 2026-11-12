@@ -8,6 +8,11 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    # Major versions (TypeScript, vitest, abap-adt-api, @types/node) change APIs and
+    # need a deliberate upgrade tested against a real SAP system, not an automatic PR.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
