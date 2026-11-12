@@ -37,7 +37,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",
-    "abap-adt-api": "^8.4.0",
+    "abap-adt-api": "^9.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
