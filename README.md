@@ -21,7 +21,7 @@ A few things I cared about while building it:
 - The bit of ABAP it needs inside SAP is transported like any other development, not pushed in from outside.
 - It runs the way your landscape needs it: on your own machine, as a shared server for a team, in Docker, or as a Claude Desktop extension.
 
-The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps and SQL. 60 tools in all, usable from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
+The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps. 58 tools are on by default, plus two for SQL and table reading that you switch on yourself, usable from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
 
 To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#1-install) for Docker, the Claude Desktop extension or building it yourself.
 
@@ -29,7 +29,7 @@ To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#
 
 The idea of driving SAP ADT from outside the SAP GUI was **inspired by** Marcello Urbani's excellent [marcellourbani/vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) — go give it a star. This project is an independent, from-scratch MCP server (its own development tools and its own in-system customizing engine); it does not contain that project's code. It does build on Marcello's separately published, MIT-licensed [`abap-adt-api`](https://github.com/marcellourbani/abap-adt-api) library for the low-level ADT protocol calls. See [NOTICE](NOTICE) for full attribution.
 
-> ⚠️ **Before you connect this to anything, read [Security & authorization](#security--authorization).** In short: protect the server with a strong shared secret, and remember the server can do **nothing** beyond the rights of the one SAP user it logs in as. It is built for **DEV → UAT**; on Production, only read-only investigation with a read-only user is intended.
+> ⚠️ **Before you connect this to anything, read [Security & authorization](#security--authorization)**, including [where it stands under SAP's API Policy](#6-saps-api-policy-where-this-server-stands). In short: protect the server with a strong shared secret, and remember the server can do **nothing** beyond the rights of the one SAP user it logs in as. It is built for **DEV → UAT**; on Production, only read-only investigation with a read-only user is intended.
 
 ---
 
@@ -63,7 +63,7 @@ The AI handles the full workflow autonomously: search → read → write → che
 | **Activate** | 2 tools | Activate single objects, batch-activate all inactive objects |
 | **Quality** | 4 tools | ATC checks with findings and locations, unit test execution, run a console class (`IF_OO_ADT_CLASSRUN`), create test includes |
 | **Transports** | 4 tools | List transports across all users with their objects (read from E070/E071), create/release/delete/change owner, find which transport an object needs, move objects or a whole task to another request with dependency and release-order checks. Every write picks its transport by one rule — see [Transport selection](#transport-selection) |
-| **Data** | 4 tools | Search tables by description keyword, describe table structure, run SELECT queries, read table contents |
+| **Data** | 4 tools | Search tables by description keyword, describe table structure; running SELECT queries and reading table contents are off unless `ABAP_MCP_DATA_TOOLS=1` (see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands)) |
 | **Analysis** | 4 tools | Where-used cross-reference, version history, runtime dumps (ST22), inactive objects list |
 | **Text elements** | 2 tools | Read/write selection screen texts, text symbols, and list headings |
 | **Packages** | 2 tools | Browse package contents grouped by type, create new packages |
@@ -340,6 +340,34 @@ So **scope the service user with least privilege** for what you actually want to
 and rely on SAP roles — not the tool — as the real control. A read-only user makes the
 whole server effectively read-only no matter which tools a client calls.
 
+#### Per-user logon on the shared server
+
+By default every call logs on to SAP with the user in `connections.json`, so on a shared server every change shows up in SAP under that one user. Set `"logon": "per-user"` on a connection and each person logs on as themselves instead: the `username` and `password` in the file are ignored, and each MCP client sends its own SAP user in two HTTP headers. Every change in SAP then carries the name of the person who made it.
+
+```json
+{ "id": "S4", "url": "https://your-sap-host:44300", "client": "100", "logon": "per-user" }
+```
+
+In the client, for example Claude Code's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "abap": {
+      "type": "http",
+      "url": "http://localhost:4847/mcp",
+      "headers": {
+        "Authorization": "Bearer <the server's apiKey>",
+        "X-SAP-User": "<your SAP user>",
+        "X-SAP-Password": "<your SAP password>"
+      }
+    }
+  }
+}
+```
+
+`X-SAP-User` and `X-SAP-Password` count for every per-user connection. For one connection only, use `X-SAP-User-<ID>` and `X-SAP-Password-<ID>`, where `<ID>` is the connection id in capitals with anything other than letters and digits turned into `_`. The server keeps these in memory for that session only and never logs or stores them. A client that sends no user gets a message telling it which headers to add. The headers carry a password, so if the server isn't on localhost, put it behind TLS. In stdio mode nothing changes: each person already runs their own process with their own `SAP_*` settings.
+
 ### 3. Where it belongs in the landscape: DEV → UAT, read-only on Production
 
 This tooling is intended for **development and UAT systems**, where writing code and
@@ -424,6 +452,17 @@ Workbench Z package on a transport (CTS to Prod), or `transportable:false` for `
 (Dev-only); re-run any time to flip a unit. The unit's **SICF node is registered
 automatically** as part of the deploy. See **[docs/TIERS.md](docs/TIERS.md)** for the
 full deployment + capability-awareness story.
+
+### 6. SAP's API Policy: where this server stands
+
+SAP published an API Policy (v.4.2026a, April 2026) with an FAQ (v1.3, June 2026) that sets which AI integrations with SAP systems it endorses. This is how I read it for this server. It is not legal advice, and SAP updates the FAQ under the same URL, so check the version you read.
+
+- **This is a customer-operated MCP server.** FAQ question 56 allows those, with the operator fully responsible for authentication, authorization and operation, and without support from SAP. The routes SAP endorses are the MCP Gateway in SAP Integration Suite, SAP's own MCP servers through Joule Studio, and A2A through the SAP Agent Gateway.
+- **The development tools use ADT.** FAQ question 33 calls ADT internal to SAP and endorses it for development through SAP's Eclipse ADT, abapGit, SAP's own tools and utilities built on SAP's Eclipse Java SDK. This server is a third-party ADT client, so it is not one of those channels.
+- **No SQL or table reading by default.** Question 33 also says ADT is not meant for reading application tables or running SQL. So `execute_data_query` and `read_table_contents` are off unless you set `ABAP_MCP_DATA_TOOLS=1`, on your own system and at your own risk. Two features still read tables to do their job: the transport tools read the transport tables (E070, E071) to pick the right request, and `org_copy` counts rows per table for its retest list.
+- **The customizing engine is code in your own namespace** (FAQ questions 23 and 27). It works through SAP's own SM30/SM34 maintenance runtime, with SAP's checks, change documents and transport recording intact, and it changes configuration, not business documents.
+
+In short: use it on your own development and sandbox systems, or with the system owner's agreement. Don't point it at production, or at a customer's landscape, without their architecture and licensing review. Sources: [API Policy](https://help.sap.com/doc/sap-api-policy/latest/en-US/API_Policy_latest.pdf), [FAQ v1.3](https://d.dam.sap.com/x/UL9AiqH/SAP_API_Policy_FAQ_v1.3_June.pdf), [third-party MCP access on the SAP Architecture Center](https://architecture.learning.sap.com/docs/ref-arch/ca1d2a3e/1).
 
 ---
 
@@ -695,6 +734,8 @@ Replace `CAR` with the `id` of any connection in your `connections.json`.
 ---
 
 ## All 60 tools — detailed reference
+
+Two of them, `execute_data_query` and `read_table_contents`, are off unless `ABAP_MCP_DATA_TOOLS=1`; see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands).
 
 ### Discovery
 
@@ -1052,7 +1093,7 @@ Parameters:
            example read_table_contents query at the bottom
 ```
 
-#### `execute_data_query`
+#### `execute_data_query` (off unless `ABAP_MCP_DATA_TOOLS=1`)
 Run a SELECT SQL query against SAP ABAP dictionary tables or CDS views. Read-only — INSERT, UPDATE, DELETE, DROP, ALTER, and other DML/DDL statements are blocked.
 
 ```
@@ -1064,7 +1105,7 @@ Parameters:
 → Returns: column headers + rows as a formatted table
 ```
 
-#### `read_table_contents`
+#### `read_table_contents` (off unless `ABAP_MCP_DATA_TOOLS=1`)
 Read the contents of an ABAP dictionary table or view by name, with an optional WHERE clause.
 
 ```
@@ -1636,6 +1677,7 @@ Parameters:
 | Variable | Description |
 |---|---|
 | `ABAP_MCP_CONFIG` | Path to config JSON file (overrides default search paths) |
+| `ABAP_MCP_DATA_TOOLS` | `1` switches on `execute_data_query` and `read_table_contents`, off by default; see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands) |
 
 ---
 
