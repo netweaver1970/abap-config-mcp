@@ -471,7 +471,8 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
     rs_resp-status    = 'ok'.
     rs_resp-operation = 'ping'.
     rs_resp-version   = c_version.
-    APPEND |MCP Customizing Engine alive on { sy-sysid } client { sy-mandt }|
+    " sy-uname shows who SAP thinks is calling: the check for per-user logon and principal propagation.
+    APPEND |MCP Customizing Engine alive on { sy-sysid } client { sy-mandt }, running as user { sy-uname }|
       TO rs_resp-messages.
 
     " Read-on-connect: surface the client's change/transport capability so the

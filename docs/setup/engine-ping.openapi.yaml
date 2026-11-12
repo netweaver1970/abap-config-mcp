@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info:
+  title: abap-config-mcp engine (ping only)
+  version: "0.9.36"
+  description: >
+    Minimal description of the in-system engine for SAP's MCP Gateway, used to test the
+    connection and user propagation. One operation, so the gateway offers one tool.
+servers:
+  - url: /
+paths:
+  /:
+    post:
+      operationId: engine_ping
+      summary: Check the engine and show which SAP user the call runs as
+      description: >
+        Calls the customizing engine's ping. The reply names the SAP system, the client, the
+        SAP user the call runs as, and how the client records customizing changes. Changes
+        nothing in SAP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation]
+              properties:
+                operation:
+                  type: string
+                  enum: [ping]
+                  default: ping
+                  description: Always "ping".
+      responses:
+        "200":
+          description: The engine's answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation: { type: string }
+                  version: { type: string }
+                  messages:
+                    type: array
+                    items: { type: string }
