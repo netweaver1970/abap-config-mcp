@@ -238,6 +238,18 @@ pm2 save && pm2 startup     # follow the printed command to enable boot-start
 > the new `dist/`. ABAP-only edits to `src/abap/*.abap` need **no** restart — the engine
 > source is read from disk per call.
 
+### 4c. (Optional) Run it in Docker
+
+The image runs the stdio server, for clients and registries that start MCP servers in a container:
+
+```bash
+docker build -t abap-config-mcp .
+docker run -i --rm -e SAP_URL=https://your-sap-system:44301 -e SAP_USER=DEVELOPER \
+  -e SAP_PASSWORD=... -e SAP_CLIENT=100 abap-config-mcp
+```
+
+For several systems, mount a `connections.json` and set `ABAP_MCP_CONFIG=/config/connections.json`. With no system configured the server still starts and lists its tools, but every tool call fails until one is set.
+
 ### 5. Connect your AI client
 
 Pick the section below for your client. All clients use the same running server — you can connect multiple clients simultaneously.

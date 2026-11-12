@@ -1,0 +1,14 @@
+node_modules
+dist
+release
+tests
+docs
+deploy
+packaging
+scripts
+connections.json
+engine-deploy.json
+HANDOFF.md
+.env
+*.log
+.git
