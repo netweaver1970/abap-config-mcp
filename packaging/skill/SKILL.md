@@ -5,7 +5,7 @@ description: Work in SAP systems through the abap-config-mcp tools — ABAP deve
 
 # SAP ABAP & Customizing (abap-config-mcp)
 
-The tools come from the **abap-config-mcp** server (58 tools). They act in a real SAP
+The tools come from the **abap-config-mcp** server (60 tools). They act in a real SAP
 system **as the SAP user of the chosen connection** — SAP authorizations are the real
 control, but treat every write as a change to a shared system.
 

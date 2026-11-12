@@ -1,6 +1,6 @@
 # abap-config — SAP ABAP & customizing for Claude
 
-Three ways to deploy the same server (`abap-config-mcp`, 58 tools) and skill (`sap-abap`).
+Three ways to deploy the same server (`abap-config-mcp`, 60 tools) and skill (`sap-abap`).
 Built by `npm run package` in the abap-config-mcp repo; everything lands in `release/`.
 
 | You use | Install | SAP login goes in |

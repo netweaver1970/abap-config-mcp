@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * stdio entry point — the same 58 tools as the HTTP server, spoken over
+ * stdio entry point — the same 60 tools as the HTTP server, spoken over
  * stdin/stdout so an MCP client can launch it as a child process. This is what
  * the Claude Code plugin and the Claude Desktop extension (.mcpb) run: no
  * daemon, no port, no shared secret.

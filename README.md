@@ -1,7 +1,7 @@
 # abap-config-mcp
 
 > A standalone [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for SAP ABAP development **and customizing**.
-> Connects directly to your SAP system via the ADT REST API and exposes **59 tools** to any MCP-compatible AI client — **no VS Code, no Copilot subscription required**.
+> Connects directly to your SAP system via the ADT REST API and exposes **60 tools** to any MCP-compatible AI client — **no VS Code, no Copilot subscription required**.
 
 It does two things that, together, let an AI assistant work in an SAP system the way a developer/consultant does:
 
@@ -46,15 +46,15 @@ The AI handles the full workflow autonomously: search → read → write → che
 | **Source reading** | 4 tools | Read full source, grep within source, batch-read multiple objects, syntax-check without saving |
 | **Write** | 5 tools | Lock objects, write source, unlock/discard, create new objects, delete objects |
 | **Activate** | 2 tools | Activate single objects, batch-activate all inactive objects |
-| **Quality** | 3 tools | ATC checks with findings and locations, unit test execution, create test includes |
+| **Quality** | 4 tools | ATC checks with findings and locations, unit test execution, run a console class (`IF_OO_ADT_CLASSRUN`), create test includes |
 | **Transports** | 4 tools | List transports across all users with their objects (read from E070/E071), create/release/delete/change owner, find which transport an object needs, move objects or a whole task to another request with dependency and release-order checks. Every write picks its transport by one rule — see [Transport selection](#transport-selection) |
 | **Data** | 4 tools | Search tables by description keyword, describe table structure, run SELECT queries, read table contents |
 | **Analysis** | 4 tools | Where-used cross-reference, version history, runtime dumps (ST22), inactive objects list |
 | **Text elements** | 2 tools | Read/write selection screen texts, text symbols, and list headings |
 | **Packages** | 2 tools | Browse package contents grouped by type, create new packages |
 | **Debugging** | 7 tools | Attach debugger, set/delete breakpoints, step through code, inspect/change variables, call stack |
-| **Customizing & IMG** | 12 tools | Search IMG/SPRO, describe/read/diff/plan customizing, copy or delete config the SM30-standard way with governed transport recording, headless org-unit copy, bootstrap/cleanup the in-system engine — see **[docs/customizing-engine.md](docs/customizing-engine.md)** |
-| **Operations** | 2 tools | Force re-login to heal a degraded ADT session, HANA memory report |
+| **Customizing & IMG** | 14 tools | Search IMG/SPRO, describe/read/diff/plan customizing, copy or delete config the SM30-standard way with governed transport recording, create new rows from explicit values, headless org-unit copy, retail article listing, bootstrap/cleanup the in-system engine — see **[docs/customizing-engine.md](docs/customizing-engine.md)** |
+| **Operations** | 4 tools | Force re-login to heal a degraded ADT session, HANA and ABAP memory reports, install the in-system ABAP as local or transportable (`engine_deploy`) |
 
 ---
 
@@ -322,7 +322,7 @@ customizing is the point. It is **not** meant to perform development or customiz
 ### 4. Risk tiers — cap the tool surface with `ABAP_MCP_MAX_TIER`
 
 SAP authorizations are the *real* control, but the server can also hide whole classes of
-tool so a deployment exposes only what corporate security accepts. All 59 tools are
+tool so a deployment exposes only what corporate security accepts. All 60 tools are
 classified into three risk tiers (full registry: **[docs/TIERS.md](docs/TIERS.md)**):
 
 | Tier | What it does | Examples |
@@ -553,7 +553,7 @@ M365 Copilot connects to MCP servers through **Copilot Studio**, which then surf
    | Authentication | **API Key** |
    | API Key | your `server.apiKey` value from `connections.json` |
 
-5. Copilot Studio auto-discovers all 59 tools via the MCP handshake — no manual tool registration needed
+5. Copilot Studio auto-discovers all 60 tools via the MCP handshake — no manual tool registration needed
 
 6. **Publish** the agent and deploy it to Microsoft 365
 
@@ -591,7 +591,7 @@ IBM Bob is IBM's AI coding IDE (1.0 released March 2026). It has native MCP supp
 
 > If Bob and the SAP system are on the same network (e.g. both inside your corporate VPN), use the plain `http://` URL directly — no need to expose the server externally.
 
-Once configured, Bob's chat and agent modes can call all 59 tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
+Once configured, Bob's chat and agent modes can call all 60 tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
 
 ---
 
@@ -601,7 +601,7 @@ The project has two independent test suites.
 
 ### Unit tests — no SAP required
 
-201 tests covering all 58 tools. Each handler is tested in isolation with a mocked `ADTClient` — no SAP system, no network, runs in under 3 seconds. This is the default `npm test`.
+380 tests across the tool handlers. Each handler is tested in isolation with a mocked `ADTClient` — no SAP system, no network, runs in under 3 seconds. This is the default `npm test`.
 
 ```bash
 npm test              # run once
@@ -655,7 +655,7 @@ Replace `CAR` with the `id` of any connection in your `connections.json`.
 
 ---
 
-## All 59 tools — detailed reference
+## All 60 tools — detailed reference
 
 ### Discovery
 
@@ -1405,6 +1405,32 @@ A company code has too many keyed tables for one call. The first run always comp
 
 **Diff after the copy.** Run the same dry run again — same source and target — once the copy is committed: the copier does not object to an existing target on a dry run, so the three sections then compare the source with the new unit table by table (copier tables still empty on the target, non-copied tables to fill by hand). A commit also appends the scope when the copy finished with enough time left; otherwise it says to run the dry run. For row-level differences in one table, use `customizing_diff`.
 
+#### `customizing_create`
+Create new customizing rows from explicit field/value maps, with full (also composite) keys and distinct values per row, when there is no source row to copy. For example storage locations in `T001L` (key `WERKS` + `LGORT`), each with its own description. Rows go through the SM30 view runtime, so foreign-key checks, events, change documents and transport recording run the standard way. Dry run by default.
+
+```
+Parameters:
+  table            Table name; its generated maintenance view is found automatically
+  rows             [{ FIELD: value }, …], each including all key fields
+  commit           true to write (default: dry run returning the planned rows)
+  onlyMissing      Skip rows whose key exists (default true: idempotent)
+  transport | createTransport | workItem   Transport selection, see Transport selection
+  recordTransport  false for a direct, untransported sandbox write
+  connectionId     System id
+→ Returns: the planned or written rows, and the transport they were recorded on
+```
+
+#### `retail_listing`
+List articles into retail assortments through SAP's standard listing engine (`EXECUTE_LISTING_ART_ASSORT_RFC`). Listing extends each article to the assortment's sites (plant and valuation segments) and writes the `WLK1` listing conditions; a general assortment propagates to all its assigned sites. Dry run by default.
+
+```
+Parameters:
+  items         [{ product, assortment, dateFrom?, dateTo? }, …]; dates default to today / 9999-12-31
+  commit        true to execute (default: dry run returning the prepared items)
+  connectionId  System id
+→ Returns: the prepared or executed listing items with SAP's messages
+```
+
 #### `customizing_status`
 Poll a background write job started by `customizing_apply` / `org_copy` and return its result (rows written, E071K entries, messages) when it finishes.
 
@@ -1469,6 +1495,29 @@ Report HANA memory usage (used / peak / allocation limit, top consumers) via the
 Parameters:
   connectionId  System id
 → Returns: used/peak/limit GB and top memory consumers
+```
+
+
+#### `abap_memory_report`
+Report the ABAP application server's memory and box-health profile parameters (`PHYS_MEMSIZE`, extended memory, heap and roll areas, buffer size, work-process counts). The companion to `hana_memory_report`: on a single-host appliance, read both and check that the HANA allocation limit plus ABAP working memory plus the OS fit in physical RAM.
+
+```
+Parameters:
+  connectionId  System id
+→ Returns: the profile parameters with their current values
+```
+
+#### `engine_deploy`
+Install the server's in-system ABAP and choose per unit whether it is transportable (a Workbench Z package on a transport, released to production through CTS like any development) or local in `$TMP` (development only). Run without a unit to see the setup prompt or the current status; re-run to switch a unit. See [In-system ABAP: transported, not pushed](#5-in-system-abap-transported-not-pushed-engine_deploy).
+
+```
+Parameters:
+  unit           diag (tier 0 read-only diagnostics) | cust (tier 1 customizing engine); omit for status
+  transportable  true = Z package on a transport; false = $TMP
+  package        Workbench Z package (for a transportable deploy)
+  transport      Workbench request to record the objects on
+  connectionId   System id
+→ Returns: what was deployed where, and the SICF node to register after a transportable deploy
 ```
 
 ---
