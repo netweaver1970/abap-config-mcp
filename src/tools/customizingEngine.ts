@@ -17,6 +17,7 @@ import * as nodeHttp from "http"
 import * as nodeHttps from "https"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { engineFixHint, isGoverned, GOVERNED_ENGINE_NOTE } from "../mode"
 import { ensureConnected, dropSessionLocks, log, getConnectionConfig, isSessionDegradedError, assertAdt } from "../connections"
 import { handleCreateAbapObject, handleWriteAbapObjectSource, handleDeleteAbapObject } from "./write"
 import { handleAbapActivate } from "./activate"
@@ -219,6 +220,12 @@ function engineHttpPost(
   })
 }
 
+/** In governed mode a failure that looks like a missing or outdated engine also names the two ways to install it. */
+function withGovernedEngineNote(message: string, status: number): string {
+  if (!isGoverned() || status === 401) return message
+  return `${message}\nThe engine may be missing or at the wrong version (this server expects v${ENGINE_VERSION}): ${GOVERNED_ENGINE_NOTE}. Then run customizing_engine_ping.`
+}
+
 export async function callEngine(
   connectionId: string | undefined,
   body: EngineRequest,
@@ -229,18 +236,18 @@ export async function callEngine(
   const raw = (resp.body ?? "").trim()
 
   if (!raw) {
-    throw new Error(`Engine returned empty body (HTTP ${resp.status || "?"})`)
+    throw new Error(withGovernedEngineNote(`Engine returned empty body (HTTP ${resp.status || "?"})`, resp.status))
   }
 
   // Non-200 before attempting JSON parse — body is likely an HTML/text error page
   if (resp.status >= 300) {
-    throw new Error(`Engine HTTP ${resp.status}: ${raw.substring(0, 500)}`)
+    throw new Error(withGovernedEngineNote(`Engine HTTP ${resp.status}: ${raw.substring(0, 500)}`, resp.status))
   }
 
   try {
     return JSON.parse(raw) as EngineResponse
   } catch {
-    throw new Error(`Engine returned non-JSON (HTTP ${resp.status || "?"}): ${raw.substring(0, 500)}`)
+    throw new Error(withGovernedEngineNote(`Engine returned non-JSON (HTTP ${resp.status || "?"}): ${raw.substring(0, 500)}`, resp.status))
   }
 }
 
@@ -327,6 +334,9 @@ export async function imgIndexRead(
 // is manual and surfaced to the user when ping fails.
 
 export async function ensureEngineClass(connectionId?: string): Promise<{ changed: boolean; action: string }> {
+  // Governed mode makes no ADT calls, so it cannot check or deploy the class: the engine is installed
+  // by abapGit or by transport, and callEngine reports it when it is missing or the wrong version.
+  if (isGoverned()) return { changed: false, action: "governed mode: the engine is installed by abapGit or transport, not deployed by this server" }
   const client = await ensureConnected(connectionId)
   let current: string | undefined
   try {
@@ -488,7 +498,7 @@ export async function handleEnginePing(args: {
     const lines = [
       `✅ Engine responded`,
       `   Deployed version: ${r.VERSION ?? "?"}`,
-      `   Expected version: ${ENGINE_VERSION}${versionMatch ? " ✅" : " ⚠️  mismatch — run customizing_engine_bootstrap"}`,
+      `   Expected version: ${ENGINE_VERSION}${versionMatch ? " ✅" : ` ⚠️  mismatch — ${engineFixHint()}`}`,
       ...(r.MESSAGES ?? []).map(m => `   ${m}`),
     ]
 
@@ -555,7 +565,7 @@ export async function handleHanaMemory(args: {
     const msg = String((err as Error).message ?? err)
     return { content: [{ type: "text" as const, text:
       `❌ hana_memory failed: ${msg}\n\nRun customizing_engine_ping to confirm the engine is live ` +
-      `(this tool needs engine v0.9.8+; run customizing_engine_bootstrap if older).` }] }
+      `(this tool needs engine v0.9.8+; if older, ${engineFixHint()}).` }] }
   }
 }
 
@@ -584,7 +594,7 @@ export async function handleAbapMemory(args: {
     const msg = String((err as Error).message ?? err)
     return { content: [{ type: "text" as const, text:
       `❌ abap_memory failed: ${msg}\n\nRun customizing_engine_ping to confirm the engine is live ` +
-      `(this tool needs engine v0.9.16+; run customizing_engine_bootstrap if older).` }] }
+      `(this tool needs engine v0.9.16+; if older, ${engineFixHint()}).` }] }
   }
 }
 

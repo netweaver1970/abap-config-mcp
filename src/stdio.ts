@@ -9,6 +9,7 @@ import "./stdioGuard"
 import { randomUUID } from "crypto"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config"
+import { serverMode } from "./mode"
 import { createMcpServer } from "./server"
 import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
@@ -24,6 +25,7 @@ process.on("unhandledRejection", (reason) => {
 
 async function start(): Promise<void> {
   loadConfig()   // fail fast (exit 1 with a message on stderr) before the client handshakes
+  const mode = serverMode()   // an unknown mode stops startup here, with what to do
 
   const transport = new StdioServerTransport()
   // One process = one client. Give it its own MCP session id so its ADT
@@ -33,11 +35,11 @@ async function start(): Promise<void> {
   ;(transport as { sessionId?: string }).sessionId = sessionId   // Transport.sessionId is optional; stdio leaves it unset
 
   await createMcpServer().connect(transport)
-  log("INFO", `ABAP Config MCP Server v${SERVER_VERSION} started (stdio, engine ${ENGINE_VERSION})`)
+  log("INFO", `ABAP Config MCP Server v${SERVER_VERSION} started (stdio, mode ${mode}, engine ${ENGINE_VERSION})`)
 
   // Same warm-up as the HTTP server: log in to the default connection in the
   // background so the first tool call doesn't pay for it. ABAP_NO_WARMUP=1 skips it.
-  if (!process.env.ABAP_NO_WARMUP) {
+  if (!process.env.ABAP_NO_WARMUP && mode === "direct") {   // governed mode makes no ADT call, so there is no session to warm up
     const conns = listConnections()
     // A SOAP RFC connection has no session to warm up, and a per-user one has no user until a client sends one.
     if (conns.length > 0 && conns[0].protocol !== "soap-rfc" && conns[0].logon !== "per-user") {

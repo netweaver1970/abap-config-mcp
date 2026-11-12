@@ -20,6 +20,9 @@ import { wrapServerWithSoapRfcRouting } from "./soapRfcRouting"
 import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
 import { wrapServerWithAnnotations } from "./toolAnnotations"
 import { log } from "../connections"
+import { serverMode, wrapServerWithModeGating, GOVERNED_TOOLS } from "../mode"
+
+let _governedLogged = false
 
 export function registerAllTools(server: McpServer): void {
   // Every handler registered below gets automatic forceReconnect-and-retry
@@ -40,9 +43,15 @@ export function registerAllTools(server: McpServer): void {
   const maxTier = getMaxTier()
   const gated = maxTier < 2 ? wrapServerWithTierGating(guarded, maxTier) : guarded
 
+  // Governed mode (ABAP_MCP_MODE=governed): only the tools that work through the engine's HTTP
+  // endpoint are registered; everything that needs ADT is left out. See mode.ts.
+  const governed = serverMode() === "governed"
+  const modeSkipped: string[] = []
+  const moded = governed ? wrapServerWithModeGating(gated, modeSkipped) : gated
+
   // Outermost: every tool carries MCP annotations (read-only, destructive,
   // idempotent) from one hand-checked table — see toolAnnotations.ts.
-  const target = wrapServerWithAnnotations(gated)
+  const target = wrapServerWithAnnotations(moded)
   log("INFO", `Registering tools with ABAP_MCP_MAX_TIER=${maxTier}` +
     (maxTier < 2 ? " — higher-tier tools will be hidden" : " (full surface)"))
 
@@ -62,4 +71,10 @@ export function registerAllTools(server: McpServer): void {
   registerCustomizingTools(target)
   registerCustomizingEngineTools(target)
   registerEngineDeployTools(target)
+
+  if (governed && !_governedLogged) {
+    _governedLogged = true   // one server per client session registers again; say it once per process
+    log("INFO", `Governed mode: ${GOVERNED_TOOLS.size} tools registered; left out (they need ADT): ${modeSkipped.join(", ")}. ` +
+      `Phase 2 adds the customizing and transport tools.`)
+  }
 }

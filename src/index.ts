@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { randomUUID } from "crypto"
 import { getServerConfig } from "./config"
+import { serverMode, assertGovernedLogon } from "./mode"
 import { createMcpServer } from "./server"
 import { log, ensureConnected, listConnections, startKeepAlive, stopKeepAlive, closeSessionConnections, closeAllConnections, applySessionCredentials, endSessionCredentials, setServerBindLoopback } from "./connections"
 import { ENGINE_VERSION } from "./abap/zcl_mcp_cust_engine"
@@ -86,6 +87,8 @@ const BIND_HOST = "127.0.0.1"
 
 async function start(): Promise<void> {
   setServerBindLoopback(/^(127\.\d+\.\d+\.\d+|::1|localhost)$/.test(BIND_HOST))
+  const mode = serverMode()   // an unknown mode stops startup here
+  assertGovernedLogon(listConnections())   // rule 4: governed mode on a shared server needs per-user logon
   const cfg = getServerConfig()
   const port = cfg.port ?? 4847
   const apiKey = cfg.apiKey ?? ""
@@ -284,7 +287,7 @@ async function start(): Promise<void> {
 
   const actualPort = await startOnPort(port)
 
-  log("INFO", `ABAP Config MCP Server v${SERVER_VERSION} started`)
+  log("INFO", `ABAP Config MCP Server v${SERVER_VERSION} started (mode ${mode})`)
   const W = 70
   const row = (s: string) => `║${s.padEnd(W)}║`
   const div = `╠${"═".repeat(W)}╣`
@@ -292,6 +295,7 @@ async function start(): Promise<void> {
   console.log(row(`                 ABAP Config MCP Server v${SERVER_VERSION}`))
   console.log(div)
   console.log(row(`  Server version    : ${SERVER_VERSION}`))
+  console.log(row(`  Mode              : ${mode}${mode === "governed" ? "  (no ADT calls)" : ""}`))
   console.log(row(`  Cust. engine ver. : ${ENGINE_VERSION}  (expected on SAP after deploy)`))
   console.log(div)
   console.log(row(`  MCP endpoint  : http://localhost:${actualPort}/mcp`))
@@ -317,7 +321,7 @@ async function start(): Promise<void> {
   // alive by the time the first tool call arrives.  Fire-and-forget; failures
   // are logged but don't block server startup (SAP may be briefly unreachable).
   // Disable with ABAP_NO_WARMUP=1.
-  if (!process.env.ABAP_NO_WARMUP) {
+  if (!process.env.ABAP_NO_WARMUP && mode === "direct") {   // governed mode makes no ADT call, so there is no session to warm up
     const conns = listConnections()
     // A SOAP RFC connection has no session to warm up, and a per-user one has no user until a client sends one.
     if (conns.length > 0 && conns[0].protocol !== "soap-rfc" && conns[0].logon !== "per-user") {

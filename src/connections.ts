@@ -1,7 +1,8 @@
 import { ADTClient, createSSLConfig, session_types } from "abap-adt-api"
 import { loadConfig, ConnectionConfig } from "./config"
+import { assertAdtAllowed } from "./mode"
 import {
-  runInSession, currentSessionId, effectiveConfig, isPerUser, captureCredentials, clearSessionCredentials,
+  runInSession, currentSessionId, currentToolName, effectiveConfig, isPerUser, captureCredentials, clearSessionCredentials,
   credentialsFor,
 } from "./logon"
 
@@ -75,6 +76,7 @@ const connections = new Map<string, ManagedConnection>()
 const connKey = (id: string, sessionId: string) => `${id}\u0000${sessionId}`
 
 function buildClient(cfg: ConnectionConfig, timeoutMs?: number): ADTClient {
+  assertAdtAllowed("building an ADT client", cfg.id)   // the last line of the guard: no ADT client exists in governed mode
   const isHttps = cfg.url.toLowerCase().startsWith("https:")
   const sslOptions = isHttps ? createSSLConfig(cfg.allowSelfSigned ?? false, cfg.ca) : {}
   // Default 30 s timeout — prevents the server hanging on an unresponsive SAP system
@@ -173,8 +175,16 @@ export function assertAdt(cfg: ConnectionConfig): void {
   }
 }
 
+/** Governed mode makes no ADT calls: refuse before anything resolves, logs on or builds a client. */
+function guardAdt(connectionId: string | undefined): void {
+  let id: string
+  try { id = resolveConnectionId(connectionId) } catch { id = connectionId ?? "the default connection" }
+  assertAdtAllowed(currentToolName() ?? "this call", id)
+}
+
 /** This MCP session's connection entry for connectionId, created (not logged in) when missing. */
 function managedFor(connectionId?: string): ManagedConnection {
+  guardAdt(connectionId)
   const id = resolveConnectionId(connectionId)
   const sessionId = currentSessionId()
   let managed = connections.get(connKey(id, sessionId))
@@ -237,6 +247,7 @@ export async function forceReconnect(connectionId?: string): Promise<ADTClient> 
  * timeout on it leaves that context untouched. The caller logs it out.
  */
 export async function newIsolatedClient(connectionId: string | undefined, timeoutMs: number): Promise<ADTClient> {
+  guardAdt(connectionId)
   const cfg = getConnectionConfig(connectionId)
   assertAdt(cfg)
   const client = buildClient(cfg, timeoutMs)

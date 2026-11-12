@@ -76,11 +76,11 @@ export function withSessionRecovery<H extends AnyToolHandler>(toolName: string, 
  * uses that session's own ADT session (and locks). MCP handlers receive
  * (args, extra); extra.sessionId is the MCP session.
  */
-export function withSessionScope<H extends AnyToolHandler>(handler: H): H {
+export function withSessionScope<H extends AnyToolHandler>(handler: H, toolName?: string): H {
   const wrapped = (...handlerArgs: unknown[]) => {
     const extra = handlerArgs[1] as { sessionId?: unknown } | undefined
     const sessionId = typeof extra?.sessionId === "string" ? extra.sessionId : undefined
-    return runInSession(sessionId, () => handler(...handlerArgs))
+    return runInSession(sessionId, () => handler(...handlerArgs), toolName)
   }
   return wrapped as unknown as H
 }
@@ -91,7 +91,7 @@ export function wrapServerWithSessionScope(server: McpServer): McpServer {
       if (prop === "registerTool") {
         const original = (target.registerTool as AnyToolHandler).bind(target)
         return (name: string, config: unknown, handler: AnyToolHandler) =>
-          original(name, config, withSessionScope(handler))
+          original(name, config, withSessionScope(handler, name))
       }
       const value = Reflect.get(target, prop, target)
       return typeof value === "function" ? (value as AnyToolHandler).bind(target) : value

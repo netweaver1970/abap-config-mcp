@@ -21,11 +21,16 @@ import type { ConnectionConfig } from "./config"
 
 export const SHARED_SESSION = "shared"
 
-const sessionScope = new AsyncLocalStorage<{ sessionId: string }>()
+const sessionScope = new AsyncLocalStorage<{ sessionId: string; toolName?: string }>()
 
-/** Run fn with every connection lookup inside it bound to this MCP session. */
-export function runInSession<T>(sessionId: string | undefined, fn: () => T): T {
-  return sessionId ? sessionScope.run({ sessionId }, fn) : fn()
+/** Run fn with every connection lookup inside it bound to this MCP session (and, when given, named after the tool running). */
+export function runInSession<T>(sessionId: string | undefined, fn: () => T, toolName?: string): T {
+  return sessionId || toolName ? sessionScope.run({ sessionId: sessionId ?? currentSessionId(), toolName }, fn) : fn()
+}
+
+/** The tool whose handler is running, when known (used in refusal messages). */
+export function currentToolName(): string | undefined {
+  return sessionScope.getStore()?.toolName
 }
 
 /** The MCP session the current call belongs to; "shared" outside any (startup, tests). */

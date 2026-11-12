@@ -33,6 +33,8 @@ export interface ConnectionConfig {
 export interface ServerConfig {
   port?: number
   apiKey?: string
+  /** "direct" (default) or "governed": see src/mode.ts. The ABAP_MCP_MODE environment variable wins. */
+  mode?: "direct" | "governed"
 }
 
 export interface Config {

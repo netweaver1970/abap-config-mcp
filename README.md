@@ -25,6 +25,10 @@ The ABAP side is complete too: search, read, write, activate, ATC, unit tests, d
 
 To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#1-install) for Docker, the Claude Desktop extension or building it yourself.
 
+### Two ways to run it
+
+By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles the code work. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing and the selftest, and the customizing and transport tools follow; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
+
 ### Acknowledgements
 
 The idea of driving SAP ADT from outside the SAP GUI was **inspired by** Marcello Urbani's excellent [marcellourbani/vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) — go give it a star. This project is an independent, from-scratch MCP server (its own development tools and its own in-system customizing engine); it does not contain that project's code. It does build on Marcello's separately published, MIT-licensed [`abap-adt-api`](https://github.com/marcellourbani/abap-adt-api) library for the low-level ADT protocol calls. See [NOTICE](NOTICE) for full attribution.
@@ -1677,6 +1681,7 @@ Parameters:
 | Variable | Description |
 |---|---|
 | `ABAP_MCP_CONFIG` | Path to config JSON file (overrides default search paths) |
+| `ABAP_MCP_MODE` | `direct` (default) or `governed`; `governed` makes no ADT calls and registers only the engine-based tools. Also settable as `"mode"` in the `server` section of the config file; the variable wins |
 | `ABAP_MCP_DATA_TOOLS` | `1` switches on `execute_data_query` and `read_table_contents`, off by default; see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands) |
 
 ---

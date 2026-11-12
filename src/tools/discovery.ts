@@ -1,7 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { currentSessionId, logonLabel } from "../logon"
+import { serverMode } from "../mode"
 import { ensureConnected, forceReconnect, listConnections, resolveConnectionId } from "../connections"
+
+function modeLine(): string {
+  return serverMode() === "governed"
+    ? "Mode: governed (no ADT calls; code work goes through SAP's ADT MCP server)"
+    : "Mode: direct (everything over ADT)"
+}
 
 export async function handleConnectedSystems() {
   const conns = listConnections()
@@ -13,7 +20,7 @@ export async function handleConnectedSystems() {
     `${c.id === def ? " — default when connectionId is omitted" : ""}`
   )
   return {
-    content: [{ type: "text" as const, text: `Available SAP systems:\n${lines.join("\n")}` }]
+    content: [{ type: "text" as const, text: `${modeLine()}\nAvailable SAP systems:\n${lines.join("\n")}` }]
   }
 }
 
