@@ -1,14 +1,29 @@
 # abap-config-mcp
 
-> A standalone [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for SAP ABAP development **and customizing**.
-> Connects directly to your SAP system via the ADT REST API and exposes **60 tools** to any MCP-compatible AI client — **no VS Code, no Copilot subscription required**.
+[![Glama rating](https://glama.ai/mcp/servers/netweaver1970/abap-config-mcp/badges/score.svg)](https://glama.ai/mcp/servers/netweaver1970/abap-config-mcp)
+[![CI](https://github.com/netweaver1970/abap-config-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/netweaver1970/abap-config-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/abap-config-mcp)](https://www.npmjs.com/package/abap-config-mcp)
+[![Release](https://img.shields.io/github/v/release/netweaver1970/abap-config-mcp)](https://github.com/netweaver1970/abap-config-mcp/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-It does two things that, together, let an AI assistant work in an SAP system the way a developer/consultant does:
+An MCP server that lets an AI assistant work in an SAP system the way a consultant does. And that includes customizing, not just ABAP.
 
-1. **ABAP development** — search, read, write, activate, transport, debug, run ATC & unit tests, browse packages, query and compare table data — a full ABAP development toolset exposed as standalone MCP tools.
-2. **Customizing / IMG (the headline addition)** — an **in-system customizing engine** the server deploys into your SAP box drives the standard SM30/SM34 maintenance-view runtime, so configuration changes get foreign-key checks, change documents and **governed transport recording** exactly as a manual SPRO change would. Search the IMG, read/diff/copy config, copy whole organizational units. See **[docs/customizing-engine.md](docs/customizing-engine.md)**.
+Most of the AI tooling for ABAP I came across reads and writes code. That's useful, but in a real project a lot of the work sits in SPRO, and that is exactly where one wrong or untransported table entry hurts. So the customizing side here goes through SAP's own SM30/SM34 maintenance runtime: foreign-key checks, change documents and recording on a transport, the same as when you do it by hand.
 
-Works with **Claude Desktop**, **Claude Code** (the terminal/prompt), **Cursor**, **Windsurf**, **Microsoft 365 Copilot**, **IBM Bob**, and any other MCP-compatible AI client.
+![A dry run of an org-unit copy on an S/4HANA sandbox](docs/media/org-copy-demo.gif)
+
+*A dry run on my S/4HANA sandbox. Plant 1010 gets a twin, and before anything is copied it tells you which customizing tables would stay empty for the new plant.*
+
+A few things I cared about while building it:
+
+- Transports. Local stays local, it won't fight SAP's own locks, and it can move objects between requests and tell you which one to release first.
+- It never does more than the SAP user it logs on with, and on production you run it read-only.
+- The bit of ABAP it needs inside SAP is transported like any other development, not pushed in from outside.
+- It runs the way your landscape needs it: on your own machine, as a shared server for a team, in Docker, or as a Claude Desktop extension.
+
+The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps and SQL. 60 tools in all, usable from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
+
+To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#1-install) for Docker, the Claude Desktop extension or building it yourself.
 
 ### Acknowledgements
 
@@ -62,12 +77,35 @@ The AI handles the full workflow autonomously: search → read → write → che
 
 ### 1. Install
 
-```bash
-git clone https://github.com/netweaver1970/abap-config-mcp
-cd abap-config-mcp
-npm install
-npm run build
+Four ways to get the same server. Take the one that fits.
+
+| Option | How | Best for |
+|---|---|---|
+| **npm** | `npx -y -p abap-config-mcp abap-config-mcp-stdio`, started by your AI client (below). For the shared HTTP server: `npm install -g abap-config-mcp`, then `abap-config-mcp` | most setups; needs Node.js 18+ |
+| **Docker** | `docker run -i --rm -e SAP_URL=… -e SAP_USER=… -e SAP_PASSWORD=… -e SAP_CLIENT=100 ghcr.io/netweaver1970/abap-config-mcp` | containers, or no Node.js on the machine |
+| **Claude Desktop extension** | download `abap-config-mcp-<version>.mcpb` from the [latest release](https://github.com/netweaver1970/abap-config-mcp/releases/latest) and open it; the SAP login is asked in the install form | Claude Desktop, one click |
+| **From source** | `git clone https://github.com/netweaver1970/abap-config-mcp && cd abap-config-mcp && npm install && npm run build` | contributing, or running the HTTP server from the repo |
+
+The quickest start is to let your AI client start the server itself. There's no server to run, no port and no shared secret then. In Claude Desktop, Claude Code, Cursor and most other clients the entry looks like this:
+
+```json
+{
+  "mcpServers": {
+    "abap": {
+      "command": "npx",
+      "args": ["-y", "-p", "abap-config-mcp", "abap-config-mcp-stdio"],
+      "env": {
+        "SAP_URL": "https://your-sap-host:44301",
+        "SAP_USER": "DEVELOPER",
+        "SAP_PASSWORD": "your-password",
+        "SAP_CLIENT": "100"
+      }
+    }
+  }
+}
 ```
+
+With more than one SAP system, leave out the `SAP_*` variables and list the systems in `~/.abap-mcp/connections.json` (format below), or point `ABAP_MCP_CONFIG` at that file. The rest of this Quick start is about the shared HTTP server, the setup for a team.
 
 ### 2. Configure connections
 
@@ -78,7 +116,7 @@ There are **two** separate pieces of configuration — don't mix them up:
 | **SAP systems** the server may log into (host, user, password, client) — plus the server's **port** and **shared secret** | `connections.json`, here on the **server side** (this step) | Once, on the machine running the server |
 | **Registering this server** with your AI client (the MCP endpoint URL + the shared secret) | Your AI **client's** config — a *different* file per client (Claude Desktop vs. Claude Code vs. Cursor…). See [Connecting AI clients](#connecting-ai-clients) | Each user / each client |
 
-This step is the first one. Create `connections.json` in the project directory:
+This step is the first one. Create `connections.json` in the directory you start the server from, or in `~/.abap-mcp/`:
 
 ```json
 {
@@ -240,13 +278,14 @@ pm2 save && pm2 startup     # follow the printed command to enable boot-start
 
 ### 4c. (Optional) Run it in Docker
 
-The image runs the stdio server, for clients and registries that start MCP servers in a container:
+A ready-made image of the stdio server is published for every release on GitHub's container registry, for amd64 and arm64:
 
 ```bash
-docker build -t abap-config-mcp .
 docker run -i --rm -e SAP_URL=https://your-sap-system:44301 -e SAP_USER=DEVELOPER \
-  -e SAP_PASSWORD=... -e SAP_CLIENT=100 abap-config-mcp
+  -e SAP_PASSWORD=... -e SAP_CLIENT=100 ghcr.io/netweaver1970/abap-config-mcp
 ```
+
+Pin a version with a tag such as `:1.16.4`. To build it yourself instead: `docker build -t abap-config-mcp .` in the repo.
 
 For several systems, mount a `connections.json` and set `ABAP_MCP_CONFIG=/config/connections.json`. With no system configured the server still starts and lists its tools, but every tool call fails until one is set.
 

@@ -20,10 +20,16 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-slim
+LABEL org.opencontainers.image.source="https://github.com/netweaver1970/abap-config-mcp" \
+      org.opencontainers.image.description="SAP customizing and ABAP development MCP server (stdio)" \
+      org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# The engine ABAP that engine_deploy and the customizing tools install into SAP, read at
+# runtime from <dist>/../src/abap.
+COPY --from=build /app/src/abap/*.abap ./src/abap/
 COPY package.json LICENSE NOTICE README.md ./
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 USER node

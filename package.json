@@ -1,6 +1,6 @@
 {
   "name": "abap-config-mcp",
-  "version": "1.16.3",
+  "version": "1.16.4",
   "description": "Standalone MCP server for SAP ABAP development AND customizing (IMG/SPRO) via the ADT API - works with Claude Code, Cursor, and any MCP-compatible AI client",
   "main": "dist/index.js",
   "bin": {
@@ -21,7 +21,10 @@
     "img",
     "spro",
     "claude",
-    "ai"
+    "ai",
+    "model-context-protocol",
+    "s4hana",
+    "transport"
   ],
   "scripts": {
     "build": "node esbuild.config.js",
@@ -32,7 +35,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "license": "MIT",
   "dependencies": {
@@ -49,5 +53,17 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/stdio.js",
+    "dist/test-connection.js",
+    "src/abap/*.abap",
+    "config/connections.example.json",
+    "NOTICE"
+  ],
+  "homepage": "https://github.com/netweaver1970/abap-config-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/netweaver1970/abap-config-mcp/issues"
   }
 }
