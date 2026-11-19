@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1F4E79"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B3261E"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="1200" fill="#FFFFFF"/>
+
+  <!-- title -->
+  <text x="80" y="110" font-size="50" font-weight="700" fill="#14213D">Your AI agent, in SAP, as you.</text>
+  <text x="80" y="160" font-size="27" fill="#4A5568">abap-config-mcp behind SAP's MCP Gateway, with X.509 principal propagation</text>
+
+  <!-- column of steps -->
+  <g font-size="26">
+    <!-- 1 -->
+    <rect x="80" y="220" width="620" height="120" rx="18" fill="#EEF3F8" stroke="#1F4E79" stroke-width="2"/>
+    <text x="110" y="270" font-size="30" font-weight="700" fill="#14213D">You sign in</text>
+    <text x="110" y="310" fill="#4A5568">Identity provider issues a token for you</text>
+
+    <!-- 2 -->
+    <rect x="80" y="400" width="620" height="120" rx="18" fill="#EEF3F8" stroke="#1F4E79" stroke-width="2"/>
+    <text x="110" y="450" font-size="30" font-weight="700" fill="#14213D">SAP MCP Gateway</text>
+    <text x="110" y="490" fill="#4A5568">Checks the token; offers the engine's 24 tools</text>
+
+    <!-- 3 -->
+    <rect x="80" y="580" width="620" height="120" rx="18" fill="#EEF3F8" stroke="#1F4E79" stroke-width="2"/>
+    <text x="110" y="630" font-size="30" font-weight="700" fill="#14213D">Cloud Connector</text>
+    <text x="110" y="670" fill="#4A5568">Turns the token into a short-lived X.509 certificate</text>
+
+    <!-- 4 -->
+    <rect x="80" y="760" width="620" height="140" rx="18" fill="#1F4E79"/>
+    <text x="110" y="812" font-size="30" font-weight="700" fill="#FFFFFF">SAP (ABAP system)</text>
+    <text x="110" y="852" fill="#DCE6F0">Logs you on with the certificate:</text>
+    <text x="110" y="884" fill="#DCE6F0">your user, your rights, your name on the change</text>
+  </g>
+
+  <!-- arrows down -->
+  <g stroke="#1F4E79" stroke-width="4" fill="none" marker-end="url(#arr)">
+    <line x1="390" y1="342" x2="390" y2="396"/>
+    <line x1="390" y1="522" x2="390" y2="576"/>
+    <line x1="390" y1="702" x2="390" y2="756"/>
+  </g>
+
+  <!-- refusals -->
+  <g font-size="23" fill="#B3261E">
+    <g stroke="#B3261E" stroke-width="3" fill="none" stroke-dasharray="7 6" marker-end="url(#arrRed)">
+      <line x1="702" y1="460" x2="770" y2="460"/>
+      <line x1="702" y1="830" x2="770" y2="830"/>
+    </g>
+    <rect x="780" y="395" width="340" height="130" rx="14" fill="#FDF0EF" stroke="#B3261E" stroke-width="2"/>
+    <text x="800" y="432" font-weight="700">Stopped at the gateway</text>
+    <text x="800" y="466" fill="#5F1712">✕ no sign-in</text>
+    <text x="800" y="496" fill="#5F1712">✕ forged or expired token</text>
+
+    <rect x="780" y="755" width="340" height="150" rx="14" fill="#FDF0EF" stroke="#B3261E" stroke-width="2"/>
+    <text x="800" y="792" font-weight="700">Refused by SAP</text>
+    <text x="800" y="826" fill="#5F1712">✕ user SAP doesn't know</text>
+    <text x="800" y="856" fill="#5F1712">✕ certificate from a CA</text>
+    <text x="826" y="884" fill="#5F1712">SAP doesn't trust</text>
+  </g>
+
+  <!-- lessons -->
+  <rect x="80" y="960" width="1040" height="150" rx="18" fill="#FFF7E6" stroke="#C47F00" stroke-width="2"/>
+  <text x="110" y="1004" font-size="26" font-weight="700" fill="#7A4F00">Two things that bite</text>
+  <text x="110" y="1042" font-size="23" fill="#5C3D00">⏱ Clocks must agree: a host 2 hours fast refuses every certificate as "expired"</text>
+  <text x="110" y="1078" font-size="23" fill="#5C3D00">🔐 Behind a trusted proxy, bind each user mapping to the certificate's issuer</text>
+
+  <text x="80" y="1160" font-size="21" fill="#718096">Tested 8/8 on two SAP systems (gateway and Cloud Connector simulated)</text>
+  <text x="1120" y="1160" font-size="21" font-weight="700" fill="#1F4E79" text-anchor="end">abap-config-mcp on GitHub</text>
+</svg>
