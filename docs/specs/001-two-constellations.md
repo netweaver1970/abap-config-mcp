@@ -133,6 +133,40 @@ release order, plan building); only where it gets its facts from changes.
    - **Order:** InfoObject and InfoArea, then ADSO, then CompositeProvider, transformation and DTP,
      then process chains; classic objects (InfoCube, classic DSO, MultiProvider) on BW 7.5 only;
      queries read and delete only, if a headless API exists.
+   API research (19 Nov 2026, S4 and CAR, read-only): every modern BW class implements the TLOGO
+   framework (IF_RSO_TLOGO_MAINTAIN: prepare/save/activate/delete/check; IF_RSO_TLOGO_GENERAL:
+   get_all, get_related); RSTLOGOPROP is the registry of all object types (main table, name field,
+   text table, classes); RSOOBJXREF the generic where-used. No BW API takes a transport request, and
+   with BW's transport layer on they ask for one in a dialog, so the engine calls them with it off
+   and records with RS_TR_WRITE_OBJECTS_TO_REQUEST (package and master language supplied: no
+   popup). Per type: InfoObject BAPI_IOBJ_CREATE/CHANGE/ACTIVATE_MULTIPLE/GETDETAIL/GETLIST, delete
+   only RSDG_IOBJ_MULTI_DELETE; ADSO CL_RSO_ADSO_API (CREATE/READ/UPDATE/DELETE/GET_ADSO_LIST, no
+   separate activate); InfoArea RSAPI_AREA_CREATE/DELETE (transport layer always on: dialog risk);
+   CompositeProvider CL_RSO_HCPR_METADATA_API (union only; joins only through the model XML);
+   transformation RSTRAN_API_CREATE plus CL_RSTRAN_TRFN; DTP CL_RSBK_DTP (CREATE_FROM_TLOGO_LIST
+   forces the transport layer on, so its three steps are repeated with it off); process chain
+   CL_RSPC_CHAIN with I_WITH_DIALOG = ' ' (RSPC_API_* are run-time only); InfoCube, classic DSO and
+   MultiProvider BAPIs without a delete (the TLOGO collection deletes); queries RSZ_X_COMPONENT_GET
+   and _DELETE, create only by copying. Traps: the collection's ACTIVATE defaults to a check
+   protocol popup (always pass ' '); the delete popup appears only with a GUI.
+
+   Slice 1 (engine 0.10.0, ZCL_MCP_BW_ENGINE, commit 4d7f6a4):
+   - `bw_capabilities` (line, BW client, per type and operation available / no_api / not_built),
+     `bw_list`, `bw_read` (versions, package, header rows; InfoObject definition through
+     BAPI_IOBJ_GETDETAIL) and `bw_where_used` for all 75 types in RSTLOGOPROP on S4, driven by the
+     registry, no type named in code; InfoObject create, change (from the current definition, single
+     fields or whole tables), activate and delete (local packages only, where-used checked by BW).
+     Unknown fields are refused (texts are TEXTSHORT and TEXTLONG in BAPI6108).
+   - Writes refuse when BW is not set up in the connection's client (RS_MANDT_UNIQUE_GET).
+   - Live: S4 has embedded BW without a BW client and only delivered (D) content, so reads work
+     (version D) and writes are refused with that reason. CAR (BW client 600): create, read, change,
+     list, where-used, delete of a test InfoObject in $TMP, with texts, through BW's own APIs, no popup.
+   - Not tested live yet: recording on a Workbench request for a transportable package (unit-tested;
+     a live test would leave a transportable InfoObject behind that this version cannot delete), and
+     BW/4HANA (no system). A $TMP object gets no TADIR entry, since BW's transport layer is off.
+   - Next slices: ADSO (CL_RSO_ADSO_API), InfoArea, deletion of transported objects (recorded),
+     CompositeProvider union, transformation and DTP, process chains, classic objects on BW 7.5,
+     ABAP Unit tests for the BW class.
    Still to settle:
    - activation and transport: BW objects record on Workbench requests and need activation, which
      changes M versions into A versions;
