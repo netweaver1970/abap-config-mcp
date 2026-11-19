@@ -55,6 +55,11 @@ export function customizingSource(connectionId?: string): CustomizingSource {
   return isGoverned() ? new EngineSource(connectionId) : new AdtSource(connectionId)
 }
 
+/** The engine's ddic_describe for one table or view (governed mode's source of DDIC facts). */
+export function ddicDescribe(connectionId: string | undefined, name: string): Promise<DdicDescription> {
+  return new EngineSource(connectionId).describe(name)
+}
+
 const q = (s: string) => s.replace(/'/g, "''")
 const EMPTY = { columns: [], values: [] } as unknown as QueryResult
 

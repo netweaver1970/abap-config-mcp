@@ -4,7 +4,8 @@ import { TransportRequest, TransportTask, TransportObject } from "abap-adt-api"
 import { ensureConnected, getConnectionConfig, sapMessageNumber } from "../connections"
 import { runSql, tableRows, col } from "./customizing"
 import { listRemembered } from "./transportSelection"
-import { requestTexts } from "./transportSql"
+import { requestTexts, engineTransports, engineTransportInfo, isFlag } from "./transportSql"
+import { isGoverned } from "../mode"
 import { resolveConnectionId } from "../connections"
 
 // Listings read the CTS tables (E070 / E07T / E071). ADT's transport listing
@@ -52,6 +53,85 @@ async function objectsOf(connectionId: string | undefined, trkorrs: string[]): P
   }
   for (const [k, v] of out) out.set(k, [...new Set(v)])
   return out
+}
+
+/**
+ * Requests (at most 500, newest first) and, when asked, the objects of the newest 100:
+ * SQL through ADT in direct mode, the engine's transports action in governed mode.
+ */
+async function requestListing(connectionId: string | undefined, statuses: string[], owner: string | undefined, withObjects: boolean):
+    Promise<{ rows: RequestRow[]; objects: Map<string, string[]>; capped: Set<string>; notes: string[] }> {
+  if (isGoverned()) {
+    const { requests, messages } = await engineTransports(connectionId, { statuses: statuses.join(""), owner, withObjects })
+    const objects = new Map<string, string[]>()
+    const capped = new Set<string>()
+    const rows = requests.map(r => {
+      if (withObjects && r.OBJECTS) objects.set(r.TRKORR, r.OBJECTS.map(o => `${o.PGMID} ${o.OBJECT} ${o.OBJ_NAME}`))
+      if (isFlag(r.OBJECTS_MORE)) capped.add(r.TRKORR)
+      return { trkorr: r.TRKORR, fn: r.TRFUNCTION, status: r.TRSTATUS, owner: r.AS4USER, date: day(String(r.AS4DATE ?? "")), text: r.TEXT ?? "" }
+    })
+    return { rows, objects, capped, notes: messages }
+  }
+  const rows = await listRequests(connectionId, statuses, owner)
+  const objects = withObjects ? await objectsOf(connectionId, rows.slice(0, 100).map(r => r.trkorr)) : new Map<string, string[]>()
+  return { rows, objects, capped: new Set(), notes: [] }
+}
+
+/** The TADIR object (R3TR type + name) behind an ADT URL, for governed mode's transport_info. */
+const ADT_URL_TYPES: [RegExp, string][] = [
+  [/\/programs\/programs\/([^/?#]+)/i, "PROG"],
+  [/\/programs\/includes\/([^/?#]+)/i, "PROG"],
+  [/\/oo\/classes\/([^/?#]+)/i, "CLAS"],
+  [/\/oo\/interfaces\/([^/?#]+)/i, "INTF"],
+  [/\/functions\/groups\/([^/?#]+)/i, "FUGR"],
+  [/\/ddic\/tables\/([^/?#]+)/i, "TABL"],
+  [/\/ddic\/structures\/([^/?#]+)/i, "TABL"],
+  [/\/ddic\/dataelements\/([^/?#]+)/i, "DTEL"],
+  [/\/ddic\/domains\/([^/?#]+)/i, "DOMA"],
+  [/\/ddic\/views\/([^/?#]+)/i, "VIEW"],
+  [/\/ddic\/tabletypes\/([^/?#]+)/i, "TTYP"],
+  [/\/ddic\/ddl\/sources\/([^/?#]+)/i, "DDLS"],
+  [/\/acm\/dcl\/sources\/([^/?#]+)/i, "DCLS"],
+  [/\/bo\/behaviordefinitions\/([^/?#]+)/i, "BDEF"],
+  [/\/ddic\/srvd\/sources\/([^/?#]+)/i, "SRVD"],
+  [/\/businessservices\/bindings\/([^/?#]+)/i, "SRVB"],
+  [/\/messageclass\/([^/?#]+)/i, "MSAG"],
+  [/\/packages\/([^/?#]+)/i, "DEVC"],
+]
+
+export function adtUrlToObject(url: string): { type: string; name: string } | undefined {
+  for (const [re, type] of ADT_URL_TYPES) {
+    const m = re.exec(url)
+    if (m) return { type, name: decodeURIComponent(m[1]).toUpperCase() }
+  }
+  return undefined
+}
+
+async function governedTransportForObject(args: { url: string; connectionId?: string }) {
+  const obj = adtUrlToObject(args.url)
+  if (!obj) {
+    return { content: [{ type: "text" as const, text:
+      `Reading the transport information stopped: ${args.url} is not an ADT URL this server can map to a repository object ` +
+      `(programs, classes, interfaces, function groups, DDIC and CDS objects, message classes, packages). ` +
+      `Give the URL of the main object, for example /sap/bc/adt/oo/classes/zcl_order_api.` }] }
+  }
+  const info = await engineTransportInfo(args.connectionId, obj.type, obj.name)
+  const exists = isFlag(info.EXISTS)
+  const records = isFlag(info.RECORDS)
+  const devclass = info.DEVCLASS ?? ""
+  const allowed = (info.REQUESTS ?? []).map(r => `  ${r.TRKORR}  ${r.TEXT ?? ""}${r.AS4USER ? `  (${r.AS4USER})` : ""}`)
+  const lines = [
+    `Object:     R3TR ${obj.type} ${obj.name}${exists ? "" : "  (not in TADIR: not created yet, or a part of another object)"}`,
+    `Package:    ${devclass || "(none)"}${info.CTEXT ? ` — ${info.CTEXT}` : ""}`,
+    `Recording:  ${!exists ? "unknown — the object is not in TADIR"
+      : records ? `yes — changes are recorded on a Workbench request${info.TARGET ? ` to ${info.TARGET}` : ""}${info.TRANSPORT_LAYER ? ` (transport layer ${info.TRANSPORT_LAYER})` : ""}`
+      : devclass.startsWith("$") ? "none — local package, no transport needed" : "none — the package does not record changes"}`,
+    info.LOCK_REQUEST
+      ? `Locked in:  ${info.LOCK_REQUEST}${info.LOCK_USER ? ` (${info.LOCK_USER})` : ""}${info.LOCK_TASK ? `, task ${info.LOCK_TASK}` : ""} — SAP records every change to this object there until it is released`
+      : `Locked in:  no request yet`,
+    records ? (allowed.length ? `Your open Workbench requests to that target:\n${allowed.join("\n")}` : `You have no open Workbench request to that target.`) : "",
+  ].filter(Boolean)
+  return { content: [{ type: "text" as const, text: lines.join("\n") }] }
 }
 
 function workItemsFor(connectionId: string | undefined, trkorr: string): string {
@@ -198,20 +278,20 @@ export async function handleListAllTransports(args: {
 }) {
   const status = args.status ?? "modifiable"
   const statuses = status === "modifiable" ? ["D", "L"] : status === "released" ? ["R", "N", "O"] : ["D", "L", "O", "R", "N"]
-  const rows = await listRequests(args.connectionId, statuses, args.owner)
+  const { rows, objects, capped, notes } = await requestListing(args.connectionId, statuses, args.owner, args.withObjects !== false)
   if (rows.length === 0) {
     return { content: [{ type: "text" as const, text: `No ${status} transport requests${args.owner ? ` for ${args.owner.toUpperCase()}` : ""}.` }] }
   }
-  const objects = args.withObjects === false ? new Map<string, string[]>() : await objectsOf(args.connectionId, rows.slice(0, 100).map(r => r.trkorr))
   const byOwner = new Map<string, RequestRow[]>()
   for (const r of rows) byOwner.set(r.owner, [...(byOwner.get(r.owner) ?? []), r])
   const sections = [...byOwner.entries()].map(([owner, reqs]) =>
     `── ${owner} (${reqs.length}) ──\n` + reqs.map(r => {
       const objs = objects.get(r.trkorr)
-      const objText = args.withObjects === false ? "" : objs?.length ? "\n" + objs.slice(0, 50).map(o => `      ${o}`).join("\n") + (objs.length > 50 ? `\n      … ${objs.length - 50} more` : "") : "\n      (no objects)"
+      const objText = args.withObjects === false ? "" : objs?.length ? "\n" + objs.slice(0, 50).map(o => `      ${o}`).join("\n") + (objs.length > 50 ? `\n      … ${objs.length - 50}${capped.has(r.trkorr) ? "+ more (the engine lists at most 500 objects per request)" : " more"}` : "") : "\n      (no objects)"
       return `  ${r.trkorr}  ${(FN_NAME[r.fn] ?? r.fn).padEnd(11)}  ${STATUS_NAME[r.status] ?? r.status}  ${r.date}  ${r.text}${workItemsFor(args.connectionId, r.trkorr)}${objText}`
     }).join("\n"))
-  const cut = rows.length > 100 && args.withObjects !== false ? `\n\n(Objects shown for the newest 100 requests.)` : ""
+  const cut = (rows.length > 100 && args.withObjects !== false ? `\n\n(Objects shown for the newest 100 requests.)` : "") +
+    (notes.length ? `\n\n${notes.join("\n")}` : "")
   return { content: [{ type: "text" as const, text: `${rows.length} ${status} request(s), newest first:\n\n${sections.join("\n\n")}${cut}` }] }
 }
 
@@ -220,6 +300,7 @@ export async function handleGetTransportForObject(args: {
   packageName?: string
   connectionId?: string
 }) {
+  if (isGoverned()) return governedTransportForObject(args)
   const client = await ensureConnected(args.connectionId)
   const info = await client.transportInfo(args.url, args.packageName)
   const local = (!info.RECORDING || info.RECORDING.trim() === "") && (info.DEVCLASS ?? "").trim().startsWith("$")
@@ -277,7 +358,7 @@ export function registerTransportTools(server: McpServer): void {
       title: "List All Transports",
       description:
         "List transport requests of all users (or one owner), grouped by owner and newest first: number, kind, status, date, description, the piece of work it is remembered for, and optionally its objects including its tasks' objects. " +
-        "Reads the CTS tables E070, E07T and E071 with SQL through ADT, so it needs table read authorization (S_TABU_DIS). " +
+        "Reads the CTS tables E070, E07T and E071 (with SQL through ADT, which needs S_TABU_DIS; in governed mode through the engine, which needs S_TRANSPRT display). " +
         "Use manage_transport_requests with list for one user's open requests and details for a single request. Read-only; at most 500 requests, objects for the newest 100.",
       inputSchema: {
         status: z.enum(["modifiable", "released", "all"]).optional()

@@ -92,6 +92,8 @@ export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "hana_memory_report", "abap_memory_report", "retail_listing", "customizing_selftest",
   // phase 2: ddic_describe and the hardened read (engine 0.9.37)
   "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
+  // phase 2: transports and transport_info (engine 0.9.38)
+  "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown

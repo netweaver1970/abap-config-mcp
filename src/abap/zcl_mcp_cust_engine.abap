@@ -39,6 +39,15 @@ CLASS zcl_mcp_cust_engine DEFINITION
              from_trkorr      TYPE string,     " transport_move: source task (TASK) — OBJECTS takes each entry's own TRKORR
              to_trkorr        TYPE string,     " transport_move: target request or task
              objects_json     TYPE string,     " transport_move OBJECTS: JSON array of {TRKORR,PGMID,OBJECT,OBJ_NAME}
+             owner            TYPE string,     " transports: only this user's requests
+             owner_tasks      TYPE abap_bool,  " transports: also requests in which OWNER has a task
+             trfunction       TYPE string,     " transports: request kinds, e.g. 'W' or 'KW' (default K, W, T, C)
+             statuses         TYPE string,     " transports: request statuses, e.g. 'DL' (default) or 'RNO'
+             client           TYPE string,     " transports: only requests created in this client (E070C)
+             with_objects     TYPE abap_bool,  " transports: include each request's objects (its tasks' too)
+             pgmid            TYPE string,     " transport_info: R3TR (default)
+             obj_type         TYPE string,     " transport_info: TADIR object type, e.g. PROG, CLAS
+             obj_name         TYPE string,     " transport_info: object name
            END OF ty_request.
 
     " Field override for handle_write: applied to each planned row after the
@@ -182,6 +191,56 @@ CLASS zcl_mcp_cust_engine DEFINITION
              ccnocliind        TYPE string,
            END OF ty_ddic_desc.
 
+    " transports: one request with its tasks and (optionally) its objects.
+    TYPES: BEGIN OF ty_tr_obj,
+             pgmid    TYPE string,
+             object   TYPE string,
+             obj_name TYPE string,
+           END OF ty_tr_obj,
+           ty_tr_obj_tt TYPE STANDARD TABLE OF ty_tr_obj WITH DEFAULT KEY,
+           BEGIN OF ty_tr_task,
+             trkorr     TYPE string,
+             as4user    TYPE string,
+             trfunction TYPE string,
+             trstatus   TYPE string,
+           END OF ty_tr_task,
+           ty_tr_task_tt TYPE STANDARD TABLE OF ty_tr_task WITH DEFAULT KEY,
+           BEGIN OF ty_tr_req,
+             trkorr       TYPE string,
+             trfunction   TYPE string,
+             trstatus     TYPE string,
+             as4user      TYPE string,
+             as4date      TYPE string,
+             tarsystem    TYPE string,
+             client       TYPE string,
+             text         TYPE string,
+             tasks        TYPE ty_tr_task_tt,
+             objects      TYPE ty_tr_obj_tt,
+             objects_more TYPE abap_bool,
+           END OF ty_tr_req,
+           ty_tr_req_tt TYPE STANDARD TABLE OF ty_tr_req WITH DEFAULT KEY.
+
+    " transport_info: how a change to one repository object is transported.
+    TYPES: BEGIN OF ty_tr_info,
+             pgmid           TYPE string,
+             obj_type        TYPE string,
+             obj_name        TYPE string,
+             exists          TYPE abap_bool,
+             devclass        TYPE string,
+             ctext           TYPE string,
+             transport_layer TYPE string,
+             target          TYPE string,
+             records         TYPE abap_bool,
+             lock_request    TYPE string,
+             lock_task       TYPE string,
+             lock_user       TYPE string,
+             requests        TYPE ty_tr_req_tt,
+           END OF ty_tr_info.
+
+    CONSTANTS: c_tr_max_requests TYPE i VALUE 500,
+               c_tr_max_with_obj TYPE i VALUE 100,
+               c_tr_max_objects  TYPE i VALUE 500.
+
     CONSTANTS: c_read_default_rows TYPE i VALUE 200,
                c_read_max_rows     TYPE i VALUE 1000,
                c_max_fields        TYPE i VALUE 1000.
@@ -205,6 +264,26 @@ CLASS zcl_mcp_cust_engine DEFINITION
     METHODS handle_ddic_describe
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! Transport requests from the CTS tables (E070/E07T/E070C/E071): open
+    "! requests by default, optionally one user's (and those they have a task in),
+    "! one kind, one client, with tasks and objects. TRANSPORT = look up one
+    "! request (a task gives its request). Capped at 500 requests, objects for the
+    "! newest 100 (500 each). Needs S_TRANSPRT display.
+    METHODS handle_transports
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! For one repository object: its package and whether changes are recorded,
+    "! the open request holding it, and the user's open workbench requests that
+    "! go to the package's transport target. Read-only; needs S_TRANSPRT display.
+    METHODS handle_transport_info
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! S_TRANSPRT display (activity 03) for any request type.
+    METHODS may_display_transports
+      RETURNING VALUE(rv_ok) TYPE abap_bool.
 
     "! Resolve the maintenance object for a table or view name (the rules of the
     "! MCP server's resolveMaint, so both modes agree).
@@ -507,6 +586,8 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
             WHEN 'ping'.     ls_resp = handle_ping( ).
             WHEN 'read'.     ls_resp = handle_read( ls_req ).
             WHEN 'ddic_describe'. ls_resp = handle_ddic_describe( ls_req ).
+            WHEN 'transports'.     ls_resp = handle_transports( ls_req ).
+            WHEN 'transport_info'. ls_resp = handle_transport_info( ls_req ).
             WHEN 'write'.    ls_resp = handle_write( ls_req ).
             WHEN 'create'.   ls_resp = handle_create( ls_req ).
             WHEN 'listing'.  ls_resp = handle_listing( ls_req ).
@@ -1425,6 +1506,327 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
     rs_desc-cccategory = ls_caps-category.
     rs_desc-cccoractiv = ls_caps-coractiv.
     rs_desc-ccnocliind = ls_caps-nocliind.
+  ENDMETHOD.
+
+
+  METHOD may_display_transports.
+    AUTHORITY-CHECK OBJECT 'S_TRANSPRT'
+      ID 'TTYPE' DUMMY
+      ID 'ACTVT' FIELD '03'.
+    rv_ok = xsdbool( sy-subrc = 0 ).
+  ENDMETHOD.
+
+
+  METHOD handle_transports.
+    TYPES: BEGIN OF ty_hdr,
+             trkorr     TYPE e070-trkorr,
+             trfunction TYPE e070-trfunction,
+             trstatus   TYPE e070-trstatus,
+             as4user    TYPE e070-as4user,
+             as4date    TYPE e070-as4date,
+             tarsystem  TYPE e070-tarsystem,
+           END OF ty_hdr.
+    DATA: lt_hdr     TYPE STANDARD TABLE OF ty_hdr WITH DEFAULT KEY,
+          lt_more    TYPE STANDARD TABLE OF ty_hdr WITH DEFAULT KEY,
+          lr_status  TYPE RANGE OF e070-trstatus,
+          lr_fn      TYPE RANGE OF e070-trfunction,
+          lr_owner   TYPE RANGE OF e070-as4user,
+          lv_tr      TYPE e070-trkorr,
+          lv_owner   TYPE e070-as4user,
+          lv_fetch   TYPE i,
+          lv_more    TYPE abap_bool,
+          lv_off     TYPE i,
+          lv_char    TYPE c LENGTH 1,
+          lt_reqs    TYPE ty_tr_req_tt.
+
+    rs_resp-operation = 'transports'.
+    IF may_display_transports( ) = abap_false.
+      rs_resp-status = 'error'.
+      APPEND |Listing transport requests stopped: you are not authorized to display them (S_TRANSPRT, activity 03). | &&
+             |Ask for the authorization.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    " Statuses (default modifiable: D, L) and kinds (default K, W, T, C), one character each.
+    DATA(lv_st) = COND string( WHEN is_req-statuses IS NOT INITIAL THEN to_upper( is_req-statuses ) ELSE `DL` ).
+    DO strlen( lv_st ) TIMES.
+      lv_off = sy-index - 1.
+      lv_char = lv_st+lv_off(1).
+      APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_char ) TO lr_status.
+    ENDDO.
+    DATA(lv_fns) = COND string( WHEN is_req-trfunction IS NOT INITIAL THEN to_upper( is_req-trfunction ) ELSE `KWTC` ).
+    DO strlen( lv_fns ) TIMES.
+      lv_off = sy-index - 1.
+      lv_char = lv_fns+lv_off(1).
+      APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_char ) TO lr_fn.
+    ENDDO.
+    IF is_req-owner IS NOT INITIAL.
+      lv_owner = to_upper( is_req-owner ).
+      APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_owner ) TO lr_owner.
+    ENDIF.
+    lv_fetch = c_tr_max_requests + 1.
+
+    IF is_req-transport IS NOT INITIAL.
+      " One request; a task gives its request.
+      lv_tr = to_upper( is_req-transport ).
+      SELECT SINGLE strkorr FROM e070 WHERE trkorr = @lv_tr INTO @DATA(lv_parent).
+      IF sy-subrc = 0.
+        IF lv_parent IS NOT INITIAL.
+          lv_tr = lv_parent.
+        ENDIF.
+        SELECT trkorr, trfunction, trstatus, as4user, as4date, tarsystem FROM e070
+          WHERE trkorr = @lv_tr
+          INTO CORRESPONDING FIELDS OF TABLE @lt_hdr.
+      ENDIF.
+    ELSE.
+      SELECT trkorr, trfunction, trstatus, as4user, as4date, tarsystem FROM e070
+        WHERE strkorr = @space AND trstatus IN @lr_status AND trfunction IN @lr_fn AND as4user IN @lr_owner
+        ORDER BY trkorr DESCENDING
+        INTO CORRESPONDING FIELDS OF TABLE @lt_hdr
+        UP TO @lv_fetch ROWS.
+      " A lead's request the user works in: the user owns a task under it.
+      IF lv_owner IS NOT INITIAL AND is_req-owner_tasks = abap_true.
+        SELECT DISTINCT strkorr FROM e070
+          WHERE as4user = @lv_owner AND strkorr <> @space AND trstatus IN @lr_status
+          INTO TABLE @DATA(lt_parents).
+        IF lt_parents IS NOT INITIAL.
+          SELECT trkorr, trfunction, trstatus, as4user, as4date, tarsystem FROM e070
+            FOR ALL ENTRIES IN @lt_parents
+            WHERE trkorr = @lt_parents-strkorr AND trstatus IN @lr_status AND trfunction IN @lr_fn
+            INTO CORRESPONDING FIELDS OF TABLE @lt_more.
+          LOOP AT lt_more INTO DATA(ls_more).
+            IF NOT line_exists( lt_hdr[ trkorr = ls_more-trkorr ] ).
+              APPEND ls_more TO lt_hdr.
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+      SORT lt_hdr BY trkorr DESCENDING.
+    ENDIF.
+
+    IF lt_hdr IS INITIAL.
+      rs_resp-status    = 'ok'.
+      rs_resp-data_json = `[]`.
+      RETURN.
+    ENDIF.
+
+    " Client each request was created in (E070C); filter on it when asked.
+    SELECT trkorr, client FROM e070c
+      FOR ALL ENTRIES IN @lt_hdr
+      WHERE trkorr = @lt_hdr-trkorr
+      INTO TABLE @DATA(lt_cli).
+    IF is_req-client IS NOT INITIAL.
+      LOOP AT lt_cli INTO DATA(ls_cli) WHERE client IS NOT INITIAL AND client <> is_req-client.
+        DELETE lt_hdr WHERE trkorr = ls_cli-trkorr.
+      ENDLOOP.
+    ENDIF.
+
+    IF lines( lt_hdr ) > c_tr_max_requests.
+      lv_more = abap_true.
+      lv_off  = c_tr_max_requests + 1.
+      DELETE lt_hdr FROM lv_off.
+      APPEND |First { c_tr_max_requests } requests, newest first; there are more. Narrow by owner or status.| TO rs_resp-messages.
+    ENDIF.
+    IF lt_hdr IS INITIAL.
+      rs_resp-status    = 'ok'.
+      rs_resp-data_json = `[]`.
+      RETURN.
+    ENDIF.
+
+    SELECT trkorr, langu, as4text FROM e07t
+      FOR ALL ENTRIES IN @lt_hdr
+      WHERE trkorr = @lt_hdr-trkorr
+      INTO TABLE @DATA(lt_txt).
+    SELECT trkorr, strkorr, as4user, trfunction, trstatus FROM e070
+      FOR ALL ENTRIES IN @lt_hdr
+      WHERE strkorr = @lt_hdr-trkorr
+      INTO TABLE @DATA(lt_tasks).
+    SORT lt_tasks BY strkorr trkorr.
+
+    LOOP AT lt_hdr INTO DATA(ls_hdr).
+      DATA(lv_idx) = sy-tabix.
+      APPEND INITIAL LINE TO lt_reqs ASSIGNING FIELD-SYMBOL(<r>).
+      <r>-trkorr     = ls_hdr-trkorr.
+      <r>-trfunction = ls_hdr-trfunction.
+      <r>-trstatus   = ls_hdr-trstatus.
+      <r>-as4user    = ls_hdr-as4user.
+      <r>-as4date    = ls_hdr-as4date.
+      <r>-tarsystem  = ls_hdr-tarsystem.
+      READ TABLE lt_cli INTO ls_cli WITH KEY trkorr = ls_hdr-trkorr.
+      IF sy-subrc = 0.
+        <r>-client = ls_cli-client.
+      ENDIF.
+      " Text: English when there, else any language (as the server's listing does).
+      LOOP AT lt_txt INTO DATA(ls_txt) WHERE trkorr = ls_hdr-trkorr.
+        IF <r>-text IS INITIAL OR ls_txt-langu = 'E'.
+          <r>-text = ls_txt-as4text.
+        ENDIF.
+      ENDLOOP.
+      LOOP AT lt_tasks INTO DATA(ls_task) WHERE strkorr = ls_hdr-trkorr.
+        APPEND VALUE #( trkorr = ls_task-trkorr as4user = ls_task-as4user
+                        trfunction = ls_task-trfunction trstatus = ls_task-trstatus ) TO <r>-tasks.
+      ENDLOOP.
+
+      IF is_req-with_objects = abap_true AND lv_idx <= c_tr_max_with_obj.
+        DATA lr_keys TYPE RANGE OF e071-trkorr.
+        CLEAR lr_keys.
+        APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_hdr-trkorr ) TO lr_keys.
+        LOOP AT <r>-tasks INTO DATA(ls_t).
+          APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_t-trkorr ) TO lr_keys.
+        ENDLOOP.
+        DATA(lv_ofetch) = c_tr_max_objects + 1.
+        SELECT DISTINCT pgmid, object, obj_name FROM e071
+          WHERE trkorr IN @lr_keys
+          ORDER BY pgmid, object, obj_name
+          INTO TABLE @DATA(lt_obj)
+          UP TO @lv_ofetch ROWS.
+        IF lines( lt_obj ) > c_tr_max_objects.
+          <r>-objects_more = abap_true.
+          lv_off = c_tr_max_objects + 1.
+          DELETE lt_obj FROM lv_off.
+        ENDIF.
+        LOOP AT lt_obj INTO DATA(ls_obj).
+          APPEND VALUE #( pgmid = ls_obj-pgmid object = ls_obj-object obj_name = ls_obj-obj_name ) TO <r>-objects.
+        ENDLOOP.
+      ENDIF.
+    ENDLOOP.
+
+    rs_resp-status       = 'ok'.
+    rs_resp-rows_planned = lines( lt_reqs ).
+    /ui2/cl_json=>serialize(
+      EXPORTING data        = lt_reqs
+                pretty_name = /ui2/cl_json=>pretty_mode-none
+      RECEIVING r_json      = rs_resp-data_json ).
+  ENDMETHOD.
+
+
+  METHOD handle_transport_info.
+    DATA: ls_info    TYPE ty_tr_info,
+          lv_type    TYPE tadir-object,
+          lv_name    TYPE tadir-obj_name,
+          lv_pat     TYPE e071-obj_name,
+          lv_target  TYPE tcerele-consys,
+          lv_layer   TYPE tcetral-translayer,
+          lv_dev     TYPE tdevc-devclass.
+
+    rs_resp-operation = 'transport_info'.
+    IF may_display_transports( ) = abap_false.
+      rs_resp-status = 'error'.
+      APPEND |Reading the transport information stopped: you are not authorized to display transport requests | &&
+             |(S_TRANSPRT, activity 03). Ask for the authorization.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    ls_info-pgmid    = COND #( WHEN is_req-pgmid IS NOT INITIAL THEN to_upper( is_req-pgmid ) ELSE `R3TR` ).
+    ls_info-obj_type = to_upper( is_req-obj_type ).
+    ls_info-obj_name = to_upper( is_req-obj_name ).
+    IF ls_info-pgmid <> 'R3TR' OR strlen( ls_info-obj_type ) <> 4 OR ls_info-obj_name IS INITIAL
+    OR strlen( ls_info-obj_name ) > 120.
+      rs_resp-status = 'error'.
+      APPEND |Reading the transport information stopped: give an object as R3TR, a four-letter type and a name | &&
+             |(for example R3TR PROG ZREPORT); got '{ ls_info-pgmid } { ls_info-obj_type } { ls_info-obj_name }'.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    lv_type = ls_info-obj_type.
+    lv_name = ls_info-obj_name.
+
+    " Package, and whether its changes are recorded (KORRFLAG; a $ package never records).
+    SELECT SINGLE devclass FROM tadir
+      WHERE pgmid = 'R3TR' AND object = @lv_type AND obj_name = @lv_name
+      INTO @lv_dev.
+    ls_info-exists = xsdbool( sy-subrc = 0 ).
+    ls_info-devclass = lv_dev.
+    IF lv_dev IS NOT INITIAL.
+      SELECT SINGLE korrflag, pdevclass FROM tdevc WHERE devclass = @lv_dev INTO @DATA(ls_dev).
+      ls_info-records = xsdbool( ls_dev-korrflag = abap_true AND lv_dev(1) <> '$' ).
+      SELECT SINGLE ctext FROM tdevct WHERE devclass = @lv_dev AND spras = @sy-langu INTO @ls_info-ctext.
+      IF sy-subrc <> 0.
+        SELECT SINGLE ctext FROM tdevct WHERE devclass = @lv_dev AND spras = 'E' INTO @ls_info-ctext.
+      ENDIF.
+      IF ls_info-records = abap_true AND fm_exists( 'TR_GET_TRANSPORT_TARGET' ) = abap_true.
+        CALL FUNCTION 'TR_GET_TRANSPORT_TARGET'
+          EXPORTING
+            iv_development_class = lv_dev
+          IMPORTING
+            ev_target            = lv_target
+            ev_layer             = lv_layer
+          EXCEPTIONS
+            OTHERS               = 1.
+        IF sy-subrc = 0.
+          ls_info-target          = lv_target.
+          ls_info-transport_layer = lv_layer.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    " The open request holding it: an open task or request whose object list has
+    " it (for a class also its LIMU parts, which carry the class name first).
+    SELECT e~trkorr, h~strkorr, h~as4user FROM e071 AS e
+      INNER JOIN e070 AS h ON h~trkorr = e~trkorr
+      WHERE e~pgmid = 'R3TR' AND e~object = @lv_type AND e~obj_name = @lv_name
+        AND h~trstatus IN ('D','L')
+      INTO TABLE @DATA(lt_lock).
+    IF lt_lock IS INITIAL AND ( lv_type = 'CLAS' OR lv_type = 'INTF' ).
+      lv_pat = |{ lv_name }%|.
+      SELECT e~trkorr, h~strkorr, h~as4user FROM e071 AS e
+        INNER JOIN e070 AS h ON h~trkorr = e~trkorr
+        WHERE e~pgmid = 'LIMU' AND e~obj_name LIKE @lv_pat
+          AND h~trstatus IN ('D','L')
+        INTO TABLE @lt_lock.
+    ENDIF.
+    READ TABLE lt_lock INTO DATA(ls_lock) INDEX 1.
+    IF sy-subrc = 0.
+      IF ls_lock-strkorr IS NOT INITIAL.
+        ls_info-lock_request = ls_lock-strkorr.
+        ls_info-lock_task    = ls_lock-trkorr.
+      ELSE.
+        ls_info-lock_request = ls_lock-trkorr.
+      ENDIF.
+      ls_info-lock_user = ls_lock-as4user.
+    ENDIF.
+
+    " The user's open workbench requests (own, or with an own task) to the package's target.
+    IF ls_info-records = abap_true.
+      SELECT trkorr, as4user, tarsystem FROM e070
+        WHERE strkorr = @space AND trfunction = 'K' AND trstatus = 'D' AND as4user = @sy-uname
+        INTO TABLE @DATA(lt_req).
+      SELECT DISTINCT strkorr FROM e070
+        WHERE as4user = @sy-uname AND strkorr <> @space AND trstatus = 'D'
+        INTO TABLE @DATA(lt_par).
+      IF lt_par IS NOT INITIAL.
+        SELECT trkorr, as4user, tarsystem FROM e070
+          FOR ALL ENTRIES IN @lt_par
+          WHERE trkorr = @lt_par-strkorr AND trfunction = 'K' AND trstatus = 'D'
+          APPENDING TABLE @lt_req.
+      ENDIF.
+      SORT lt_req BY trkorr DESCENDING.
+      DELETE ADJACENT DUPLICATES FROM lt_req COMPARING trkorr.
+      LOOP AT lt_req INTO DATA(ls_req).
+        IF lv_target IS NOT INITIAL AND ls_req-tarsystem <> lv_target
+        AND NOT ls_req-tarsystem CP |{ lv_target }.*|.
+          CONTINUE.
+        ENDIF.
+        APPEND INITIAL LINE TO ls_info-requests ASSIGNING FIELD-SYMBOL(<q>).
+        <q>-trkorr     = ls_req-trkorr.
+        <q>-as4user    = ls_req-as4user.
+        <q>-tarsystem  = ls_req-tarsystem.
+        <q>-trfunction = 'K'.
+        <q>-trstatus   = 'D'.
+        SELECT SINGLE as4text FROM e07t WHERE trkorr = @ls_req-trkorr AND langu = 'E' INTO @<q>-text.
+        IF sy-subrc <> 0.
+          SELECT SINGLE as4text FROM e07t WHERE trkorr = @ls_req-trkorr INTO @<q>-text.
+        ENDIF.
+        IF lines( ls_info-requests ) >= c_tr_max_with_obj.
+          EXIT.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    rs_resp-status = 'ok'.
+    /ui2/cl_json=>serialize(
+      EXPORTING data        = ls_info
+                pretty_name = /ui2/cl_json=>pretty_mode-none
+      RECEIVING r_json      = rs_resp-data_json ).
   ENDMETHOD.
 
 

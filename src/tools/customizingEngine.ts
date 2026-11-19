@@ -26,7 +26,7 @@ import {
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
 import { runSql, tableRows, col, type ResolvedMaint } from "./customizing"
-import { customizingSource } from "./customizingSource"
+import { customizingSource, ddicDescribe } from "./customizingSource"
 import { selectTransport, rememberTransport, workKey } from "./transportSelection"
 import { lookupRequest, listOpenRequests as listOpenRequestsSql } from "./transportSql"
 import { resolveConnectionId } from "../connections"
@@ -39,7 +39,7 @@ import { buildOrgScope, formatOrgScope } from "./orgScope"
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
 export interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe"
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe" | "transports" | "transport_info"
   table?: string
   key_field?: string
   source_key?: string
@@ -66,6 +66,15 @@ export interface EngineRequest {
   objects_json?: string       // transport_move OBJECTS: JSON array of {TRKORR,PGMID,OBJECT,OBJ_NAME}
   rows_json?: string          // create: JSON array of rows, each a JSON array of {FIELD,VALUE} (full key + data)
   items_json?: string         // listing: JSON array of {PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO}
+  owner?: string              // transports: only this user's requests
+  owner_tasks?: string        // transports: "X" = also requests in which owner has a task
+  trfunction?: string         // transports: request kinds, e.g. "W" or "KWTC"
+  statuses?: string           // transports: request statuses, e.g. "DL"
+  client?: string             // transports: only requests created in this client
+  with_objects?: string       // transports: "X" = include objects
+  pgmid?: string              // transport_info: R3TR
+  obj_type?: string           // transport_info: TADIR object type
+  obj_name?: string           // transport_info: object name
 }
 
 // ─── transport selection ─────────────────────────────────────────────────────
@@ -91,16 +100,14 @@ async function resolveCustomizingTransport(
   sessionId: string | undefined,
 ): Promise<CustomizingTransport> {
   if (!commit || args.recordTransport === false) return { transport: args.transport }
-  const client = await ensureConnected(args.connectionId)
   const cfg = getConnectionConfig(args.connectionId)
   try {
-    const dd02 = tableRows(await runSql(client, `SELECT CONTFLAG, CLIDEP FROM DD02L WHERE TABNAME = '${args.table.toUpperCase().replace(/'/g, "''")}' AND AS4LOCAL = 'A'`, 1))[0]
+    const { dd02, t000 } = await recordingFacts(args.connectionId, args.table, cfg.client ?? "")
     if (dd02 && col(dd02, "CONTFLAG") === "A") return { note: `No transport — ${args.table} is application data (delivery class A).` }
     // The client's recording setting (SCC4) governs client-specific customizing
     // only. A cross-client table is governed by T000-CCNOCLIIND and the engine
     // records it whatever CCCORACTIV says, so it goes through selection.
     const clientSpecific = !dd02 || col(dd02, "CLIDEP") === "X"
-    const t000 = tableRows(await runSql(client, `SELECT CCCORACTIV, CCNOCLIIND FROM T000 WHERE MANDT = '${(cfg.client ?? "").replace(/'/g, "''")}'`, 1))[0]
     if (t000 && clientSpecific) {
       const rec = col(t000, "CCCORACTIV")
       if (rec === "2") return { prompt:
@@ -112,6 +119,9 @@ async function resolveCustomizingTransport(
       `❌ ${what} stopped: ${args.table} is cross-client, and client ${cfg.client} allows no changes to cross-client customizing ` +
       `(SCC4). Nothing was written.\nChange the client setting in SCC4, or make the change in a client that allows it.` }
   } catch (err) {
+    // Governed mode: the engine said why (authorization, an old engine); a write
+    // must not go on without knowing whether and how it is recorded.
+    if (isGoverned()) throw err
     log("WARN", "delivery class / client recording check failed — continuing with transport selection", err)
   }
   if (args.createTransport && !args.transport) return { engineCreates: true }
@@ -133,6 +143,26 @@ async function resolveCustomizingTransport(
   }
   const ignored = args.createTransport ? " createTransport was not used: a transport was named." : ""
   return { transport: sel.trkorr, note: sel.note + ignored, confirm: sel.confirm }
+}
+
+/**
+ * The table's delivery class and client dependency (DD02L) and the client's recording
+ * settings (T000): SQL through ADT in direct mode, the engine's ddic_describe in governed mode.
+ */
+async function recordingFacts(connectionId: string | undefined, table: string, client: string):
+    Promise<{ dd02?: Record<string, string>; t000?: Record<string, string> }> {
+  if (isGoverned()) {
+    const d = await ddicDescribe(connectionId, table)
+    const v = (x: unknown) => (x === undefined || x === null ? "" : String(x).trim())
+    return {
+      dd02: v(d.CONTFLAG) || v(d.TABCLASS) ? { CONTFLAG: v(d.CONTFLAG), CLIDEP: v(d.CLIDEP) } : undefined,
+      t000: { CCCORACTIV: v(d.CCCORACTIV), CCNOCLIIND: v(d.CCNOCLIIND) },
+    }
+  }
+  const adt = await ensureConnected(connectionId)
+  const dd02 = tableRows(await runSql(adt, `SELECT CONTFLAG, CLIDEP FROM DD02L WHERE TABNAME = '${table.toUpperCase().replace(/'/g, "''")}' AND AS4LOCAL = 'A'`, 1))[0]
+  const t000 = tableRows(await runSql(adt, `SELECT CCCORACTIV, CCNOCLIIND FROM T000 WHERE MANDT = '${client.replace(/'/g, "''")}'`, 1))[0]
+  return { dd02, t000 }
 }
 
 // Response keys come back uppercase from /ui2/cl_json pretty_mode-none serialize.
@@ -924,7 +954,9 @@ export async function handleCustomizingApply(args: {
       // A degraded ADT session goes to the session recovery (it renews the session
       // and says so); carrying on without the maintenance object would not be the
       // same write.
-      if (isSessionDegradedError(err)) throw err
+      // Governed mode: the engine said why (authorization, an old engine); without the
+      // maintenance object the write would not be recorded the way SM30 records it.
+      if (isSessionDegradedError(err) || isGoverned()) throw err
       log("WARN", "maintenance-object resolution failed", err)
     }
   }
@@ -1120,7 +1152,9 @@ export async function handleCustomizingCreate(args: {
       // A degraded ADT session goes to the session recovery (it renews the session
       // and says so); carrying on without the maintenance object would not be the
       // same write.
-      if (isSessionDegradedError(err)) throw err
+      // Governed mode: the engine said why (authorization, an old engine); without the
+      // maintenance object the write would not be recorded the way SM30 records it.
+      if (isSessionDegradedError(err) || isGoverned()) throw err
       log("WARN", "maintenance-object resolution failed", err)
     }
   }

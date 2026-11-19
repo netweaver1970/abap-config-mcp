@@ -86,8 +86,8 @@ code side (for example: "to activate, use SAP's ADT MCP server").
 | --- | --- | --- |
 | `ddic_describe` | for a table or maintenance view: the resolved maintenance object (view, base tables, text table, function group, IMG activity, view cluster, transport object, by the same rules as the server's resolver), the root table's fields, keys, data elements, domains, check tables and check fields, delivery class, client dependency, and the client's recording settings (T000, which apply and create need) | DDIC metadata only; display authorization on the root table (S_TABU_DIS on its group, else S_TABU_NAM) |
 | `read` (extended) | rows of a customizing table, optionally where one field of it equals one value (the server resolves a view to its root table first) | database tables of delivery class C, G or E only; maxRows capped (default 200, max 1000) and the answer says when it was cut; display authorization (S_TABU_DIS, else S_TABU_NAM) |
-| `transports` | open requests and tasks: number, kind, owner, client, text, target, optionally their objects | modifiable only by default; capped at 500 requests and 100 with objects; S_TRANSPRT display |
-| `transport_info` | for one object: package, whether it records, the request holding its lock, the requests its transport layer allows | read-only; S_TRANSPRT display |
+| `transports` | requests with their tasks: number, kind, status, owner, date, client, text, target, optionally their objects; or one request looked up by number (a task gives its request); filters: kinds, statuses, owner (optionally with the requests the owner has a task in), client | modifiable only by default; capped at 500 requests, objects for the newest 100 and at most 500 per request; S_TRANSPRT display |
+| `transport_info` | for one object (R3TR type and name; the server maps an ADT URL): package, whether it records (TDEVC-KORRFLAG), transport layer and target (TR_GET_TRANSPORT_TARGET, guarded by FUNCTION_EXISTS), the open request and task holding it, and the user's open workbench requests to that target | read-only; S_TRANSPRT display |
 | `retest_scope` | for an org key and source/target values: row counts per keyed table, in the three lists org_copy shows today | counts only, never rows; stops after a time budget and reports what it didn't count |
 | `dependencies` | for objects on a request: what they use and what uses them on other open requests, from the where-used index | read-only; capped |
 
@@ -137,6 +137,16 @@ release order, plan building); only where it gets its facts from changes.
   unknown name instead of describing it, and dates come back as YYYY-MM-DD.
   The text table is now found the DDIC's way in both modes (DD08L FRKART 'TEXT' to the root table),
   not by the first member with a LANG field.
+- Step 2 (engine 0.9.38): `transports` and `transport_info` added. `transportSql.ts` answers from the
+  engine in governed mode (request lookup, open requests for transport selection), so
+  `customizing_apply` and `customizing_create` run in governed mode with the same selection rules;
+  their delivery-class and SCC4 checks come from `ddic_describe`, and in governed mode a failed
+  resolve or recording check stops the write instead of carrying on. `list_all_transports` and
+  `get_transport_for_object` registered. Compared live on S4: apply and create dry runs and the two
+  refused commits (unknown request, workbench request) byte-identical; transport_info gives the same
+  package, lock and allowed requests as ADT. Direct mode's object listing reads 8 requests at a time
+  with one 2000-row cap, so a large request crowds out its neighbours (A4HK900030: 8 objects shown,
+  over 500 there); the engine reads each request on its own.
 
 ## Tests
 

@@ -42,6 +42,7 @@ const GOVERNED = [
   "connected_systems", "customizing_engine_ping", "customizing_status", "hana_memory_report",
   "abap_memory_report", "retail_listing", "customizing_selftest",
   "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
+  "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
 ].sort()
 
 /** A plausible engine answer per operation, so each governed tool runs to its end. */
@@ -52,6 +53,8 @@ function engineByOperation(req: string): string {
     CONTFLAG: "C", TABCLASS: "TRANSP", MAINFLAG: "X", FIELDS: [{ FIELDNAME: "WERKS", KEYFLAG: "X", DATATYPE: "CHAR", LENG: "000004" }] }) })
   if (op === "read") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [],
     DATA_JSON: JSON.stringify({ COLUMNS: ["WERKS", "NAME1"], ROWS: [{ WERKS: "1000", NAME1: "Plant" }], MORE: false }) })
+  if (op === "transport_info") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [],
+    DATA_JSON: JSON.stringify({ PGMID: "R3TR", OBJ_TYPE: "PROG", OBJ_NAME: "ZREPORT", EXISTS: "X", DEVCLASS: "$TMP" }) })
   return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, DATA_JSON: "[]", MESSAGES: [] })
 }
 
@@ -167,6 +170,10 @@ describe("ADT guard in governed mode", () => {
       customizing_read: { objectName: "T001W", keyField: "WERKS", keyValue: "1000" },
       customizing_diff: diff,
       customizing_plan_change: diff,
+      list_all_transports: {},
+      get_transport_for_object: { url: "/sap/bc/adt/programs/programs/zreport" },
+      customizing_apply: { table: "T001W", keyField: "WERKS", sourceKey: "1000", targetKey: "2000" },
+      customizing_create: { table: "T001W", rows: [{ WERKS: "2000", NAME1: "New" }] },
     }
     for (const name of GOVERNED) {
       const r = await tools[name].handler(args[name] ?? {}, { sessionId: "s1" })
