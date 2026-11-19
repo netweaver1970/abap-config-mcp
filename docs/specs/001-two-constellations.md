@@ -84,8 +84,8 @@ code side (for example: "to activate, use SAP's ADT MCP server").
 
 | Action | Returns | Limits and checks |
 | --- | --- | --- |
-| `ddic_describe` | for a table or maintenance view: fields, keys, data elements, domains, check tables, delivery class, client dependency, the view's base tables and its transport object | DDIC metadata only; S_TABU_DIS on the table's authorization group |
-| `read` (extended) | rows of a customizing table or view, optionally where one key field equals one value | delivery class C, G or E only; maxRows capped (default 200, max 1000); S_TABU_DIS |
+| `ddic_describe` | for a table or maintenance view: the resolved maintenance object (view, base tables, text table, function group, IMG activity, view cluster, transport object, by the same rules as the server's resolver), the root table's fields, keys, data elements, domains, check tables and check fields, delivery class, client dependency, and the client's recording settings (T000, which apply and create need) | DDIC metadata only; display authorization on the root table (S_TABU_DIS on its group, else S_TABU_NAM) |
+| `read` (extended) | rows of a customizing table, optionally where one field of it equals one value (the server resolves a view to its root table first) | database tables of delivery class C, G or E only; maxRows capped (default 200, max 1000) and the answer says when it was cut; display authorization (S_TABU_DIS, else S_TABU_NAM) |
 | `transports` | open requests and tasks: number, kind, owner, client, text, target, optionally their objects | modifiable only by default; capped at 500 requests and 100 with objects; S_TRANSPRT display |
 | `transport_info` | for one object: package, whether it records, the request holding its lock, the requests its transport layer allows | read-only; S_TRANSPRT display |
 | `retest_scope` | for an org key and source/target values: row counts per keyed table, in the three lists org_copy shows today | counts only, never rows; stops after a time budget and reports what it didn't count |
@@ -124,6 +124,19 @@ release order, plan building); only where it gets its facts from changes.
    end to end (SAP's July 2026 roadmap still listed full propagation as coming), payload and
    timeout limits, metering of MCP calls, and whether SAP sees a customer-namespace
    customizing writer behind its gateway as within questions 23, 27 and 35.
+
+### Phase 2 progress
+
+- Step 1 (engine 0.9.37): `read` hardened, `ddic_describe` added; `customizing_describe`, `customizing_read`,
+  `customizing_diff` and `customizing_plan_change` registered in governed mode through
+  `src/tools/customizingSource.ts` (ADT source in direct mode, engine source in governed mode).
+  Compared live on S4 in both modes: same maintenance object for V_T001W, T001W, TVKO, T001, T005, T006;
+  same rows for read; byte-identical diff and change plan on TVKOV. Differences, all on purpose:
+  governed describe drops the `.INCLU` pseudo-fields, gives field texts and foreign keys (direct
+  mode's DD08L query asks for a column DD08L does not have, so it never lists any), refuses an
+  unknown name instead of describing it, and dates come back as YYYY-MM-DD.
+  The text table is now found the DDIC's way in both modes (DD08L FRKART 'TEXT' to the root table),
+  not by the first member with a LANG field.
 
 ## Tests
 

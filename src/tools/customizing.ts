@@ -17,6 +17,7 @@ import { z } from "zod"
 import { ensureConnected, forceReconnect, isRequestError, isSessionDegradedError, log, connectionIdOf } from "../connections"
 import { formatQueryResult, freestyleQuery } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
+import { customizingSource, type RowsResult } from "./customizingSource"
 import type { ADTClient, QueryResult } from "abap-adt-api"
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -193,14 +194,18 @@ export async function resolveMaint(client: ADTClient, name: string): Promise<Res
   if (tables.length === 0) tables = [rootTable]
   if (!rootTable) rootTable = tables[0]
 
-  // Identify the text table: a member (≠ root) carrying a LANG-typed key (SPRAS)
+  // Identify the text table the way the DDIC defines one: a member (≠ root) whose
+  // foreign key to the root table has the cardinality TEXT (DD08L FRKART). A LANG
+  // field alone is no proof: V_T001W's T002 and T005 carry one and are not its text
+  // table. First in table-set order, so both modes agree (the engine does the same).
   let textTable: string | undefined
   const nonRoot = tables.filter(t => t !== rootTable)
   if (nonRoot.length) {
-    const inList = nonRoot.map(t => `'${t}'`).join(",")
-    const langFields = await sql1(client,
-      `SELECT TABNAME FROM DD03L WHERE TABNAME IN (${inList}) AND DATATYPE = 'LANG' AND AS4LOCAL = 'A'`)
-    textTable = langFields.map(r => col(r, "TABNAME")).find(Boolean)
+    const inList = nonRoot.slice(0, 12).map(t => `'${t}'`).join(",")   // stay under 255 chars
+    const textFks = await sql1(client,
+      `SELECT TABNAME FROM DD08L WHERE TABNAME IN (${inList}) AND CHECKTABLE = '${rootTable}' AND FRKART = 'TEXT' AND AS4LOCAL = 'A'`)
+    const found = new Set(textFks.map(r => col(r, "TABNAME")))
+    textTable = nonRoot.find(t => found.has(t))
   }
 
   // TVDIR (function group / maint type / package) of the maintenance object
@@ -569,50 +574,22 @@ export async function handleCustomizingDescribe(args: {
   language?: string
   connectionId?: string
 }) {
-  const client = await ensureConnected(args.connectionId)
+  const src  = customizingSource(args.connectionId)
   const lang = (args.language ?? "E").toUpperCase()
   const obj  = args.objectName.toUpperCase().replace(/'/g, "''")
 
   // 1. Resolve the full maintenance object (view ↔ base + text table set, IMG, transport)
-  const maint = await resolveMaint(client, obj)
+  const maint = await src.resolve(obj)
   const baseTable = maint.rootTable
 
-  // 3. Table metadata: flags live in DD02L, the description in DD02T (NOT DD02T for both).
-  const dd02lRows = tableRows(await runSql(client,
-    `SELECT TABNAME, TABCLASS, CONTFLAG, CLIDEP, MAINFLAG FROM DD02L WHERE TABNAME = '${baseTable}'`, 1
-  ).catch(() => ({ columns: [], values: [] })))
-  const dd02tRows = tableRows(await runSql(client,
-    `SELECT TABNAME, DDTEXT FROM DD02T WHERE TABNAME = '${baseTable}' AND DDLANGUAGE = '${lang}' AND AS4LOCAL = 'A'`, 1
-  ).catch(() => ({ columns: [], values: [] })))
-  const dd02 = (dd02lRows[0] || dd02tRows[0])
-    ? { ...(dd02lRows[0] ?? {}), ...(dd02tRows[0] ?? {}) }
-    : undefined
-
-  // 4. Field list with key flag — structure from DD03L (DD03T holds only the label)
-  const dd03Sql =
-    `SELECT FIELDNAME, KEYFLAG, ROLLNAME, DATATYPE, LENG, DECIMALS, POSITION ` +
-    `FROM DD03L WHERE TABNAME = '${baseTable}' AND AS4LOCAL = 'A' ` +
-    `AND FIELDNAME <> '.INCLUDE' ORDER BY POSITION`
-  const fields = tableRows(await runSql(client, dd03Sql, 100).catch(() => ({ columns: [], values: [] })))
-
-  // 5. TDDAT — authorization group for the table
-  const tddatSql = `SELECT TABNAME, CCLASS FROM TDDAT WHERE TABNAME = '${baseTable}'`
-  const tddatRows = tableRows(await runSql(client, tddatSql, 1).catch(() => ({ columns: [], values: [] })))
-  const authGroup = (tddatRows[0] ? col(tddatRows[0], "CCLASS") : "") || maint.authGroup || ""
-
-  // 6. View cluster membership comes from the resolver (VCLSTRUC OBJECT = view)
+  // 2. Root table: flags (DD02L), description (DD02T), fields (DD03L), auth group (TDDAT),
+  //    foreign keys on key fields (org-unit candidates).
+  const meta = await src.tableMeta(baseTable, lang)
+  const dd02 = meta.dd02
+  const fields = meta.fields
+  const authGroup = meta.authGroup || maint.authGroup || ""
   const clusterName = maint.cluster
-
-  // 7. Foreign key references for key fields (DD08L) — tells us org-unit fields
-  const keyFields = fields.filter(f => col(f, "KEYFLAG") === "X").map(f => col(f, "FIELDNAME"))
-  let fkRows: Record<string, string>[] = []
-  if (keyFields.length > 0) {
-    const fkIn = keyFields.map(f => `'${f}'`).join(",")
-    const fkSql =
-      `SELECT TABNAME, FIELDNAME, CHECKTABLE, CHECKFIELD, FRKEYNAME ` +
-      `FROM DD08L WHERE TABNAME = '${baseTable}' AND FIELDNAME IN (${fkIn}) AND AS4LOCAL = 'A'`
-    fkRows = tableRows(await runSql(client, fkSql, 20).catch(() => ({ columns: [], values: [] })))
-  }
+  const fkRows = meta.foreignKeys
 
   // ── Format output ──────────────────────────────────────────────────────────
 
@@ -696,42 +673,34 @@ export async function handleCustomizingRead(args: {
   maxRows?: number
   connectionId?: string
 }) {
-  const client = await ensureConnected(args.connectionId)
+  const src    = customizingSource(args.connectionId)
   const table  = args.objectName.toUpperCase().replace(/'/g, "''")
   const max    = args.maxRows ?? 100
 
   // Resolve underlying base table if a view was passed
-  const baseTable = (await resolveMaint(client, table)).rootTable
+  const baseTable = (await src.resolve(table)).rootTable
 
   let whereClause: string | undefined
-  if (args.keyField && args.keyValue !== undefined) {
-    const kf = args.keyField.toUpperCase().replace(/'/g, "''")
-    const kv = args.keyValue.replace(/'/g, "''")
-    whereClause = `${kf} = '${kv}'`
-  }
+  const filter = args.keyField && args.keyValue !== undefined ? { field: args.keyField, value: args.keyValue } : undefined
+  if (filter) whereClause = `${filter.field.toUpperCase().replace(/'/g, "''")} = '${filter.value.replace(/'/g, "''")}'`
 
-  let result: Awaited<ReturnType<typeof client.tableContents>>
-  try {
-    result = await client.tableContents(baseTable, max, false, whereClause)
-  } catch (err) {
-    // Fall back to runQuery if tableContents WITH whereClause fails (SICF not active)
-    if (whereClause) {
-      const sql = `SELECT * FROM ${baseTable} WHERE ${whereClause}`
-      result = await freestyleQuery(client, sql, max) as any
-    } else {
-      throw err
-    }
-  }
+  const { result, notes } = await src.readTable(baseTable, filter, max)
 
   const text = formatQueryResult(result)
   const header = whereClause
     ? `Customizing: ${baseTable}  WHERE ${whereClause}\n\n`
     : `Customizing: ${baseTable}  (first ${max} rows)\n\n`
 
-  return { content: [{ type: "text" as const, text: header + text }] }
+  return { content: [{ type: "text" as const, text: header + text + (notes?.length ? `\n\n${notes.join("\n")}` : "") }] }
 }
 
 // ─── customizing_diff ─────────────────────────────────────────────────────────
+
+/** A diff or plan over a cut-off side would be wrong without saying so. */
+function truncationNote(srcRead: RowsResult, tgtRead: RowsResult): string[] {
+  const cut = [srcRead.more && "source", tgtRead.more && "target"].filter(Boolean)
+  return cut.length ? [`⚠️  The ${cut.join(" and ")} side was cut at 500 rows, so the comparison is incomplete. Narrow the key or compare in parts.`] : []
+}
 
 export async function handleCustomizingDiff(args: {
   objectName: string
@@ -740,23 +709,22 @@ export async function handleCustomizingDiff(args: {
   targetKey: string          // e.g. "2000"  (may not exist yet)
   connectionId?: string
 }) {
-  const client = await ensureConnected(args.connectionId)
+  const source = customizingSource(args.connectionId)
   const table  = args.objectName.toUpperCase().replace(/'/g, "''")
   const kf     = args.keyField.toUpperCase().replace(/'/g, "''")
   const src    = args.sourceKey.replace(/'/g, "''")
   const tgt    = args.targetKey.replace(/'/g, "''")
 
   // Resolve base table
-  const baseTable = (await resolveMaint(client, table)).rootTable
+  const baseTable = (await source.resolve(table)).rootTable
 
   // Fetch both sides in parallel
-  const srcSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${src}'`
-  const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
-
-  const [srcResult, tgtResult] = await Promise.all([
-    freestyleQuery(client, srcSql, 500),
-    freestyleQuery(client, tgtSql, 500),
+  const [srcRead, tgtRead] = await Promise.all([
+    source.rowsWhere(baseTable, { field: args.keyField, value: args.sourceKey }, 500),
+    source.rowsWhere(baseTable, { field: args.keyField, value: args.targetKey }, 500),
   ])
+  const srcResult = srcRead.result
+  const tgtResult = tgtRead.result
 
   const srcRows = tableRows(srcResult)
   const tgtRows = tableRows(tgtResult)
@@ -779,6 +747,7 @@ export async function handleCustomizingDiff(args: {
   const lines: string[] = [
     `Customizing diff: ${baseTable}  (${kf}: ${src} → ${tgt})`,
     `Source rows: ${srcRows.length}   Target rows: ${tgtRows.length}`,
+    ...truncationNote(srcRead, tgtRead),
     "",
   ]
 
@@ -816,7 +785,7 @@ export async function handleCustomizingPlanChange(args: {
   onlyMissing?: boolean      // default true — only rows absent from target
   connectionId?: string
 }) {
-  const client = await ensureConnected(args.connectionId)
+  const source = customizingSource(args.connectionId)
   const table  = args.objectName.toUpperCase().replace(/'/g, "''")
   const kf     = args.keyField.toUpperCase().replace(/'/g, "''")
   const src    = args.sourceKey.replace(/'/g, "''")
@@ -824,24 +793,22 @@ export async function handleCustomizingPlanChange(args: {
   const onlyMissing = args.onlyMissing !== false  // default true
 
   // Resolve the full maintenance object (view ↔ base/text tables, transport object)
-  const maint = await resolveMaint(client, table)
+  const maint = await source.resolve(table)
   const baseTable = maint.rootTable
 
   // Delivery class — warn if not transportable customizing.  C/G = customizing,
   // E = control table (SAP + customer key areas) — also transported via the view.
-  const dd02Rows = tableRows(await runSql(client,
-    `SELECT CONTFLAG, MAINFLAG FROM DD02L WHERE TABNAME = '${baseTable}'`, 1
-  ).catch(() => ({ columns: [], values: [] })))
-  const contflag = dd02Rows[0] ? col(dd02Rows[0], "CONTFLAG") : "?"
+  const dd02 = await source.tableMeta(baseTable, "E").then(m => m.dd02).catch(() => undefined)
+  const contflag = dd02 ? col(dd02, "CONTFLAG") : "?"
   const isCust = ["C", "G", "E"].includes(contflag)
-  const maintAllowed = (dd02Rows[0] ? col(dd02Rows[0], "MAINFLAG") === "X" : true) || maint.isView
+  const maintAllowed = (dd02 ? col(dd02, "MAINFLAG") === "X" : true) || maint.isView
 
-  const srcSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${src}'`
-  const tgtSql = `SELECT * FROM ${baseTable} WHERE ${kf} = '${tgt}'`
-  const [srcResult, tgtResult] = await Promise.all([
-    freestyleQuery(client, srcSql, 500),
-    freestyleQuery(client, tgtSql, 500),
+  const [srcRead, tgtRead] = await Promise.all([
+    source.rowsWhere(baseTable, { field: args.keyField, value: args.sourceKey }, 500),
+    source.rowsWhere(baseTable, { field: args.keyField, value: args.targetKey }, 500),
   ])
+  const srcResult = srcRead.result
+  const tgtResult = tgtRead.result
 
   const srcRows = tableRows(srcResult)
   const tgtRows = tableRows(tgtResult)
@@ -870,6 +837,7 @@ export async function handleCustomizingPlanChange(args: {
     `   Only missing:   ${onlyMissing ? "yes" : "no (full copy)"}`,
     `   Delivery class: ${contflag}${isCust ? " ✅ transportable customizing" : " ⚠️  not a customizing table — write requires extra care"}`,
     `   Maintenance:    ${maintAllowed ? "allowed via SM30/SPRO" : "⚠️  maintenance flag off (current settings / read-only)"}`,
+    ...truncationNote(srcRead, tgtRead),
     "",
   ]
 

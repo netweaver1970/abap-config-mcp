@@ -128,12 +128,106 @@ CLASS zcl_mcp_cust_engine DEFINITION
              HAS_MC_GUI   TYPE abap_bool,         " tcode LTMC present (migration cockpit GUI)
            END OF ty_env.
 
+    " ddic_describe: one field of the root table, with its data element text
+    " and its check table / check field (DD03L + DD04T + DD05S).
+    TYPES: BEGIN OF ty_dd_field,
+             fieldname  TYPE string,
+             keyflag    TYPE string,
+             rollname   TYPE string,
+             domname    TYPE string,
+             datatype   TYPE string,
+             leng       TYPE string,
+             decimals   TYPE string,
+             position   TYPE string,
+             checktable TYPE string,
+             checkfield TYPE string,
+             ddtext     TYPE string,
+           END OF ty_dd_field,
+           ty_dd_field_tt TYPE STANDARD TABLE OF ty_dd_field WITH DEFAULT KEY.
+
+    " ddic_describe result: the resolved maintenance object (same rules as the
+    " MCP server's resolveMaint) plus the root table's DDIC metadata and the
+    " client's recording settings. Metadata only, never table rows.
+    TYPES: BEGIN OF ty_ddic_desc,
+             input             TYPE string,
+             is_view           TYPE abap_bool,
+             view              TYPE string,
+             variant           TYPE string,
+             root_table        TYPE string,
+             text_table        TYPE string,
+             tables            TYPE string_table,
+             func_group        TYPE string,
+             maint_type        TYPE string,
+             maint_tcode       TYPE string,
+             img_activity      TYPE string,
+             img_activity_text TYPE string,
+             auth_group        TYPE string,
+             object_type       TYPE string,
+             cluster           TYPE string,
+             devclass          TYPE string,
+             switch_id         TYPE string,
+             maint_object      TYPE string,
+             record_object     TYPE string,
+             transport_object  TYPE string,
+             transport_name    TYPE string,
+             tabclass          TYPE string,
+             contflag          TYPE string,
+             clidep            TYPE string,
+             mainflag          TYPE string,
+             ddtext            TYPE string,
+             fields            TYPE ty_dd_field_tt,
+             client            TYPE string,
+             cccategory        TYPE string,
+             cccoractiv        TYPE string,
+             ccnocliind        TYPE string,
+           END OF ty_ddic_desc.
+
+    CONSTANTS: c_read_default_rows TYPE i VALUE 200,
+               c_read_max_rows     TYPE i VALUE 1000,
+               c_max_fields        TYPE i VALUE 1000.
+
     METHODS handle_ping
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
+    "! Rows of one customizing table (delivery class C, G or E only), optionally
+    "! where one field equals one value. maxRows defaults to 200, capped at 1000;
+    "! display authorization (S_TABU_DIS, else S_TABU_NAM) is checked first.
+    "! DATA_JSON = {"COLUMNS":[...],"ROWS":[...],"MORE":bool}.
     METHODS handle_read
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! DDIC metadata of a table or maintenance view: the resolved maintenance
+    "! object (view, base tables, text table, maintenance function group, IMG
+    "! activity, view cluster, transport object), the root table's fields, keys,
+    "! data elements, domains and check tables, its delivery class and client
+    "! dependency, and the client's recording settings (T000). No table rows.
+    METHODS handle_ddic_describe
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! Resolve the maintenance object for a table or view name (the rules of the
+    "! MCP server's resolveMaint, so both modes agree).
+    METHODS resolve_maint
+      IMPORTING iv_name        TYPE string
+                iv_language    TYPE sy-langu
+      RETURNING VALUE(rs_desc) TYPE ty_ddic_desc.
+
+    "! Display authorization for a table: S_TABU_DIS on its authorization group
+    "! (auth_group), else S_TABU_NAM on its name (how SE16/SM30 decide).
+    METHODS may_display
+      IMPORTING iv_table     TYPE string
+      RETURNING VALUE(rv_ok) TYPE abap_bool.
+
+    "! The read row cap: 0 or less gives the default, more than the maximum gives the maximum.
+    CLASS-METHODS clamp_rows
+      IMPORTING iv_requested   TYPE i
+      RETURNING VALUE(rv_rows) TYPE i.
+
+    "! True for the delivery classes a governed read may cover (C, G, E).
+    CLASS-METHODS is_customizing_class
+      IMPORTING iv_contflag    TYPE clike
+      RETURNING VALUE(rv_ok)   TYPE abap_bool.
 
     METHODS handle_write
       IMPORTING is_req         TYPE ty_request
@@ -412,6 +506,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
           CASE to_lower( ls_req-operation ).
             WHEN 'ping'.     ls_resp = handle_ping( ).
             WHEN 'read'.     ls_resp = handle_read( ls_req ).
+            WHEN 'ddic_describe'. ls_resp = handle_ddic_describe( ls_req ).
             WHEN 'write'.    ls_resp = handle_write( ls_req ).
             WHEN 'create'.   ls_resp = handle_create( ls_req ).
             WHEN 'listing'.  ls_resp = handle_listing( ls_req ).
@@ -887,39 +982,98 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
   METHOD handle_read.
     DATA: lr_tab   TYPE REF TO data,
           lv_where TYPE string,
-          lv_max   TYPE i.
+          lv_max   TYPE i,
+          lv_fetch TYPE i,
+          lv_cut   TYPE i,
+          lv_more  TYPE abap_bool,
+          lv_rows  TYPE string,
+          lv_cols  TYPE string,
+          lv_tab   TYPE tabname,
+          lv_fld   TYPE fieldname,
+          lv_grp   TYPE tddat-cclass,
+          lv_flag  TYPE abap_bool,
+          lt_dfies TYPE ddfields.
     FIELD-SYMBOLS <tab> TYPE STANDARD TABLE.
 
     rs_resp-operation = 'read'.
-    rs_resp-table     = is_req-table.
+    rs_resp-table     = to_upper( is_req-table ).
 
     IF is_valid_name( is_req-table ) = abap_false
-    OR is_valid_name( is_req-key_field ) = abap_false.
+    OR ( is_req-key_field IS NOT INITIAL AND is_valid_name( is_req-key_field ) = abap_false ).
       rs_resp-status = 'error'.
-      APPEND 'Invalid table or key field name' TO rs_resp-messages.
+      APPEND |Reading stopped: '{ is_req-table }' / '{ is_req-key_field }' is not a valid DDIC name. | &&
+             |Give a table name such as T001W and, for a filter, one of its fields.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    lv_tab = rs_resp-table.
+
+    " A database table of delivery class C, G or E, nothing else: the engine has
+    " no generic SELECT, so it cannot become a pathway for application data.
+    SELECT SINGLE tabclass, contflag FROM dd02l
+      WHERE tabname = @lv_tab AND as4local = 'A'
+      INTO @DATA(ls_dd02).
+    IF sy-subrc <> 0.
+      rs_resp-status = 'error'.
+      APPEND |Reading { lv_tab } stopped: there is no active table of that name. | &&
+             |Check the name, or run customizing_describe to find the table behind a view.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    IF ls_dd02-tabclass <> 'TRANSP' AND ls_dd02-tabclass <> 'CLUSTER' AND ls_dd02-tabclass <> 'POOL'.
+      rs_resp-status = 'error'.
+      APPEND |Reading { lv_tab } stopped: it is a { ls_dd02-tabclass }, not a database table. | &&
+             |Read the table it is built on (customizing_describe names it).| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    IF is_customizing_class( ls_dd02-contflag ) = abap_false.
+      rs_resp-status = 'error'.
+      APPEND |Reading { lv_tab } stopped: it has delivery class '{ ls_dd02-contflag }', and this read covers | &&
+             |customizing only (delivery class C, G or E). Read application data through SAP's released APIs.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    IF may_display( rs_resp-table ) = abap_false.
+      lv_grp = auth_group( rs_resp-table ).
+      rs_resp-status = 'error'.
+      APPEND |Reading { lv_tab } stopped: you are not authorized to display it (S_TABU_DIS for group { lv_grp }, | &&
+             |or S_TABU_NAM for the table, activity 03). Ask for the authorization, or read a table you may display.| TO rs_resp-messages.
       RETURN.
     ENDIF.
 
-    lv_max = COND i( WHEN is_req-max_rows > 0 THEN is_req-max_rows ELSE 100 ).
+    IF is_req-key_field IS NOT INITIAL.
+      lv_fld = to_upper( is_req-key_field ).
+      SELECT SINGLE @abap_true FROM dd03l
+        WHERE tabname = @lv_tab AND fieldname = @lv_fld AND as4local = 'A'
+        INTO @lv_flag.
+      IF sy-subrc <> 0.
+        rs_resp-status = 'error'.
+        APPEND |Reading { lv_tab } stopped: it has no field { lv_fld }. | &&
+               |Filter on one of its fields (customizing_describe lists them).| TO rs_resp-messages.
+        RETURN.
+      ENDIF.
+      lv_where = |{ lv_fld } = '{ esc_quote( is_req-source_key ) }'|.
+    ENDIF.
+
+    lv_max   = clamp_rows( is_req-max_rows ).
+    lv_fetch = lv_max + 1.
 
     TRY.
-        CREATE DATA lr_tab TYPE STANDARD TABLE OF (is_req-table).
+        CREATE DATA lr_tab TYPE STANDARD TABLE OF (lv_tab).
         ASSIGN lr_tab->* TO <tab>.
       CATCH cx_root INTO DATA(lx_ce).
         rs_resp-status = 'error'.
-        APPEND |Cannot type table { is_req-table }: { lx_ce->get_text( ) }|
-          TO rs_resp-messages.
+        APPEND |Cannot type table { lv_tab }: { lx_ce->get_text( ) }| TO rs_resp-messages.
         RETURN.
     ENDTRY.
 
     TRY.
-        IF is_req-source_key IS NOT INITIAL.
-          lv_where = |{ is_req-key_field } = '{ esc_quote( is_req-source_key ) }'|.
-          SELECT * FROM (is_req-table) UP TO lv_max ROWS
+        IF lv_where IS NOT INITIAL.
+          SELECT * FROM (lv_tab) UP TO lv_fetch ROWS
             INTO TABLE <tab>
-            WHERE (lv_where).
+            WHERE (lv_where)
+            ORDER BY PRIMARY KEY.
         ELSE.
-          SELECT * FROM (is_req-table) UP TO lv_max ROWS INTO TABLE <tab>.
+          SELECT * FROM (lv_tab) UP TO lv_fetch ROWS
+            INTO TABLE <tab>
+            ORDER BY PRIMARY KEY.
         ENDIF.
       CATCH cx_root INTO DATA(lx_sel).
         rs_resp-status = 'error'.
@@ -927,12 +1081,381 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
         RETURN.
     ENDTRY.
 
-    rs_resp-status       = 'ok'.
-    rs_resp-rows_planned = lines( <tab> ).
+    IF lines( <tab> ) > lv_max.
+      lv_more = abap_true.
+      lv_cut  = lv_max + 1.
+      DELETE <tab> FROM lv_cut.
+      APPEND |First { lv_max } rows of { lv_tab }; there are more. Narrow the filter, or raise maxRows (at most { c_read_max_rows }).|
+        TO rs_resp-messages.
+    ENDIF.
+
+    " Column order from the DDIC (includes flattened), so an empty result still has columns.
+    TRY.
+        DATA(lo_struct) = CAST cl_abap_structdescr( cl_abap_typedescr=>describe_by_name( lv_tab ) ).
+        lo_struct->get_ddic_field_list( RECEIVING p_field_list = lt_dfies EXCEPTIONS OTHERS = 1 ).
+      CATCH cx_root.
+        CLEAR lt_dfies.
+    ENDTRY.
+    LOOP AT lt_dfies INTO DATA(ls_dfies).
+      IF lv_cols IS NOT INITIAL.
+        lv_cols = lv_cols && `,`.
+      ENDIF.
+      lv_cols = lv_cols && |"{ ls_dfies-fieldname }"|.
+    ENDLOOP.
+
     /ui2/cl_json=>serialize(
       EXPORTING data        = <tab>
                 pretty_name = /ui2/cl_json=>pretty_mode-none
+      RECEIVING r_json      = lv_rows ).
+    IF lv_rows IS INITIAL.
+      lv_rows = `[]`.
+    ENDIF.
+
+    rs_resp-status       = 'ok'.
+    rs_resp-rows_planned = lines( <tab> ).
+    rs_resp-data_json    = |\{"COLUMNS":[{ lv_cols }],"ROWS":{ lv_rows },"MORE":{
+                              COND string( WHEN lv_more = abap_true THEN `true` ELSE `false` ) }\}|.
+  ENDMETHOD.
+
+
+  METHOD handle_ddic_describe.
+    DATA: lv_lang TYPE sy-langu,
+          lv_grp  TYPE tddat-cclass.
+
+    rs_resp-operation = 'ddic_describe'.
+    rs_resp-table     = to_upper( is_req-table ).
+
+    IF is_valid_name( is_req-table ) = abap_false.
+      rs_resp-status = 'error'.
+      APPEND |Describing stopped: '{ is_req-table }' is not a valid DDIC name. | &&
+             |Give a table or maintenance view name such as T001W or V_T001W.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    lv_lang = COND #( WHEN is_req-language IS NOT INITIAL THEN to_upper( is_req-language ) ELSE 'E' ).
+    DATA(ls_desc) = resolve_maint( iv_name = rs_resp-table iv_language = lv_lang ).
+
+    IF ls_desc-root_table IS INITIAL.
+      rs_resp-status = 'error'.
+      APPEND |Describing { rs_resp-table } stopped: there is no active table or view of that name. | &&
+             |Check the name, or find the object with img_search.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    IF may_display( ls_desc-root_table ) = abap_false.
+      lv_grp = auth_group( ls_desc-root_table ).
+      rs_resp-status = 'error'.
+      APPEND |Describing { rs_resp-table } stopped: you are not authorized to display { ls_desc-root_table } | &&
+             |(S_TABU_DIS for group { lv_grp }, or S_TABU_NAM for the table, activity 03). Ask for the authorization.|
+        TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    rs_resp-status = 'ok'.
+    /ui2/cl_json=>serialize(
+      EXPORTING data        = ls_desc
+                pretty_name = /ui2/cl_json=>pretty_mode-none
       RECEIVING r_json      = rs_resp-data_json ).
+  ENDMETHOD.
+
+
+  METHOD resolve_maint.
+    TYPES: BEGIN OF ty_cand,
+             len  TYPE i,
+             name TYPE tabname,
+           END OF ty_cand.
+    DATA: lv_obj       TYPE tabname,
+          lv_view      TYPE tabname,
+          lv_root      TYPE tabname,
+          lv_maint     TYPE tabname,
+          lv_single    TYPE abap_bool,
+          lv_has_maint TYPE abap_bool,
+          lv_flag      TYPE abap_bool,
+          lv_bastab    TYPE tvdir-bastab,
+          lv_vroot     TYPE dd25l-roottab,
+          lv_vcl       TYPE vclstruc-vclname,
+          lv_act_name  TYPE string,
+          lt_cand      TYPE STANDARD TABLE OF ty_cand WITH DEFAULT KEY,
+          lt_tabs      TYPE STANDARD TABLE OF tabname WITH DEFAULT KEY,
+          lt_members   TYPE STANDARD TABLE OF tabname WITH DEFAULT KEY,
+          lv_primpos   TYPE dd05s-primpos,
+          lt_ckeys     TYPE STANDARD TABLE OF fieldname WITH DEFAULT KEY.
+
+    lv_obj = to_upper( iv_name ).
+    rs_desc-input = lv_obj.
+
+    " 1. Is the input itself a view?
+    SELECT SINGLE viewname, roottab FROM dd25l
+      WHERE viewname = @lv_obj AND as4local = 'A'
+      INTO @DATA(ls_dd25).
+    IF sy-subrc = 0.
+      lv_view = lv_obj.
+      lv_root = COND #( WHEN ls_dd25-roottab IS NOT INITIAL THEN ls_dd25-roottab ELSE lv_obj ).
+      SELECT tabname FROM dd26s
+        WHERE viewname = @lv_view AND as4local = 'A'
+        ORDER BY tabpos
+        INTO TABLE @lt_tabs.
+    ELSE.
+      " 2. A table: the maintenance views ROOTED on it (DD25L-ROOTTAB), shortest
+      "    name first; the first of the 12 shortest that has a maintenance dialog.
+      lv_root = lv_obj.
+      SELECT viewname FROM dd25l
+        WHERE roottab = @lv_obj AND aggtype = 'V' AND as4local = 'A'
+        INTO TABLE @DATA(lt_rooted).
+      LOOP AT lt_rooted INTO DATA(ls_rooted) WHERE viewname <> lv_obj.
+        APPEND VALUE #( len = strlen( ls_rooted-viewname ) name = ls_rooted-viewname ) TO lt_cand.
+      ENDLOOP.
+      SORT lt_cand BY len name.
+      DELETE ADJACENT DUPLICATES FROM lt_cand COMPARING name.
+      LOOP AT lt_cand INTO DATA(ls_cand) FROM 1 TO 12.
+        SELECT SINGLE @abap_true FROM tvdir WHERE tabname = @ls_cand-name INTO @lv_flag.
+        IF sy-subrc = 0.
+          lv_view = ls_cand-name.
+          EXIT.
+        ENDIF.
+      ENDLOOP.
+      IF lv_view IS NOT INITIAL.
+        SELECT SINGLE roottab FROM dd25l WHERE viewname = @lv_view AND as4local = 'A' INTO @lv_vroot.
+        lv_root = COND #( WHEN lv_vroot IS NOT INITIAL THEN lv_vroot ELSE lv_obj ).
+        SELECT tabname FROM dd26s
+          WHERE viewname = @lv_view AND as4local = 'A'
+          ORDER BY tabpos
+          INTO TABLE @lt_tabs.
+      ELSE.
+        " 3. No view: is the table its own single-table maintenance object?
+        SELECT SINGLE bastab FROM tvdir WHERE tabname = @lv_obj INTO @lv_bastab.
+        IF sy-subrc = 0 AND lv_bastab = abap_true.
+          lv_single = abap_true.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    " A view variant (VIEWCLASS 'V') is maintained through the view it is a variant of.
+    IF lv_view IS NOT INITIAL.
+      SELECT SINGLE viewclass, roottab FROM dd25l
+        WHERE viewname = @lv_view AND as4local = 'A'
+        INTO @DATA(ls_vc).
+      IF sy-subrc = 0 AND ls_vc-viewclass = 'V' AND ls_vc-roottab IS NOT INITIAL.
+        SELECT SINGLE @abap_true FROM tvdir WHERE tabname = @ls_vc-roottab INTO @lv_flag.
+        IF sy-subrc = 0.
+          rs_desc-variant = lv_view.
+          lv_view = ls_vc-roottab.
+          CLEAR lv_vroot.
+          SELECT SINGLE roottab FROM dd25l WHERE viewname = @lv_view AND as4local = 'A' INTO @lv_vroot.
+          lv_root = COND #( WHEN lv_vroot IS NOT INITIAL THEN lv_vroot ELSE lv_view ).
+          CLEAR lt_tabs.
+          SELECT tabname FROM dd26s
+            WHERE viewname = @lv_view AND as4local = 'A'
+            ORDER BY tabpos
+            INTO TABLE @lt_tabs.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    LOOP AT lt_tabs INTO DATA(lv_t).
+      APPEND CONV string( lv_t ) TO rs_desc-tables.
+    ENDLOOP.
+    IF rs_desc-tables IS INITIAL.
+      APPEND CONV string( lv_root ) TO rs_desc-tables.
+    ENDIF.
+
+    " Text table, as the DDIC defines one: the first member (not the root) whose
+    " foreign key to the root table has the cardinality TEXT (DD08L-FRKART).
+    LOOP AT lt_tabs INTO lv_t WHERE table_line <> lv_root.
+      SELECT SINGLE @abap_true FROM dd08l
+        WHERE tabname = @lv_t AND checktable = @lv_root AND frkart = 'TEXT' AND as4local = 'A'
+        INTO @lv_flag.
+      IF sy-subrc = 0.
+        rs_desc-text_table = lv_t.
+        EXIT.
+      ENDIF.
+    ENDLOOP.
+
+    " Maintenance dialog (TVDIR) of the maintenance object.
+    IF lv_view IS NOT INITIAL.
+      lv_maint = lv_view.
+    ELSEIF lv_single = abap_true.
+      lv_maint = lv_obj.
+    ENDIF.
+    IF lv_maint IS NOT INITIAL.
+      SELECT SINGLE area, type, devclass FROM tvdir WHERE tabname = @lv_maint INTO @DATA(ls_tvdir).
+      IF sy-subrc = 0.
+        lv_has_maint       = abap_true.
+        rs_desc-func_group = ls_tvdir-area.
+        rs_desc-maint_type = ls_tvdir-type.
+        rs_desc-devclass   = ls_tvdir-devclass.
+      ENDIF.
+    ENDIF.
+
+    " Switch Framework gating of that package, for information. SFW_PACKAGE is
+    " read dynamically: a release without it still activates this class.
+    IF rs_desc-devclass IS NOT INITIAL.
+      TRY.
+          SELECT SINGLE switch_id FROM ('SFW_PACKAGE')
+            WHERE devclass = @rs_desc-devclass
+            INTO @rs_desc-switch_id.
+        CATCH cx_sy_dynamic_osql_error.
+          CLEAR rs_desc-switch_id.
+      ENDTRY.
+    ENDIF.
+
+    " View-cluster membership (VCLSTRUC); a variant counts as the member the cluster names.
+    IF rs_desc-variant IS NOT INITIAL.
+      APPEND CONV tabname( rs_desc-variant ) TO lt_members.
+    ENDIF.
+    IF lv_view IS NOT INITIAL.
+      APPEND lv_view TO lt_members.
+    ENDIF.
+    LOOP AT lt_members INTO DATA(lv_member).
+      CLEAR lv_vcl.
+      SELECT SINGLE vclname FROM vclstruc WHERE object = @lv_member INTO @lv_vcl.
+      IF lv_vcl IS NOT INITIAL.
+        rs_desc-cluster = lv_vcl.
+        EXIT.
+      ENDIF.
+    ENDLOOP.
+
+    " IMG activity wiring (CUS_ACTOBJ) and its title (CUS_IMGACT).
+    lv_act_name = COND #( WHEN rs_desc-cluster IS NOT INITIAL THEN rs_desc-cluster
+                          WHEN lv_maint IS NOT INITIAL        THEN CONV string( lv_maint )
+                          ELSE CONV string( lv_root ) ).
+    SELECT SINGLE act_id, objecttype, tcode FROM cus_actobj
+      WHERE objectname = @lv_act_name
+      INTO @DATA(ls_act).
+    IF sy-subrc = 0.
+      rs_desc-img_activity = ls_act-act_id.
+      rs_desc-object_type  = ls_act-objecttype.
+      rs_desc-maint_tcode  = ls_act-tcode.
+      SELECT SINGLE text FROM cus_imgact
+        WHERE spras = @iv_language AND activity = @ls_act-act_id
+        INTO @rs_desc-img_activity_text.
+      IF sy-subrc <> 0 AND iv_language <> 'E'.
+        SELECT SINGLE text FROM cus_imgact
+          WHERE spras = 'E' AND activity = @ls_act-act_id
+          INTO @rs_desc-img_activity_text.
+      ENDIF.
+    ENDIF.
+
+    SELECT SINGLE cclass FROM tddat WHERE tabname = @lv_root INTO @rs_desc-auth_group.
+
+    " What the headless write drives and records, and the official transport object.
+    IF lv_has_maint = abap_true.
+      rs_desc-maint_object = lv_maint.
+    ENDIF.
+    rs_desc-record_object = COND #( WHEN rs_desc-maint_object IS INITIAL THEN ``
+                                    WHEN rs_desc-cluster IS NOT INITIAL  THEN `CDAT`
+                                    WHEN lv_view IS NOT INITIAL          THEN `VDAT`
+                                    ELSE `TABU` ).
+    IF rs_desc-cluster IS NOT INITIAL.
+      rs_desc-transport_object = `CDAT`.
+      rs_desc-transport_name   = rs_desc-cluster.
+    ELSEIF lv_view IS NOT INITIAL.
+      rs_desc-transport_object = `VDAT`.
+      rs_desc-transport_name   = lv_view.
+    ELSE.
+      rs_desc-transport_object = `TABU`.
+      rs_desc-transport_name   = lv_root.
+    ENDIF.
+    rs_desc-is_view    = xsdbool( lv_view IS NOT INITIAL ).
+    rs_desc-view       = lv_view.
+    rs_desc-root_table = lv_root.
+
+    " Root table: flags, text, fields with data element text and check table.
+    SELECT SINGLE tabclass, contflag, clidep, mainflag FROM dd02l
+      WHERE tabname = @lv_root AND as4local = 'A'
+      INTO @DATA(ls_dd02).
+    IF sy-subrc <> 0 AND lv_view IS INITIAL.
+      CLEAR rs_desc-root_table.        " neither a view nor a table of that name
+      RETURN.
+    ENDIF.
+    rs_desc-tabclass = ls_dd02-tabclass.
+    rs_desc-contflag = ls_dd02-contflag.
+    rs_desc-clidep   = ls_dd02-clidep.
+    rs_desc-mainflag = ls_dd02-mainflag.
+    SELECT SINGLE ddtext FROM dd02t
+      WHERE tabname = @lv_root AND ddlanguage = @iv_language AND as4local = 'A'
+      INTO @rs_desc-ddtext.
+
+    SELECT fieldname, keyflag, rollname, domname, datatype, leng, decimals, position, checktable
+      FROM dd03l
+      WHERE tabname = @lv_root AND as4local = 'A' AND fieldname NOT LIKE '.%'
+      ORDER BY position
+      INTO TABLE @DATA(lt_dd03)
+      UP TO @c_max_fields ROWS.
+    LOOP AT lt_dd03 INTO DATA(ls_dd03).
+      APPEND INITIAL LINE TO rs_desc-fields ASSIGNING FIELD-SYMBOL(<f>).
+      <f>-fieldname  = ls_dd03-fieldname.
+      <f>-keyflag    = ls_dd03-keyflag.
+      <f>-rollname   = ls_dd03-rollname.
+      <f>-domname    = ls_dd03-domname.
+      <f>-datatype   = ls_dd03-datatype.
+      <f>-leng       = ls_dd03-leng.
+      <f>-decimals   = ls_dd03-decimals.
+      <f>-position   = ls_dd03-position.
+      <f>-checktable = ls_dd03-checktable.
+      IF ls_dd03-rollname IS NOT INITIAL.
+        SELECT SINGLE ddtext FROM dd04t
+          WHERE rollname = @ls_dd03-rollname AND ddlanguage = @iv_language AND as4local = 'A'
+          INTO @<f>-ddtext.
+      ENDIF.
+      " Check field: DD05S gives the field's position in the check table's
+      " primary key (PRIMPOS); the check field is the key field at that position.
+      IF ls_dd03-checktable IS NOT INITIAL AND ls_dd03-checktable <> '*'.
+        CLEAR lv_primpos.
+        SELECT SINGLE primpos FROM dd05s
+          WHERE tabname = @lv_root AND fieldname = @ls_dd03-fieldname
+            AND fortable = @lv_root AND forkey = @ls_dd03-fieldname AND as4local = 'A'
+          INTO @lv_primpos.
+        IF lv_primpos > 0.
+          SELECT fieldname FROM dd03l
+            WHERE tabname = @ls_dd03-checktable AND keyflag = 'X' AND as4local = 'A'
+              AND fieldname NOT LIKE '.%'
+            ORDER BY position
+            INTO TABLE @lt_ckeys.
+          READ TABLE lt_ckeys INDEX lv_primpos INTO DATA(lv_ckey).
+          IF sy-subrc = 0.
+            <f>-checkfield = lv_ckey.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+    DATA(ls_caps) = client_caps( ).
+    rs_desc-client     = sy-mandt.
+    rs_desc-cccategory = ls_caps-category.
+    rs_desc-cccoractiv = ls_caps-coractiv.
+    rs_desc-ccnocliind = ls_caps-nocliind.
+  ENDMETHOD.
+
+
+  METHOD may_display.
+    DATA lv_name  TYPE tabname.
+    DATA lv_group TYPE tddat-cclass.
+    lv_group = auth_group( iv_table ).
+    AUTHORITY-CHECK OBJECT 'S_TABU_DIS'
+      ID 'DICBERCLS' FIELD lv_group
+      ID 'ACTVT'     FIELD '03'.
+    IF sy-subrc = 0.
+      rv_ok = abap_true.
+      RETURN.
+    ENDIF.
+    lv_name = to_upper( iv_table ).
+    AUTHORITY-CHECK OBJECT 'S_TABU_NAM'
+      ID 'ACTVT' FIELD '03'
+      ID 'TABLE' FIELD lv_name.
+    rv_ok = xsdbool( sy-subrc = 0 ).
+  ENDMETHOD.
+
+
+  METHOD clamp_rows.
+    rv_rows = COND #( WHEN iv_requested <= 0               THEN c_read_default_rows
+                      WHEN iv_requested > c_read_max_rows  THEN c_read_max_rows
+                      ELSE iv_requested ).
+  ENDMETHOD.
+
+
+  METHOD is_customizing_class.
+    rv_ok = xsdbool( iv_contflag = 'C' OR iv_contflag = 'G' OR iv_contflag = 'E' ).
   ENDMETHOD.
 
 

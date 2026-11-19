@@ -27,7 +27,7 @@ To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#
 
 ### Two ways to run it
 
-By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles the code work. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing and the selftest, and the customizing and transport tools follow; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
+By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles the code work. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing, the selftest, and describe, read, diff and change plan for customizing (customizing tables only, delivery class C, G or E, with your display authorization checked in SAP and at most 1000 rows per read); apply, create, org copy and the transport tools follow; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
 
 ### Acknowledgements
 

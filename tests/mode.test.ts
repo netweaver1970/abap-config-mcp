@@ -38,10 +38,22 @@ import { ensureConnected, newIsolatedClient, runInSession } from "../src/connect
 import { ensureEngineClass, callEngine } from "../src/tools/customizingEngine"
 import { ENGINE_VERSION } from "../src/abap/zcl_mcp_cust_engine"
 
-const SEVEN = [
+const GOVERNED = [
   "connected_systems", "customizing_engine_ping", "customizing_status", "hana_memory_report",
   "abap_memory_report", "retail_listing", "customizing_selftest",
+  "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
 ].sort()
+
+/** A plausible engine answer per operation, so each governed tool runs to its end. */
+function engineByOperation(req: string): string {
+  const op = (JSON.parse(req) as { operation: string }).operation
+  if (op === "ddic_describe") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [], DATA_JSON: JSON.stringify({
+    INPUT: "T001W", ROOT_TABLE: "T001W", TABLES: ["T001W"], TRANSPORT_OBJECT: "TABU", TRANSPORT_NAME: "T001W",
+    CONTFLAG: "C", TABCLASS: "TRANSP", MAINFLAG: "X", FIELDS: [{ FIELDNAME: "WERKS", KEYFLAG: "X", DATATYPE: "CHAR", LENG: "000004" }] }) })
+  if (op === "read") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [],
+    DATA_JSON: JSON.stringify({ COLUMNS: ["WERKS", "NAME1"], ROWS: [{ WERKS: "1000", NAME1: "Plant" }], MORE: false }) })
+  return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, DATA_JSON: "[]", MESSAGES: [] })
+}
 
 const ADT_REFUSAL = "Calling ADT for X on DEV stopped: this server runs in governed mode, which makes no ADT calls. " +
   "Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=direct."
@@ -97,18 +109,18 @@ describe("mode switch", () => {
 })
 
 describe("tool set", () => {
-  it("governed mode registers exactly the seven engine-only tools", () => {
+  it("governed mode registers exactly the engine-only tools", () => {
     setMode("governed")
     const names = Object.keys(toolsOf(createMcpServer())).sort()
-    expect(names).toEqual(SEVEN)
-    expect([...GOVERNED_TOOLS].sort()).toEqual(SEVEN)
+    expect(names).toEqual(GOVERNED)
+    expect([...GOVERNED_TOOLS].sort()).toEqual(GOVERNED)
   })
 
   it("direct mode registers the full set, a superset of the governed one", () => {
     setMode("direct")
     const direct = Object.keys(toolsOf(createMcpServer()))
     expect(direct.length).toBeGreaterThan(50)
-    for (const t of SEVEN) expect(direct).toContain(t)
+    for (const t of GOVERNED) expect(direct).toContain(t)
     for (const t of ["write_abap_object_source", "engine_deploy", "customizing_engine_bootstrap", "customizing_apply"]) expect(direct).toContain(t)
   })
 
@@ -142,15 +154,21 @@ describe("ADT guard in governed mode", () => {
       .rejects.toThrow("Calling ADT for retail_listing on DEV stopped:")
   })
 
-  it("none of the seven tools constructs an ADT client", async () => {
+  it("no governed tool constructs an ADT client", async () => {
     setMode("governed")
+    engineReply.body = engineByOperation
     const tools = toolsOf(createMcpServer())
+    const diff = { objectName: "T001W", keyField: "WERKS", sourceKey: "1000", targetKey: "2000" }
     const args: Record<string, unknown> = {
       customizing_status: { runId: "R1" },
       retail_listing: { items: [{ product: "P1", assortment: "A1" }] },   // autoDeploy defaults to true
       customizing_selftest: {},                                           // autoDeploy defaults to true
+      customizing_describe: { objectName: "V_T001W" },
+      customizing_read: { objectName: "T001W", keyField: "WERKS", keyValue: "1000" },
+      customizing_diff: diff,
+      customizing_plan_change: diff,
     }
-    for (const name of SEVEN) {
+    for (const name of GOVERNED) {
       const r = await tools[name].handler(args[name] ?? {}, { sessionId: "s1" })
       expect(r.content[0].text, name).not.toMatch(/ADT client constructed|governed mode, which makes no ADT calls/)
     }

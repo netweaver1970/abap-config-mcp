@@ -25,7 +25,8 @@ import {
   getEngineSource, ENGINE_VERSION, ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH,
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
-import { resolveMaint, runSql, tableRows, col, type ResolvedMaint } from "./customizing"
+import { runSql, tableRows, col, type ResolvedMaint } from "./customizing"
+import { customizingSource } from "./customizingSource"
 import { selectTransport, rememberTransport, workKey } from "./transportSelection"
 import { lookupRequest, listOpenRequests as listOpenRequestsSql } from "./transportSql"
 import { resolveConnectionId } from "../connections"
@@ -38,7 +39,7 @@ import { buildOrgScope, formatOrgScope } from "./orgScope"
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
 export interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move"
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe"
   table?: string
   key_field?: string
   source_key?: string
@@ -900,8 +901,7 @@ export async function handleCustomizingApply(args: {
   let resolveNote = ""
   if (args.recordTransport !== false) {
     try {
-      const client = await ensureConnected(args.connectionId)
-      const maint = await resolveMaint(client, args.table)
+      const maint = await customizingSource(args.connectionId).resolve(args.table)
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
         transportObject = maint.recordObject
@@ -1092,8 +1092,7 @@ export async function handleCustomizingCreate(args: {
   let resolveNote = ""
   if (args.recordTransport !== false) {
     try {
-      const client = await ensureConnected(args.connectionId)
-      const maint = await resolveMaint(client, args.table)
+      const maint = await customizingSource(args.connectionId).resolve(args.table)
       if (maint.maintObject && maint.recordObject) {
         maintObject     = maint.maintObject
         transportObject = maint.recordObject

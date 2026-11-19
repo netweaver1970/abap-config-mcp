@@ -75,6 +75,6 @@ export function registerAllTools(server: McpServer): void {
   if (governed && !_governedLogged) {
     _governedLogged = true   // one server per client session registers again; say it once per process
     log("INFO", `Governed mode: ${GOVERNED_TOOLS.size} tools registered; left out (they need ADT): ${modeSkipped.join(", ")}. ` +
-      `Phase 2 adds the customizing and transport tools.`)
+      `Phase 2 adds the rest of the customizing and transport tools.`)
   }
 }

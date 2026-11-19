@@ -85,10 +85,13 @@ export function assertGovernedLogon(connections: Pick<ConnectionConfig, "id" | "
 
 // ─── Tool set ────────────────────────────────────────────────────────────────
 
-/** Phase 1 of the governed tool set: every one works through the engine's HTTP endpoint only. */
+/** The governed tool set: every one works through the engine's HTTP endpoint only. */
 export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
+  // phase 1: engine actions that already existed
   "connected_systems", "customizing_engine_ping", "customizing_status",
   "hana_memory_report", "abap_memory_report", "retail_listing", "customizing_selftest",
+  // phase 2: ddic_describe and the hardened read (engine 0.9.37)
+  "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown
