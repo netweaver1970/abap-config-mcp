@@ -89,7 +89,7 @@ code side (for example: "to activate, use SAP's ADT MCP server").
 | `transports` | requests with their tasks: number, kind, status, owner, date, client, text, target, optionally their objects; or one request looked up by number (a task gives its request); filters: kinds, statuses, owner (optionally with the requests the owner has a task in), client | modifiable only by default; capped at 500 requests, objects for the newest 100 and at most 500 per request; S_TRANSPRT display |
 | `transport_info` | for one object (R3TR type and name; the server maps an ADT URL): package, whether it records (TDEVC-KORRFLAG), transport layer and target (TR_GET_TRANSPORT_TARGET, guarded by FUNCTION_EXISTS), the open request and task holding it, and the user's open workbench requests to that target | read-only; S_TRANSPRT display |
 | `retest_scope` | for an org-key domain and source/target values: the client-dependent transparent tables keyed on the domain (C/G/E and A, at most 8000 key fields each), with source and target row counts, counted in org_copy's priority order (customizing outside the copier's set, then the copier's tables, then application data); the server sorts them into the three lists org_copy shows today | counts only, never rows; eight tables per statement (a UNION ALL of eight dynamic branches); stops after a time budget (default 25 s, max 120 s) and reports what it didn't count; a table the user may not display (S_TABU_DIS, else S_TABU_NAM) is not counted |
-| `dependencies` | for objects on a request: what they use and what uses them on other open requests, from the where-used index | read-only; capped |
+| `dependencies` | transport_move's facts, in three parts: FACTS (for the two numbers: their requests, every task of those requests, their object entries and the modules of each function group among them), WHERE_USED (for the moved repository objects: the names they use, function modules resolved to their group, and the includes that use them, from WBCROSSGT/CROSS), HOLDERS (the open tasks and requests holding R3TR entries of given names) | read-only; S_TRANSPRT display; at most 20000 entries (the plan stops above that), 100 objects for where-used, 2000 names for holders |
 
 The server keeps the logic it has today (transport selection rules, retest classification,
 release order, plan building); only where it gets its facts from changes.
@@ -101,6 +101,21 @@ release order, plan building); only where it gets its facts from changes.
    that need new actions are not registered in governed mode yet.
 2. **New engine actions.** The six actions above, with ABAP unit tests where the logic allows,
    then the remaining governed-mode tools. Live test on S4 in both modes.
+2.5. **BW objects** (requested 19 Nov 2026, not designed yet). MCP tools for create, read, update and
+   delete on all BW objects. Decided (19 Nov 2026):
+   - both BW 7.5 and BW/4HANA, detected at run time (object types differ: InfoCubes and classic DSOs
+     exist only in BW 7.5; ADSOs and CompositeProviders in both), never assumed from the release;
+   - no ADT, so not the BW modeling REST services either: BW's own ABAP APIs (the RSD* / RSO* function
+     modules and classes BW itself uses for create, change, activate and delete) behind the engine,
+     guarded the same way as the customizing actions (each one checked with FUNCTION_EXISTS or a class
+     lookup before use, an authority check per action, no generic SQL).
+   Still to settle:
+   - which objects first: InfoObjects, ADSOs, CompositeProviders, transformations, DTPs, process
+     chains, queries, InfoAreas, source systems and DataSources;
+   - activation and transport: BW objects record on Workbench requests and need activation, which
+     changes M versions into A versions;
+   - test system: a BW system in the lab, since CAR and S4 are not BW systems (embedded BW in S4 may do
+     for a first pass).
 3. **Engine through abapGit.** Publish the engine objects (ZCL_MCP_CUST_ENGINE,
    ZMCP_CUST_WRITE, ZCL_MCP_DIAG) as an abapGit repository, with a short install guide
    including the SICF node. `engine_deploy` in direct mode stays as it is.
@@ -156,6 +171,26 @@ release order, plan building); only where it gets its facts from changes.
   in both modes, and both run out of time in the application part, which the re-run with
   `retestScope: "application"` covers. ABAP SQL goes through S/4's replacement objects
   (MARD and the like), which is why the counts match.
+- Step 4 (engine 0.9.40): `dependencies` added; `transport_move` registered in governed mode
+  (`MoveFacts` in `transportMove.ts`: `AdtMoveFacts` keeps the SQL, `EngineMoveFacts` answers from one
+  FACTS snapshot of both request families and refuses a question outside them). A unit test serves
+  the engine from the same fake tables as the direct-mode tests and requires identical plans for ten
+  scenarios. Compared live on S4: six dry runs byte-identical in both modes (including SAP's own
+  TR712 refusal), governed 7 s against 58 s.
+- Release floor (found 19 Nov 2026): the engine's syntax needs about 7.40 SP08 (inline declarations,
+  `@` host variables, /ui2/cl_json). Step 3's batched counting uses UNION, which ABAP SQL has only from
+  7.50, so as it stands the class no longer activates on a 7.40 system (Solution Manager 7.2, ECC EHP7).
+  Fixed in engine 0.9.41: the batching lives in the optional class ZCL_MCP_SCOPE_BATCH, which the
+  engine calls dynamically (CALL METHOD ('ZCL_MCP_SCOPE_BATCH')=>('COUNT8')); the engine class has
+  no UNION again. `customizing_engine_bootstrap` installs the optional class only when CVERS says
+  SAP_BASIS 750 or later, and a failed activation of it is a warning, not a failed install;
+  `customizing_engine_cleanup` removes it. Without it the engine counts one table per statement and
+  the scope says so when it runs out of time. Tested on S4 both ways: with the class, WERKS in 3 to 5 s
+  and identical to direct mode; without it, WERKS complete in 13 s, BUKRS out of time after 920 of
+  1573 customizing tables, with the note. Not tested: activation on a real 7.40 system (none in the
+  lab); the floor is read from the syntax. Open: on a 7.40 system a company code's scope may not
+  finish within the 30 s budget even with retestScope: "customizing"; a background job (as org_copy
+  uses) would lift that limit.
 
 ## Tests
 

@@ -43,7 +43,7 @@ const GOVERNED = [
   "abap_memory_report", "retail_listing", "customizing_selftest",
   "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
   "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
-  "org_copy",
+  "org_copy", "transport_move",
 ].sort()
 
 /** A plausible engine answer per operation, so each governed tool runs to its end. */
@@ -59,6 +59,12 @@ function engineByOperation(req: string): string {
     DATA_JSON: JSON.stringify([{ TABNAME: "T001W", TEXT: "Plants" }]) })
   if (op === "retest_scope") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [],
     DATA_JSON: JSON.stringify({ DOMAIN: "WERKS", CANDIDATES: 1, TABLES: [{ TAB: "T024E", FIELD: "WERKS", CLS: "C", COUNTED: "X", SRC: 1, TGT: 0 }] }) })
+  if (op === "dependencies") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [], DATA_JSON: JSON.stringify({
+    COVERED: ["A1T", "A1", "B1"], REQUESTS: [
+      { TRKORR: "A1", TRFUNCTION: "K", TRSTATUS: "D", STRKORR: "", AS4USER: "U", TARSYSTEM: "QAS", CLIENT: "", TEXT: "" },
+      { TRKORR: "A1T", TRFUNCTION: "S", TRSTATUS: "D", STRKORR: "A1", AS4USER: "U", TARSYSTEM: "", CLIENT: "", TEXT: "" },
+      { TRKORR: "B1", TRFUNCTION: "K", TRSTATUS: "D", STRKORR: "", AS4USER: "U", TARSYSTEM: "QAS", CLIENT: "", TEXT: "" }],
+    ENTRIES: [], FUNCTIONS: [] }) })
   if (op === "transport_info") return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, MESSAGES: [],
     DATA_JSON: JSON.stringify({ PGMID: "R3TR", OBJ_TYPE: "PROG", OBJ_NAME: "ZREPORT", EXISTS: "X", DEVCLASS: "$TMP" }) })
   return JSON.stringify({ STATUS: "ok", VERSION: ENGINE_VERSION, DATA_JSON: "[]", MESSAGES: [] })
@@ -181,6 +187,7 @@ describe("ADT guard in governed mode", () => {
       customizing_apply: { table: "T001W", keyField: "WERKS", sourceKey: "1000", targetKey: "2000" },
       customizing_create: { table: "T001W", rows: [{ WERKS: "2000", NAME1: "New" }] },
       org_copy: { orgUnit: "WERKS", sourceKey: "1000", targetKey: "2000" },
+      transport_move: { from: "A1T", to: "B1" },
     }
     for (const name of GOVERNED) {
       const r = await tools[name].handler(args[name] ?? {}, { sessionId: "s1" })

@@ -16,8 +16,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { ensureConnected, getConnectionConfig, log } from "../connections"
 import { runSql, tableRows, col } from "./customizing"
-import { callEngine, ensureEngineClass } from "./customizingEngine"
+import { callEngine, ensureEngineClass, type EngineRequest } from "./customizingEngine"
 import { ENGINE_VERSION } from "../abap/zcl_mcp_cust_engine"
+import { isGoverned, GOVERNED_ENGINE_NOTE } from "../mode"
 
 type Client = Awaited<ReturnType<typeof ensureConnected>>
 
@@ -219,9 +220,11 @@ async function functionsOfGroup(c: Client, fg: string): Promise<Set<string>> {
   return new Set(tableRows(await runSql(c, `SELECT FUNCNAME FROM TFDIR WHERE PNAME = 'SAPL${q(fg)}'`, 500)).map(r => col(r, "FUNCNAME")))
 }
 
+type Holder = { request: string; task: string; owner: string }
+
 /** Open requests (status D/L) holding R3TR entries of these names, resolved to their request. */
-async function openHolders(c: Client, names: string[]): Promise<Map<string, Array<{ request: string; task: string; owner: string }>>> {
-  const out = new Map<string, Array<{ request: string; task: string; owner: string }>>()
+async function openHolders(c: Client, names: string[]): Promise<Map<string, Holder[]>> {
+  const out = new Map<string, Holder[]>()
   if (!names.length) return out
   const rows = await sqlIn(c, "SELECT TRKORR, OBJ_NAME FROM E071 WHERE PGMID = 'R3TR' AND", "OBJ_NAME", names)
   const reqs = await readRequests(c, rows.map(r => col(r, "TRKORR")))
@@ -229,14 +232,179 @@ async function openHolders(c: Client, names: string[]): Promise<Map<string, Arra
   for (const r of rows) {
     const t = reqs.get(col(r, "TRKORR"))
     if (!t || !OPEN.has(t.status)) continue
-    const request = t.parent || t.trkorr
-    const owner = (t.parent ? parents.get(t.parent)?.owner : t.owner) ?? t.owner
-    const name = col(r, "OBJ_NAME").trimEnd()
-    if (!out.has(name)) out.set(name, [])
-    const list = out.get(name)!
-    if (!list.some(h => h.request === request)) list.push({ request, task: t.trkorr, owner })
+    addHolder(out, col(r, "OBJ_NAME"), { request: t.parent || t.trkorr, task: t.trkorr,
+      owner: (t.parent ? parents.get(t.parent)?.owner : t.owner) ?? t.owner })
   }
   return out
+}
+
+function addHolder(out: Map<string, Holder[]>, objName: string, h: Holder): void {
+  const name = objName.trimEnd()
+  if (!out.has(name)) out.set(name, [])
+  const list = out.get(name)!
+  if (!list.some(x => x.request === h.request)) list.push(h)
+}
+
+/** Raw where-used facts of one object: the names it uses (function modules resolved to their group) and the includes that use it. */
+export interface WhereUsed { used: string[]; includes: string[] }
+
+/** The ADT side of where-used: WBCROSSGT and CROSS through freestyle SQL. */
+async function whereUsedSql(c: Client, objs: Map<string, string>): Promise<Map<string, WhereUsed>> {
+  const out = new Map<string, WhereUsed>()
+  for (const [name, type] of objs) {
+    const where = type === "PROG" ? `INCLUDE = '${q(name)}'`
+      : type === "FUGR" ? `INCLUDE LIKE 'L${q(name)}%'`
+      : `INCLUDE LIKE '${q(name.padEnd(30, "="))}%'`
+    const used = new Set<string>()
+    for (const r of tableRows(await runSql(c, `SELECT NAME FROM WBCROSSGT WHERE ${where}`, 1000))) {
+      used.add(col(r, "NAME").split("\\")[0].trimEnd())
+    }
+    const funcs = tableRows(await runSql(c, `SELECT NAME FROM CROSS WHERE TYPE = 'F' AND ${where}`, 500)).map(r => col(r, "NAME").trimEnd())
+    if (type === "FUGR") {
+      for (const r of tableRows(await runSql(c, `SELECT NAME FROM WBCROSSGT WHERE INCLUDE = 'SAPL${q(name)}'`, 500))) used.add(col(r, "NAME").split("\\")[0].trimEnd())
+    }
+    const customerFuncs = funcs.filter(isCustomerName)
+    if (customerFuncs.length) {
+      for (const r of await sqlIn(c, "SELECT FUNCNAME, PNAME FROM TFDIR WHERE", "FUNCNAME", customerFuncs)) {
+        const pname = col(r, "PNAME")
+        if (pname.startsWith("SAPL")) used.add(pname.slice(4))
+      }
+    }
+    const rows = tableRows(await runSql(c, `SELECT INCLUDE FROM WBCROSSGT WHERE NAME = '${q(name)}' OR NAME LIKE '${q(name)}\\%'`, 1000))
+    if (type === "FUGR") {
+      const groupFuncs = [...await functionsOfGroup(c, name)]
+      if (groupFuncs.length) rows.push(...await sqlIn(c, "SELECT INCLUDE FROM CROSS WHERE TYPE = 'F' AND", "NAME", groupFuncs))
+    }
+    out.set(name, { used: [...used], includes: rows.map(r => col(r, "INCLUDE")) })
+  }
+  return out
+}
+
+/**
+ * Where transport_move gets its facts: the requests and tasks, their entries, a
+ * function group's modules, the where-used index and the open holders of names.
+ * Direct mode: SQL through ADT. Governed mode: the engine's dependencies action.
+ */
+export interface MoveFacts {
+  readRequests(trkorrs: string[]): Promise<Map<string, TrReq>>
+  tasksOf(request: string): Promise<TrReq[]>
+  entriesOf(trkorrs: string[]): Promise<Entry[]>
+  functionsOfGroup(fg: string): Promise<Set<string>>
+  whereUsed(objs: Map<string, string>): Promise<Map<string, WhereUsed>>
+  openHolders(names: string[]): Promise<Map<string, Holder[]>>
+  /** The same source, re-read (after a move, to verify it). */
+  fresh(): MoveFacts
+}
+
+class AdtMoveFacts implements MoveFacts {
+  constructor(private readonly c: Client) {}
+  readRequests(t: string[]) { return readRequests(this.c, t) }
+  tasksOf(r: string) { return tasksOf(this.c, r) }
+  entriesOf(t: string[]) { return entriesOf(this.c, t) }
+  functionsOfGroup(fg: string) { return functionsOfGroup(this.c, fg) }
+  whereUsed(objs: Map<string, string>) { return whereUsedSql(this.c, objs) }
+  openHolders(names: string[]) { return openHolders(this.c, names) }
+  fresh() { return this }
+}
+
+interface EngineFacts {
+  COVERED?: string[]
+  REQUESTS?: Array<{ TRKORR: string; TRFUNCTION: string; TRSTATUS: string; STRKORR: string; AS4USER: string; TARSYSTEM: string; CLIENT: string; TEXT: string }>
+  ENTRIES?: Array<{ TRKORR: string; PGMID: string; OBJECT: string; OBJ_NAME: string; LOCKFLAG: string }>
+  ENTRIES_MORE?: boolean | string
+  FUNCTIONS?: Array<{ FGROUP: string; FUNCNAME: string }>
+}
+
+/**
+ * Governed mode: one FACTS call reads both request families (each number's
+ * request and all its tasks, their entries and function groups' modules), and the
+ * tool's questions are answered from it; a question outside it is an error, never
+ * a silent "nothing there". Where-used and holders are their own calls.
+ */
+export class EngineMoveFacts implements MoveFacts {
+  private facts?: Promise<EngineFacts>
+  constructor(private readonly call: (req: EngineRequest) => Promise<{ STATUS?: string; VERSION?: string; MESSAGES?: string[]; DATA_JSON?: string }>,
+              private readonly from: string, private readonly to: string) {}
+
+  private async engine(req: EngineRequest, what: string): Promise<string> {
+    const r = await this.call(req)
+    if (r.STATUS === "ok") return r.DATA_JSON || ""
+    const msgs = (r.MESSAGES ?? []).join(" ")
+    if (/Unknown operation/i.test(msgs)) {
+      throw new Error(`${what} stopped: the engine on this system (v${r.VERSION ?? "?"}) has no dependencies action, which this server needs ` +
+        `(engine v${ENGINE_VERSION}). Update the engine: ${GOVERNED_ENGINE_NOTE}. Then run customizing_engine_ping.`)
+    }
+    throw new Error(msgs || `${what} stopped: the engine answered ${r.STATUS ?? "without a status"}.`)
+  }
+
+  private snapshot(): Promise<EngineFacts> {
+    return (this.facts ??= this.engine({ operation: "dependencies", action: "FACTS", from_trkorr: this.from, to_trkorr: this.to },
+      "Reading the requests").then(d => {
+      const f = JSON.parse(d || "{}") as EngineFacts
+      if (f.ENTRIES_MORE === true || f.ENTRIES_MORE === "X") {
+        throw new Error(`Moving stopped: ${this.from} and ${this.to} hold more than 20,000 object entries between them, more than ` +
+          `this tool plans with. Nothing was moved. Move the objects in SE09/SE10, or name a task instead of a request.`)
+      }
+      return f
+    }))
+  }
+
+  private async covered(ids: string[]): Promise<EngineFacts> {
+    const f = await this.snapshot()
+    const known = new Set(f.COVERED ?? [])
+    const outside = ids.filter(i => i && !known.has(i.toUpperCase()))
+    if (outside.length) throw new Error(`internal: transport_move asked about ${outside.join(", ")}, outside ${this.from} and ${this.to} and their requests.`)
+    return f
+  }
+
+  private static req(r: NonNullable<EngineFacts["REQUESTS"]>[number]): TrReq {
+    return { trkorr: r.TRKORR, fn: r.TRFUNCTION, status: r.TRSTATUS, parent: r.STRKORR ?? "", owner: r.AS4USER,
+      tarsystem: r.TARSYSTEM ?? "", client: r.CLIENT ?? "", text: r.TEXT ?? "" }
+  }
+
+  async readRequests(trkorrs: string[]): Promise<Map<string, TrReq>> {
+    const f = await this.covered(trkorrs)
+    const want = new Set(trkorrs.map(t => t.toUpperCase()))
+    return new Map((f.REQUESTS ?? []).filter(r => want.has(r.TRKORR)).map(r => [r.TRKORR, EngineMoveFacts.req(r)]))
+  }
+
+  async tasksOf(request: string): Promise<TrReq[]> {
+    const f = await this.covered([request])
+    return (f.REQUESTS ?? []).filter(r => r.STRKORR === request.toUpperCase()).map(EngineMoveFacts.req)
+  }
+
+  async entriesOf(trkorrs: string[]): Promise<Entry[]> {
+    const f = await this.covered(trkorrs)
+    const want = new Set(trkorrs.map(t => t.toUpperCase()))
+    return (f.ENTRIES ?? []).filter(e => want.has(e.TRKORR))
+      .map(e => ({ trkorr: e.TRKORR, pgmid: e.PGMID, object: e.OBJECT, objName: e.OBJ_NAME, lockflag: e.LOCKFLAG }))
+  }
+
+  async functionsOfGroup(fg: string): Promise<Set<string>> {
+    const f = await this.snapshot()
+    return new Set((f.FUNCTIONS ?? []).filter(x => x.FGROUP.trimEnd() === fg).map(x => x.FUNCNAME))
+  }
+
+  async whereUsed(objs: Map<string, string>): Promise<Map<string, WhereUsed>> {
+    const d = await this.engine({ operation: "dependencies", action: "WHERE_USED",
+      objects_json: JSON.stringify([...objs].map(([NAME, TYPE]) => ({ NAME, TYPE }))) }, "The dependency check")
+    const rows = JSON.parse(d || "[]") as Array<{ NAME: string; USED?: string[]; INCLUDES?: string[] }>
+    return new Map(rows.map(r => [r.NAME, { used: r.USED ?? [], includes: r.INCLUDES ?? [] }]))
+  }
+
+  async openHolders(names: string[]): Promise<Map<string, Holder[]>> {
+    const out = new Map<string, Holder[]>()
+    if (!names.length) return out
+    const d = await this.engine({ operation: "dependencies", action: "HOLDERS",
+      objects_json: JSON.stringify([...new Set(names)].map(NAME => ({ NAME }))) }, "The dependency check")
+    for (const h of JSON.parse(d || "[]") as Array<{ NAME: string; TRKORR: string; TRSTATUS: string; STRKORR: string; AS4USER: string; PARENT_USER: string }>) {
+      if (!OPEN.has(h.TRSTATUS)) continue
+      addHolder(out, h.NAME, { request: h.STRKORR || h.TRKORR, task: h.TRKORR, owner: (h.STRKORR ? h.PARENT_USER : h.AS4USER) || h.AS4USER })
+    }
+    return out
+  }
+
+  fresh(): MoveFacts { return new EngineMoveFacts(this.call, this.from, this.to) }
 }
 
 const REPO = new Set(["CLAS", "INTF", "PROG", "FUGR"])
@@ -248,7 +416,7 @@ const DEP_CAP = 50
  * index); DDIC structure (a table's data elements) is not followed.
  */
 export async function analyseDependencies(
-  c: Client, moved: Entry[], sourceEntries: Entry[], sourceRequest: string, targetRequest: string,
+  facts: MoveFacts, moved: Entry[], sourceEntries: Entry[], sourceRequest: string, targetRequest: string,
 ): Promise<DepReport> {
   const objs = new Map<string, string>()   // name → object type
   for (const e of moved) {
@@ -270,30 +438,15 @@ export async function analyseDependencies(
   const staysOnSource = (name: string) =>
     sourceEntries.some(s => s.pgmid === "R3TR" && s.objName.trimEnd() === name && !movingKeys.has(key(s)))
 
+  const wu = await facts.whereUsed(objs)
+
   // Outgoing: what each moved object uses.
   const uses = new Map<string, Set<string>>()   // moved → used names
-  for (const [name, type] of objs) {
-    const where = type === "PROG" ? `INCLUDE = '${q(name)}'`
-      : type === "FUGR" ? `INCLUDE LIKE 'L${q(name)}%'`
-      : `INCLUDE LIKE '${q(name.padEnd(30, "="))}%'`
-    const used = new Set<string>()
-    for (const r of tableRows(await runSql(c, `SELECT NAME FROM WBCROSSGT WHERE ${where}`, 1000))) {
-      used.add(col(r, "NAME").split("\\")[0].trimEnd())
-    }
-    const funcs = tableRows(await runSql(c, `SELECT NAME FROM CROSS WHERE TYPE = 'F' AND ${where}`, 500)).map(r => col(r, "NAME").trimEnd())
-    if (type === "FUGR") {
-      for (const r of tableRows(await runSql(c, `SELECT NAME FROM WBCROSSGT WHERE INCLUDE = 'SAPL${q(name)}'`, 500))) used.add(col(r, "NAME").split("\\")[0].trimEnd())
-    }
-    const customerFuncs = funcs.filter(isCustomerName)
-    if (customerFuncs.length) {
-      for (const r of await sqlIn(c, "SELECT FUNCNAME, PNAME FROM TFDIR WHERE", "FUNCNAME", customerFuncs)) {
-        const pname = col(r, "PNAME")
-        if (pname.startsWith("SAPL")) used.add(pname.slice(4))
-      }
-    }
-    uses.set(name, new Set([...used].filter(u => isCustomerName(u) && u !== name && !movedNames.has(u))))
+  for (const name of objs.keys()) {
+    const used = wu.get(name)?.used ?? []
+    uses.set(name, new Set(used.filter(u => isCustomerName(u) && u !== name && !movedNames.has(u))))
   }
-  const holdersOut = await openHolders(c, [...new Set([...uses.values()].flatMap(s => [...s]))])
+  const holdersOut = await facts.openHolders([...new Set([...uses.values()].flatMap(s => [...s]))])
   for (const [moved, set] of uses) {
     for (const u of set) {
       for (const h of holdersOut.get(u) ?? []) {
@@ -307,20 +460,15 @@ export async function analyseDependencies(
 
   // Incoming: what uses each moved object.
   const usedBy = new Map<string, Set<string>>()
-  for (const [name, type] of objs) {
+  for (const name of objs.keys()) {
     const users = new Set<string>()
-    const rows = tableRows(await runSql(c, `SELECT INCLUDE FROM WBCROSSGT WHERE NAME = '${q(name)}' OR NAME LIKE '${q(name)}\\%'`, 1000))
-    if (type === "FUGR") {
-      const funcs = [...await functionsOfGroup(c, name)]
-      if (funcs.length) rows.push(...await sqlIn(c, "SELECT INCLUDE FROM CROSS WHERE TYPE = 'F' AND", "NAME", funcs))
-    }
-    for (const r of rows) {
-      const m = mainOfInclude(col(r, "INCLUDE"))
+    for (const inc of wu.get(name)?.includes ?? []) {
+      const m = mainOfInclude(inc)
       if (isCustomerName(m.name) && m.name !== name && !movedNames.has(m.name)) users.add(m.name)
     }
     usedBy.set(name, users)
   }
-  const holdersIn = await openHolders(c, [...new Set([...usedBy.values()].flatMap(s => [...s]))])
+  const holdersIn = await facts.openHolders([...new Set([...usedBy.values()].flatMap(s => [...s]))])
   for (const [moved, set] of usedBy) {
     for (const u of set) {
       for (const h of holdersIn.get(u) ?? []) {
@@ -349,21 +497,25 @@ export interface MoveArgs {
 const describeReq = (r: TrReq) => `${r.trkorr}${r.text ? ` "${r.text}"` : ""} (${r.parent ? "task" : "request"}, ${family(r.fn)}, ${r.owner}${r.status !== "D" ? `, status ${r.status}` : ""})`
 
 export async function handleTransportMove(args: MoveArgs) {
-  const c = await ensureConnected(args.connectionId)
+  const fromId0 = args.from.trim().toUpperCase(), toId0 = args.to.trim().toUpperCase()
+  // Governed mode reads through the engine; direct mode with SQL through ADT.
+  const facts: MoveFacts = isGoverned()
+    ? new EngineMoveFacts(req => callEngine(args.connectionId, req), fromId0, toId0)
+    : new AdtMoveFacts(await ensureConnected(args.connectionId))
   const me = (getConnectionConfig(args.connectionId).username ?? "").toUpperCase()
   const fromId = args.from.trim().toUpperCase()
   const toId = args.to.trim().toUpperCase()
   const findings: Finding[] = []
   const text = (lines: string[]) => ({ content: [{ type: "text" as const, text: lines.join("\n") }] })
 
-  const base = await readRequests(c, [fromId, toId])
+  const base = await facts.readRequests([fromId, toId])
   const from = base.get(fromId), to = base.get(toId)
   if (!from || !to) {
     const missing = [!from && fromId, !to && toId].filter(Boolean).join(" and ")
     return text([`❌ Moving stopped: ${missing} does not exist in SAP. Nothing was moved.`,
       `Check the number in SE09 (a task number is fine too), then run again.`])
   }
-  const parents = await readRequests(c, [from.parent, to.parent].filter(Boolean))
+  const parents = await facts.readRequests([from.parent, to.parent].filter(Boolean))
   const fromRequest = from.parent ? parents.get(from.parent)! : from
   const toRequest = to.parent ? parents.get(to.parent)! : to
   const mode: "OBJECTS" | "TASK" = args.objects?.length ? "OBJECTS" : from.parent ? "TASK" : "OBJECTS"
@@ -404,12 +556,12 @@ export async function handleTransportMove(args: MoveArgs) {
   if (mode === "TASK") {
     if (to.parent) findings.push({ level: "note", text: `A task moves to a request: using ${toRequest.trkorr}, the request of ${to.trkorr}.` })
     target = toRequest.trkorr
-    sourceEntries = await entriesOf(c, [from.trkorr])
+    sourceEntries = await facts.entriesOf([from.trkorr])
     moving = sourceEntries
     lines.push(`Move:   the whole task ${from.trkorr} (${moving.length} entr${moving.length === 1 ? "y" : "ies"}) into request ${target}`)
   } else {
-    const sourceIds = from.parent ? [from.trkorr] : [from.trkorr, ...(await tasksOf(c, from.trkorr)).map(t => t.trkorr)]
-    sourceEntries = await entriesOf(c, sourceIds)
+    const sourceIds = from.parent ? [from.trkorr] : [from.trkorr, ...(await facts.tasksOf(from.trkorr)).map(t => t.trkorr)]
+    sourceEntries = await facts.entriesOf(sourceIds)
     const specs = (args.objects ?? []).map(parseSpec)
     const chosen = new Map<string, Entry>()
     for (const s of specs) {
@@ -419,7 +571,7 @@ export async function handleTransportMove(args: MoveArgs) {
     }
     if (args.includeParts !== false) {
       for (const e of [...chosen.values()].filter(x => x.pgmid === "R3TR")) {
-        const funcs = e.object === "FUGR" ? await functionsOfGroup(c, e.objName.trimEnd()) : undefined
+        const funcs = e.object === "FUGR" ? await facts.functionsOfGroup(e.objName.trimEnd()) : undefined
         for (const p of partsOf(e, sourceEntries, funcs)) {
           if (!chosen.has(`${p.trkorr}|${key(p)}`)) {
             chosen.set(`${p.trkorr}|${key(p)}`, p)
@@ -447,12 +599,12 @@ export async function handleTransportMove(args: MoveArgs) {
     // Target: my own task in the target request, when there is one of the right kind.
     if (!to.parent) {
       const fam = family(toRequest.fn)
-      const mine = (await tasksOf(c, toRequest.trkorr)).find(t => t.owner === me && OPEN.has(t.status) && t.fn === TASK_FOR[fam])
+      const mine = (await facts.tasksOf(toRequest.trkorr)).find(t => t.owner === me && OPEN.has(t.status) && t.fn === TASK_FOR[fam])
       if (mine) { target = mine.trkorr; findings.push({ level: "note", text: `Entries go into your task ${mine.trkorr} in ${toRequest.trkorr}.` }) }
     }
     // Already on the target: SAP would refuse the move (duplicate entry).
-    const targetIds = [toRequest.trkorr, ...(await tasksOf(c, toRequest.trkorr)).map(t => t.trkorr)]
-    const onTarget = new Set((await entriesOf(c, targetIds)).map(key))
+    const targetIds = [toRequest.trkorr, ...(await facts.tasksOf(toRequest.trkorr)).map(t => t.trkorr)]
+    const onTarget = new Set((await facts.entriesOf(targetIds)).map(key))
     const dup = moving.filter(e => onTarget.has(key(e)))
     if (dup.length) {
       for (const d of dup) findings.push({ level: "note", text: `${key(d)} is already on ${toRequest.trkorr}; left where it is.` })
@@ -467,7 +619,7 @@ export async function handleTransportMove(args: MoveArgs) {
   // ── dependencies and release order ──
   let deps: DepReport = { outgoing: [], incoming: [] }
   try {
-    deps = await analyseDependencies(c, moving, sourceEntries, fromRequest.trkorr, toRequest.trkorr)
+    deps = await analyseDependencies(facts, moving, sourceEntries, fromRequest.trkorr, toRequest.trkorr)
   } catch (err) {
     log("WARN", "transport_move dependency check failed", err)
     deps.skipped = `The dependency check could not run: ${String((err as Error)?.message ?? err)}.`
@@ -526,13 +678,14 @@ export async function handleTransportMove(args: MoveArgs) {
   }
 
   // ── verify ──
+  const after = facts.fresh()
   if (mode === "TASK") {
-    const now = (await readRequests(c, [from.trkorr])).get(from.trkorr)
+    const now = (await after.readRequests([from.trkorr])).get(from.trkorr)
     out.push(now?.parent === target ? `✅ Verified: task ${from.trkorr} is now in ${target}.`
       : `⚠️ SAP reported success, but E070 shows task ${from.trkorr} under ${now?.parent || "(none)"}. Check SE09.`)
   } else {
-    const atTarget = new Set((await entriesOf(c, [target])).map(key))
-    const stillAtSource = new Set((await entriesOf(c, [...new Set(moving.map(e => e.trkorr))])).map(key))
+    const atTarget = new Set((await after.entriesOf([target])).map(key))
+    const stillAtSource = new Set((await after.entriesOf([...new Set(moving.map(e => e.trkorr))])).map(key))
     const missing = moving.filter(e => !atTarget.has(key(e)))
     const left = moving.filter(e => stillAtSource.has(key(e)))
     out.push(!missing.length && !left.length

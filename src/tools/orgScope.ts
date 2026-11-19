@@ -60,6 +60,8 @@ export interface OrgScope {
   candidates: number          // tables keyed on the domain (client-dependent, transparent)
   truncated: boolean
   only?: "customizing" | "application"          // more candidates than MAX_CANDIDATES
+  /** governed mode: the engine counted one table per statement (ZCL_MCP_SCOPE_BATCH not installed) */
+  serial?: boolean
 }
 
 const q = (s: string) => s.replace(/'/g, "''")
@@ -222,6 +224,7 @@ interface EngineScope {
   TRUNCATED?: boolean | string
   COUNTED?: number
   ELAPSED_MS?: number
+  BATCHED?: boolean | string
   TABLES?: { TAB: string; FIELD: string; CLS: string; COUNTED?: boolean | string; SRC?: number; TGT?: number;
              UNREADABLE?: boolean | string; NOAUTH?: boolean | string; TEXT?: string }[]
 }
@@ -260,7 +263,7 @@ export async function buildOrgScopeViaEngine(
     }
   })
   const { scope } = splitScope(tables, flag(e.TRUNCATED), args)
-  return settleScope(scope)
+  return { ...settleScope(scope), serial: (e.COUNTED ?? 0) >= 8 && !flag(e.BATCHED) }
 }
 
 const LIST_RETEST = 40
@@ -333,7 +336,9 @@ export function formatOrgScope(s: OrgScope): string[] {
   if (c || a) {
     out.push("", `   ⏱  Time budget reached, not counted: ${[c && `${c} customizing`, a && `${a} application`].filter(Boolean).join(", ")} table(s). ` +
       (c ? `Re-run with retestScope: "customizing" to count only the customizing part.`
-         : `Re-run with retestScope: "application" to count only the application part.`))
+         : `Re-run with retestScope: "application" to count only the application part.`) +
+      (s.serial ? ` (The engine counted one table per statement: the optional class ZCL_MCP_SCOPE_BATCH, ` +
+        `which counts eight at a time on SAP_BASIS 7.50 and later, is not installed.)` : ""))
   }
   if (s.truncated) out.push(`   (More than ${MAX_CANDIDATES} key fields on ${s.domain}; the list was cut there.)`)
   return out

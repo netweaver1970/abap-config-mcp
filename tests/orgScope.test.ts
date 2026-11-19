@@ -206,3 +206,22 @@ describe("buildOrgScopeViaEngine (governed mode)", () => {
       .rejects.toThrow(/has no retest_scope action.*Install it with abapGit/)
   })
 })
+
+describe("buildOrgScopeViaEngine — one table at a time", () => {
+  it("says the optional class is missing when the engine counted serially and ran out of time", async () => {
+    const tables = [
+      ...Array.from({ length: 9 }, (_, i) => ({ TAB: `ZC${i}`, FIELD: "WERKS", CLS: "C", COUNTED: "X", SRC: 0, TGT: 0 })),
+      { TAB: "MARC", FIELD: "WERKS", CLS: "A", COUNTED: "" },
+    ]
+    const call = async () => ({ STATUS: "ok", DATA_JSON: JSON.stringify({ COUNTED: 9, BATCHED: "", TABLES: tables }) })
+    const scope = await buildOrgScopeViaEngine(call, { domain: "WERKS", sourceKey: "1", targetKey: "2", deadline: Date.now() + 20_000, copiedSet: [] })
+    expect(scope.serial).toBe(true)
+    expect(formatOrgScope(scope).join("\n")).toContain("the optional class ZCL_MCP_SCOPE_BATCH, which counts eight at a time on SAP_BASIS 7.50 and later, is not installed")
+  })
+
+  it("says nothing when it counted in batches", async () => {
+    const call = async () => ({ STATUS: "ok", DATA_JSON: JSON.stringify({ COUNTED: 9, BATCHED: "X", TABLES: [{ TAB: "MARC", FIELD: "WERKS", CLS: "A", COUNTED: "" }] }) })
+    const scope = await buildOrgScopeViaEngine(call, { domain: "WERKS", sourceKey: "1", targetKey: "2", deadline: Date.now() + 20_000, copiedSet: [] })
+    expect(formatOrgScope(scope).join("\n")).not.toContain("ZCL_MCP_SCOPE_BATCH")
+  })
+})

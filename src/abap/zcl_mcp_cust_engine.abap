@@ -259,8 +259,66 @@ CLASS zcl_mcp_cust_engine DEFINITION
              truncated  TYPE abap_bool,
              counted    TYPE i,
              elapsed_ms TYPE i,
+             batched    TYPE abap_bool,      " counted eight tables per statement (ZCL_MCP_SCOPE_BATCH installed)
              tables     TYPE ty_scope_tab_tt,
            END OF ty_scope.
+
+    " dependencies (transport_move's facts).
+    TYPES: BEGIN OF ty_mv_req,
+             trkorr     TYPE string,
+             trfunction TYPE string,
+             trstatus   TYPE string,
+             strkorr    TYPE string,
+             as4user    TYPE string,
+             tarsystem  TYPE string,
+             client     TYPE string,
+             text       TYPE string,
+           END OF ty_mv_req,
+           ty_mv_req_tt TYPE STANDARD TABLE OF ty_mv_req WITH DEFAULT KEY,
+           BEGIN OF ty_mv_entry,
+             trkorr   TYPE string,
+             pgmid    TYPE string,
+             object   TYPE string,
+             obj_name TYPE string,
+             lockflag TYPE string,
+           END OF ty_mv_entry,
+           ty_mv_entry_tt TYPE STANDARD TABLE OF ty_mv_entry WITH DEFAULT KEY,
+           BEGIN OF ty_mv_func,
+             fgroup   TYPE string,
+             funcname TYPE string,
+           END OF ty_mv_func,
+           ty_mv_func_tt TYPE STANDARD TABLE OF ty_mv_func WITH DEFAULT KEY,
+           BEGIN OF ty_mv_facts,
+             covered        TYPE string_table,
+             requests       TYPE ty_mv_req_tt,
+             entries        TYPE ty_mv_entry_tt,
+             entries_more   TYPE abap_bool,
+             functions      TYPE ty_mv_func_tt,
+           END OF ty_mv_facts,
+           BEGIN OF ty_mv_obj,
+             name TYPE string,
+             type TYPE string,
+           END OF ty_mv_obj,
+           ty_mv_obj_tt TYPE STANDARD TABLE OF ty_mv_obj WITH DEFAULT KEY,
+           BEGIN OF ty_mv_wu,
+             name     TYPE string,
+             used     TYPE string_table,
+             includes TYPE string_table,
+           END OF ty_mv_wu,
+           ty_mv_wu_tt TYPE STANDARD TABLE OF ty_mv_wu WITH DEFAULT KEY,
+           BEGIN OF ty_mv_holder,
+             name          TYPE string,
+             trkorr        TYPE string,
+             trstatus      TYPE string,
+             strkorr       TYPE string,
+             as4user       TYPE string,
+             parent_user   TYPE string,
+           END OF ty_mv_holder,
+           ty_mv_holder_tt TYPE STANDARD TABLE OF ty_mv_holder WITH DEFAULT KEY.
+
+    CONSTANTS: c_mv_max_entries TYPE i VALUE 20000,
+               c_mv_max_objects TYPE i VALUE 100,
+               c_mv_max_names   TYPE i VALUE 2000.
 
     CONSTANTS: c_scope_max_candidates TYPE i VALUE 8000,
                c_scope_default_ms     TYPE i VALUE 25000,
@@ -318,6 +376,20 @@ CLASS zcl_mcp_cust_engine DEFINITION
     "! the time budget is spent. COUNTS ONLY, never rows; a table the user may not
     "! display (S_TABU_DIS, else S_TABU_NAM) is not counted.
     METHODS handle_retest_scope
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! transport_move's facts, read-only, S_TRANSPRT display. ACTION:
+    "!   FACTS      for FROM_TRKORR and TO_TRKORR: both requests (a task gives its
+    "!              request), the tasks of each request, their object entries (at
+    "!              most 20000) and the function modules of every function group
+    "!              among the entries. COVERED lists the numbers it answers for.
+    "!   WHERE_USED for OBJECTS_JSON [{NAME,TYPE}] (CLAS/INTF/PROG/FUGR, at most
+    "!              100): what each uses (where-used index, function modules
+    "!              resolved to their group) and the includes that use it.
+    "!   HOLDERS    for OBJECTS_JSON [{NAME}] (at most 2000): the open tasks and
+    "!              requests holding R3TR entries of those names.
+    METHODS handle_dependencies
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
@@ -629,6 +701,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
             WHEN 'transports'.     ls_resp = handle_transports( ls_req ).
             WHEN 'transport_info'. ls_resp = handle_transport_info( ls_req ).
             WHEN 'retest_scope'.   ls_resp = handle_retest_scope( ls_req ).
+            WHEN 'dependencies'.   ls_resp = handle_dependencies( ls_req ).
             WHEN 'write'.    ls_resp = handle_write( ls_req ).
             WHEN 'create'.   ls_resp = handle_create( ls_req ).
             WHEN 'listing'.  ls_resp = handle_listing( ls_req ).
@@ -1708,10 +1781,11 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       ENDLOOP.
     ENDDO.
 
-    " 4. Count until the budget is spent: eight tables per statement (a UNION ALL
-    "    of eight dynamic branches, each numbered by an integer literal), so SAP
-    "    prepares one statement per eight tables. A batch that fails is counted
-    "    again table by table, which finds the one that cannot be read.
+    " 4. Count until the budget is spent: eight tables per statement through the
+    "    optional class ZCL_MCP_SCOPE_BATCH (a UNION ALL of eight dynamic branches,
+    "    SAP_BASIS 7.50+), called dynamically so this class keeps its 7.40 floor;
+    "    without it, or for a batch that fails, one table per statement (which also
+    "    finds the table that cannot be read).
     TYPES: BEGIN OF ty_branch,
              f TYPE string,
              t TYPE string,
@@ -1728,8 +1802,8 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
           lt_br      TYPE STANDARD TABLE OF ty_branch WITH DEFAULT KEY,
           lv_bi      TYPE i,
           lv_batched TYPE abap_bool,
-          b1 TYPE ty_branch, b2 TYPE ty_branch, b3 TYPE ty_branch, b4 TYPE ty_branch,
-          b5 TYPE ty_branch, b6 TYPE ty_branch, b7 TYPE ty_branch, b8 TYPE ty_branch.
+          lv_batch_ok TYPE abap_bool VALUE abap_true,
+          lv_any_batch TYPE abap_bool.
     DATA(lv_k_src) = condense( is_req-source_key ).
     DATA(lv_k_tgt) = condense( is_req-target_key ).
     DATA(lv_left) = lines( lt_order ).
@@ -1760,21 +1834,14 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
                         w = |{ <t>-field } IN ('{ lv_src }','{ lv_tgt }')|
                         g = <t>-field ) TO lt_br.
       ENDLOOP.
-      IF lines( lt_br ) = 8.
-        b1 = lt_br[ 1 ]. b2 = lt_br[ 2 ]. b3 = lt_br[ 3 ]. b4 = lt_br[ 4 ].
-        b5 = lt_br[ 5 ]. b6 = lt_br[ 6 ]. b7 = lt_br[ 7 ]. b8 = lt_br[ 8 ].
+      IF lines( lt_br ) = 8 AND lv_batch_ok = abap_true.
         CLEAR lt_ucnt.
         TRY.
-            SELECT (b1-f) FROM (b1-t) WHERE (b1-w) GROUP BY (b1-g)
-              UNION ALL SELECT (b2-f) FROM (b2-t) WHERE (b2-w) GROUP BY (b2-g)
-              UNION ALL SELECT (b3-f) FROM (b3-t) WHERE (b3-w) GROUP BY (b3-g)
-              UNION ALL SELECT (b4-f) FROM (b4-t) WHERE (b4-w) GROUP BY (b4-g)
-              UNION ALL SELECT (b5-f) FROM (b5-t) WHERE (b5-w) GROUP BY (b5-g)
-              UNION ALL SELECT (b6-f) FROM (b6-t) WHERE (b6-w) GROUP BY (b6-g)
-              UNION ALL SELECT (b7-f) FROM (b7-t) WHERE (b7-w) GROUP BY (b7-g)
-              UNION ALL SELECT (b8-f) FROM (b8-t) WHERE (b8-w) GROUP BY (b8-g)
-              INTO CORRESPONDING FIELDS OF TABLE @lt_ucnt.
-            lv_batched = abap_true.
+            CALL METHOD ('ZCL_MCP_SCOPE_BATCH')=>('COUNT8')
+              EXPORTING it_branches = lt_br
+              IMPORTING et_counts   = lt_ucnt.
+            lv_batched   = abap_true.
+            lv_any_batch = abap_true.
             LOOP AT lt_pending INTO lv_p.
               lv_bi = sy-tabix.
               READ TABLE ls_scope-tables ASSIGNING <t> INDEX lv_p.
@@ -1789,6 +1856,10 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
               ENDLOOP.
               ls_scope-counted = ls_scope-counted + 1.
             ENDLOOP.
+          CATCH cx_sy_dyn_call_error.
+            " Not installed (below 7.50, or not deployed): one table at a time from here on.
+            lv_batch_ok = abap_false.
+            lv_batched  = abap_false.
           CATCH cx_root.
             lv_batched = abap_false.
         ENDTRY.
@@ -1846,12 +1917,246 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
 
     GET RUN TIME FIELD lv_now.
     ls_scope-elapsed_ms = ( lv_now - lv_t0 ) / 1000.
+    ls_scope-batched    = lv_any_batch.
     rs_resp-status       = 'ok'.
     rs_resp-rows_planned = ls_scope-counted.
     /ui2/cl_json=>serialize(
       EXPORTING data        = ls_scope
                 pretty_name = /ui2/cl_json=>pretty_mode-none
       RECEIVING r_json      = rs_resp-data_json ).
+  ENDMETHOD.
+
+
+  METHOD handle_dependencies.
+    TYPES: BEGIN OF ty_id,
+             trkorr TYPE e070-trkorr,
+           END OF ty_id,
+           BEGIN OF ty_nm,
+             name TYPE e071-obj_name,
+           END OF ty_nm.
+    DATA: lt_ids    TYPE STANDARD TABLE OF ty_id WITH DEFAULT KEY,
+          lt_fam    TYPE STANDARD TABLE OF ty_id WITH DEFAULT KEY,
+          lt_objs   TYPE ty_mv_obj_tt,
+          lt_nm     TYPE STANDARD TABLE OF ty_nm WITH DEFAULT KEY,
+          lv_id     TYPE e070-trkorr,
+          lv_fetch  TYPE i.
+
+    rs_resp-operation = 'dependencies'.
+    IF may_display_transports( ) = abap_false.
+      rs_resp-status = 'error'.
+      APPEND |Reading the transport requests stopped: you are not authorized to display them (S_TRANSPRT, activity 03). | &&
+             |Ask for the authorization.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+
+    CASE to_upper( is_req-action ).
+      WHEN 'FACTS'.
+        DATA ls_facts TYPE ty_mv_facts.
+        " The two numbers, their requests, and every task of those requests.
+        LOOP AT VALUE string_table( ( is_req-from_trkorr ) ( is_req-to_trkorr ) ) INTO DATA(lv_in).
+          IF lv_in IS INITIAL.
+            CONTINUE.
+          ENDIF.
+          lv_id = to_upper( lv_in ).
+          APPEND CONV string( lv_id ) TO ls_facts-covered.
+          APPEND VALUE #( trkorr = lv_id ) TO lt_fam.
+          SELECT SINGLE strkorr FROM e070 WHERE trkorr = @lv_id INTO @DATA(lv_par).
+          IF sy-subrc = 0 AND lv_par IS NOT INITIAL.
+            APPEND VALUE #( trkorr = lv_par ) TO lt_fam.
+            APPEND CONV string( lv_par ) TO ls_facts-covered.
+          ENDIF.
+        ENDLOOP.
+        SORT lt_fam BY trkorr.
+        DELETE ADJACENT DUPLICATES FROM lt_fam COMPARING trkorr.
+        lt_ids = lt_fam.
+        IF lt_fam IS NOT INITIAL.
+          SELECT trkorr FROM e070
+            FOR ALL ENTRIES IN @lt_fam
+            WHERE strkorr = @lt_fam-trkorr
+            APPENDING TABLE @lt_ids.
+        ENDIF.
+        SORT lt_ids BY trkorr.
+        DELETE ADJACENT DUPLICATES FROM lt_ids COMPARING trkorr.
+        LOOP AT lt_ids INTO DATA(ls_id).
+          IF NOT line_exists( ls_facts-covered[ table_line = CONV string( ls_id-trkorr ) ] ).
+            APPEND CONV string( ls_id-trkorr ) TO ls_facts-covered.
+          ENDIF.
+        ENDLOOP.
+        IF lt_ids IS NOT INITIAL.
+          SELECT trkorr, trfunction, trstatus, strkorr, as4user, tarsystem FROM e070
+            FOR ALL ENTRIES IN @lt_ids
+            WHERE trkorr = @lt_ids-trkorr
+            INTO TABLE @DATA(lt_hdr).
+          SELECT trkorr, client FROM e070c
+            FOR ALL ENTRIES IN @lt_ids
+            WHERE trkorr = @lt_ids-trkorr
+            INTO TABLE @DATA(lt_cli).
+          SELECT trkorr, langu, as4text FROM e07t
+            FOR ALL ENTRIES IN @lt_ids
+            WHERE trkorr = @lt_ids-trkorr
+            INTO TABLE @DATA(lt_txt).
+          LOOP AT lt_hdr INTO DATA(ls_hdr).
+            APPEND INITIAL LINE TO ls_facts-requests ASSIGNING FIELD-SYMBOL(<rq>).
+            <rq>-trkorr = ls_hdr-trkorr. <rq>-trfunction = ls_hdr-trfunction. <rq>-trstatus = ls_hdr-trstatus.
+            <rq>-strkorr = ls_hdr-strkorr. <rq>-as4user = ls_hdr-as4user. <rq>-tarsystem = ls_hdr-tarsystem.
+            READ TABLE lt_cli INTO DATA(ls_cli) WITH KEY trkorr = ls_hdr-trkorr.
+            IF sy-subrc = 0.
+              <rq>-client = ls_cli-client.
+            ENDIF.
+            " First text found, as the server's own reading takes it.
+            READ TABLE lt_txt INTO DATA(ls_txt) WITH KEY trkorr = ls_hdr-trkorr.
+            IF sy-subrc = 0.
+              <rq>-text = ls_txt-as4text.
+            ENDIF.
+          ENDLOOP.
+          lv_fetch = c_mv_max_entries + 1.
+          DATA lr_ids TYPE RANGE OF e071-trkorr.
+          LOOP AT lt_ids INTO ls_id.
+            APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_id-trkorr ) TO lr_ids.
+          ENDLOOP.
+          SELECT trkorr, pgmid, object, obj_name, lockflag FROM e071
+            WHERE trkorr IN @lr_ids
+            ORDER BY trkorr, as4pos
+            INTO TABLE @DATA(lt_e071)
+            UP TO @lv_fetch ROWS.
+          IF lines( lt_e071 ) > c_mv_max_entries.
+            ls_facts-entries_more = abap_true.
+            DATA(lv_cut) = c_mv_max_entries + 1.
+            DELETE lt_e071 FROM lv_cut.
+          ENDIF.
+          LOOP AT lt_e071 INTO DATA(ls_e).
+            APPEND VALUE #( trkorr = ls_e-trkorr pgmid = ls_e-pgmid object = ls_e-object
+                            obj_name = ls_e-obj_name lockflag = ls_e-lockflag ) TO ls_facts-entries.
+            IF ls_e-pgmid = 'R3TR' AND ls_e-object = 'FUGR'.
+              APPEND VALUE #( name = ls_e-obj_name ) TO lt_nm.
+            ENDIF.
+          ENDLOOP.
+          " Function modules of each function group on the requests (TFDIR-PNAME = SAPL<group>).
+          SORT lt_nm BY name.
+          DELETE ADJACENT DUPLICATES FROM lt_nm COMPARING name.
+          LOOP AT lt_nm INTO DATA(ls_nm).
+            DATA(lv_pname) = CONV tfdir-pname( |SAPL{ ls_nm-name }| ).
+            SELECT funcname FROM tfdir WHERE pname = @lv_pname INTO TABLE @DATA(lt_fn) UP TO 500 ROWS.
+            LOOP AT lt_fn INTO DATA(ls_fn).
+              APPEND VALUE #( fgroup = ls_nm-name funcname = ls_fn-funcname ) TO ls_facts-functions.
+            ENDLOOP.
+          ENDLOOP.
+        ENDIF.
+        rs_resp-status = 'ok'.
+        /ui2/cl_json=>serialize( EXPORTING data = ls_facts pretty_name = /ui2/cl_json=>pretty_mode-none
+                                 RECEIVING r_json = rs_resp-data_json ).
+
+      WHEN 'WHERE_USED'.
+        DATA lt_wu TYPE ty_mv_wu_tt.
+        TRY.
+            /ui2/cl_json=>deserialize( EXPORTING json = is_req-objects_json pretty_name = /ui2/cl_json=>pretty_mode-none
+                                       CHANGING data = lt_objs ).
+          CATCH cx_root.
+            CLEAR lt_objs.
+        ENDTRY.
+        IF lines( lt_objs ) > c_mv_max_objects.
+          rs_resp-status = 'error'.
+          APPEND |The dependency check stopped: { lines( lt_objs ) } objects, at most { c_mv_max_objects } at a time.| TO rs_resp-messages.
+          RETURN.
+        ENDIF.
+        LOOP AT lt_objs INTO DATA(ls_o).
+          DATA(lv_name) = to_upper( ls_o-name ).
+          DATA(lv_type) = to_upper( ls_o-type ).
+          IF is_valid_name( lv_name ) = abap_false.
+            CONTINUE.
+          ENDIF.
+          APPEND INITIAL LINE TO lt_wu ASSIGNING FIELD-SYMBOL(<w>).
+          <w>-name = lv_name.
+          " Includes of the object: a program is its own include, a function group's start with L<group>,
+          " a class's or interface's are the name padded with '=' to 30 characters.
+          DATA(lv_incpat) = SWITCH string( lv_type
+            WHEN 'PROG' THEN lv_name
+            WHEN 'FUGR' THEN |L{ lv_name }%|
+            ELSE |{ lv_name }{ repeat( val = `=` occ = 30 - strlen( lv_name ) ) }%| ).
+          " What it uses: WBCROSSGT names (the part before '\'), function modules (CROSS 'F') resolved to their group.
+          SELECT name FROM wbcrossgt WHERE include LIKE @lv_incpat INTO TABLE @DATA(lt_wb) UP TO 1000 ROWS.
+          IF lv_type = 'FUGR'.
+            DATA(lv_sapl) = |SAPL{ lv_name }|.
+            SELECT name FROM wbcrossgt WHERE include = @lv_sapl APPENDING TABLE @lt_wb UP TO 500 ROWS.
+          ENDIF.
+          LOOP AT lt_wb INTO DATA(ls_wb).
+            SPLIT ls_wb-name AT '\' INTO DATA(lv_head) DATA(lv_rest).
+            APPEND condense( lv_head ) TO <w>-used.
+          ENDLOOP.
+          SELECT name FROM cross WHERE type = 'F' AND include LIKE @lv_incpat INTO TABLE @DATA(lt_cf) UP TO 500 ROWS.
+          LOOP AT lt_cf INTO DATA(ls_cf).
+            IF ls_cf-name(1) <> 'Z' AND ls_cf-name(1) <> 'Y' AND ls_cf-name(1) <> '/'.
+              CONTINUE.
+            ENDIF.
+            SELECT SINGLE pname FROM tfdir WHERE funcname = @ls_cf-name INTO @DATA(lv_fpname).
+            IF sy-subrc = 0 AND lv_fpname(4) = 'SAPL'.
+              APPEND CONV string( lv_fpname+4 ) TO <w>-used.
+            ENDIF.
+          ENDLOOP.
+          SORT <w>-used.
+          DELETE ADJACENT DUPLICATES FROM <w>-used.
+          " What uses it: includes referring to it, and for a function group the includes calling its modules.
+          DATA(lv_namepat) = |{ lv_name }\\%|.
+          SELECT include FROM wbcrossgt WHERE name = @lv_name OR name LIKE @lv_namepat INTO TABLE @DATA(lt_inc) UP TO 1000 ROWS.
+          IF lv_type = 'FUGR'.
+            DATA(lv_gpname) = CONV tfdir-pname( |SAPL{ lv_name }| ).
+            SELECT funcname FROM tfdir WHERE pname = @lv_gpname INTO TABLE @DATA(lt_gf) UP TO 500 ROWS.
+            IF lt_gf IS NOT INITIAL.
+              SELECT include FROM cross
+                FOR ALL ENTRIES IN @lt_gf
+                WHERE type = 'F' AND name = @lt_gf-funcname
+                APPENDING TABLE @lt_inc.
+            ENDIF.
+          ENDIF.
+          LOOP AT lt_inc INTO DATA(ls_inc).
+            APPEND condense( CONV string( ls_inc-include ) ) TO <w>-includes.
+          ENDLOOP.
+          SORT <w>-includes.
+          DELETE ADJACENT DUPLICATES FROM <w>-includes.
+        ENDLOOP.
+        rs_resp-status = 'ok'.
+        /ui2/cl_json=>serialize( EXPORTING data = lt_wu pretty_name = /ui2/cl_json=>pretty_mode-none
+                                 RECEIVING r_json = rs_resp-data_json ).
+
+      WHEN 'HOLDERS'.
+        DATA lt_hold TYPE ty_mv_holder_tt.
+        TRY.
+            /ui2/cl_json=>deserialize( EXPORTING json = is_req-objects_json pretty_name = /ui2/cl_json=>pretty_mode-none
+                                       CHANGING data = lt_objs ).
+          CATCH cx_root.
+            CLEAR lt_objs.
+        ENDTRY.
+        IF lines( lt_objs ) > c_mv_max_names.
+          rs_resp-status = 'error'.
+          APPEND |The dependency check stopped: { lines( lt_objs ) } names, at most { c_mv_max_names } at a time.| TO rs_resp-messages.
+          RETURN.
+        ENDIF.
+        LOOP AT lt_objs INTO ls_o.
+          APPEND VALUE #( name = to_upper( ls_o-name ) ) TO lt_nm.
+        ENDLOOP.
+        IF lt_nm IS NOT INITIAL.
+          SELECT e~obj_name, e~trkorr, h~trstatus, h~strkorr, h~as4user FROM e071 AS e
+            INNER JOIN e070 AS h ON h~trkorr = e~trkorr
+            FOR ALL ENTRIES IN @lt_nm
+            WHERE e~pgmid = 'R3TR' AND e~obj_name = @lt_nm-name
+            INTO TABLE @DATA(lt_h).
+          LOOP AT lt_h INTO DATA(ls_h).
+            APPEND INITIAL LINE TO lt_hold ASSIGNING FIELD-SYMBOL(<h>).
+            <h>-name = ls_h-obj_name. <h>-trkorr = ls_h-trkorr. <h>-trstatus = ls_h-trstatus.
+            <h>-strkorr = ls_h-strkorr. <h>-as4user = ls_h-as4user.
+            IF ls_h-strkorr IS NOT INITIAL.
+              SELECT SINGLE as4user FROM e070 WHERE trkorr = @ls_h-strkorr INTO @<h>-parent_user.
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+        rs_resp-status = 'ok'.
+        /ui2/cl_json=>serialize( EXPORTING data = lt_hold pretty_name = /ui2/cl_json=>pretty_mode-none
+                                 RECEIVING r_json = rs_resp-data_json ).
+
+      WHEN OTHERS.
+        rs_resp-status = 'error'.
+        APPEND |The dependency facts stopped: ACTION must be FACTS, WHERE_USED or HOLDERS; got '{ is_req-action }'.| TO rs_resp-messages.
+    ENDCASE.
   ENDMETHOD.
 
 

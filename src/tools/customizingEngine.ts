@@ -25,6 +25,7 @@ import {
   getEngineSource, ENGINE_VERSION, ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH,
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
+import { SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL, SCOPE_BATCH_MIN_BASIS, getScopeBatchSource, basisSupportsScopeBatch } from "../abap/zcl_mcp_scope_batch"
 import { runSql, tableRows, col, type ResolvedMaint } from "./customizing"
 import { customizingSource, ddicDescribe } from "./customizingSource"
 import { selectTransport, rememberTransport, workKey } from "./transportSelection"
@@ -39,7 +40,7 @@ import { buildOrgScope, buildOrgScopeViaEngine, formatOrgScope } from "./orgScop
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
 export interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe" | "transports" | "transport_info" | "retest_scope"
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe" | "transports" | "transport_info" | "retest_scope" | "dependencies"
   table?: string
   key_field?: string
   source_key?: string
@@ -390,12 +391,36 @@ export async function ensureEngineClass(connectionId?: string): Promise<{ change
     } catch {
       reportPresent = false
     }
-    if (reportPresent) return { changed: false, action: "already current" }
-    // Report missing despite class being current — re-run bootstrap to deploy it
+    // The optional batch class: expected on 7.50+ only (see zcl_mcp_scope_batch.ts).
+    if (reportPresent && !(await scopeBatchMissing(client, connectionId))) return { changed: false, action: "already current" }
+    // Report (or the batch class on 7.50+) missing despite the class being current — re-run bootstrap
   }
   // bootstrap handles both create (missing) and update-in-place (stale)
   await handleEngineBootstrap({ connectionId })
   return { changed: true, action: current ? "updated" : "created" }
+}
+
+/** SAP_BASIS release (CVERS), e.g. "816"; undefined when it cannot be read. */
+async function basisRelease(client: Awaited<ReturnType<typeof ensureConnected>>): Promise<string | undefined> {
+  try {
+    const row = tableRows(await runSql(client, `SELECT RELEASE FROM CVERS WHERE COMPONENT = 'SAP_BASIS'`, 1))[0]
+    return row ? col(row, "RELEASE") : undefined
+  } catch { return undefined }
+}
+
+// Connections whose optional batch class was found present or not applicable, so the check runs once per process.
+const scopeBatchChecked = new Set<string>()
+
+/** True when the system is 7.50+ and ZCL_MCP_SCOPE_BATCH is not there. */
+async function scopeBatchMissing(client: Awaited<ReturnType<typeof ensureConnected>>, connectionId?: string): Promise<boolean> {
+  const key = connectionId ?? "__default__"
+  if (scopeBatchChecked.has(key)) return false
+  if (!basisSupportsScopeBatch(await basisRelease(client))) { scopeBatchChecked.add(key); return false }
+  try {
+    await client.getObjectSource(`${SCOPE_BATCH_CLASS_URL}/source/main`)
+    scopeBatchChecked.add(key)
+    return false
+  } catch { return true }
 }
 
 // ─── customizing_engine_bootstrap ───────────────────────────────────────────────
@@ -486,6 +511,36 @@ export async function handleEngineBootstrap(args: {
     return { content: [{ type: "text" as const, text: lines.join("\n") }] }
   }
   lines.push(`✅ Report activated`)
+
+  // 3. Optional: ZCL_MCP_SCOPE_BATCH (retest_scope counts eight tables per statement), 7.50+ only.
+  //    Not fatal: without it the engine counts one table at a time.
+  const release = await basisRelease(client)
+  if (!basisSupportsScopeBatch(release)) {
+    lines.push(`ℹ️  ${SCOPE_BATCH_CLASS_NAME} not installed: SAP_BASIS ${release ?? "(release not read)"} is below ` +
+      `${SCOPE_BATCH_MIN_BASIS}, so org_copy's retest scope counts one table at a time (slower on large units, same result).`)
+  } else {
+    try {
+      let batchExists = false
+      try { await client.getObjectSource(`${SCOPE_BATCH_CLASS_URL}/source/main`); batchExists = true } catch { batchExists = false }
+      if (!batchExists) {
+        await handleCreateAbapObject({
+          objectType: "CLAS/OC", name: SCOPE_BATCH_CLASS_NAME, description: "MCP engine: batched row counts (7.50+)",
+          packageName: pkg, transport: args.transport, connectionId: args.connectionId,
+        })
+      }
+      await handleWriteAbapObjectSource({ url: SCOPE_BATCH_CLASS_URL, source: getScopeBatchSource(), transport: args.transport, connectionId: args.connectionId })
+      const actB = await handleAbapActivate({ url: SCOPE_BATCH_CLASS_URL, connectionId: args.connectionId })
+      if (/❌|Activation failed/i.test(actB.content[0].text)) {
+        lines.push(`⚠️  ${SCOPE_BATCH_CLASS_NAME} did not activate, so the retest scope counts one table at a time:`, actB.content[0].text)
+      } else {
+        lines.push(`✅ ${SCOPE_BATCH_CLASS_NAME} ${batchExists ? "updated" : "created"} and activated (optional, SAP_BASIS ${release})`)
+        scopeBatchChecked.add(args.connectionId ?? "__default__")
+      }
+    } catch (err) {
+      lines.push(`⚠️  ${SCOPE_BATCH_CLASS_NAME} could not be installed (${String((err as Error)?.message ?? err)}); ` +
+        `the retest scope counts one table at a time.`)
+    }
+  }
 
   lines.push(
     "",
@@ -1411,7 +1466,7 @@ export async function handleEngineCleanup(args: {
 }) {
   if (args.confirm !== true) {
     return { content: [{ type: "text" as const, text:
-      `⚠️  This will delete the ABAP class ${ENGINE_CLASS_NAME} from the system.\n` +
+      `⚠️  This will delete the ABAP classes ${ENGINE_CLASS_NAME} and ${SCOPE_BATCH_CLASS_NAME} (when present) from the system.\n` +
       `   The SICF service must be removed separately in transaction SICF.\n\n` +
       `   Re-run with confirm: true to proceed.` }] }
   }
@@ -1428,6 +1483,13 @@ export async function handleEngineCleanup(args: {
       lines.push(`❌ Could not delete ${ENGINE_CLASS_NAME}: ${msg}`)
     }
   }
+
+  // The optional batch class (7.50+ systems only); absent is fine.
+  try {
+    await handleDeleteAbapObject({ url: SCOPE_BATCH_CLASS_URL, connectionId: args.connectionId })
+    lines.push(`🗑️  Deleted class ${SCOPE_BATCH_CLASS_NAME}`)
+  } catch { /* not installed */ }
+  scopeBatchChecked.delete(args.connectionId ?? "__default__")
 
   // Release any residual locks from the delete
   try { await dropSessionLocks(args.connectionId) } catch { /* best-effort */ }
@@ -1448,7 +1510,7 @@ export function registerCustomizingEngineTools(server: McpServer): void {
     {
       title: "Deploy/Update Customizing Engine",
       description:
-        "Install or update the Customizing Engine in the SAP system: creates or overwrites the class ZCL_MCP_CUST_ENGINE and the batch writer report ZMCP_CUST_WRITE, writes their source and activates both. " +
+        "Install or update the Customizing Engine in the SAP system: creates or overwrites the class ZCL_MCP_CUST_ENGINE and the batch writer report ZMCP_CUST_WRITE, writes their source and activates both; on SAP_BASIS 7.50 and later also the optional class ZCL_MCP_SCOPE_BATCH (faster retest-scope counting; without it the engine counts one table at a time). " +
         "Run it once to install and again when the engine version changes; the first install then needs a one-time SICF service registration (handler ZCL_MCP_CUST_ENGINE), which the result spells out. " +
         "Use it to update the engine in place (default package $TMP); for a first setup, or to make the engine transportable, use engine_deploy instead, which calls this and also registers SICF. The customizing tools with autoDeploy update the engine themselves, so this is rarely needed. Verify with customizing_engine_ping; remove with customizing_engine_cleanup. " +
         "Writes repository objects and needs development authorization (S_DEVELOP).",

@@ -25,6 +25,7 @@ import { handleEngineBootstrap } from "./customizingEngine"
 import { getDiagSource, DIAG_CLASS_NAME, DIAG_CLASS_URL, DIAG_ICF_PATH } from "../abap/zcl_mcp_diag"
 import { ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH } from "../abap/zcl_mcp_cust_engine"
 import { WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
+import { SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL } from "../abap/zcl_mcp_scope_batch"
 
 export interface DeployObject { kind: "class" | "report"; name: string; url: string; getSource?: () => string }
 export interface DeployUnit {
@@ -50,6 +51,8 @@ export const UNITS: DeployUnit[] = [
     objects: [
       { kind: "class",  name: ENGINE_CLASS_NAME,  url: ENGINE_CLASS_URL },
       { kind: "report", name: WRITER_REPORT_NAME, url: WRITER_REPORT_URL },
+      // optional, installed by the bootstrap on SAP_BASIS 7.50+ only
+      { kind: "class",  name: SCOPE_BATCH_CLASS_NAME, url: SCOPE_BATCH_CLASS_URL },
     ],
   },
 ]

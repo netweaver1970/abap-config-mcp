@@ -186,3 +186,101 @@ describe("transport_move — planning", () => {
     expect(JSON.parse(vi.mocked(callEngine).mock.calls[0][1].objects_json!)).toHaveLength(2)
   })
 })
+
+// ─── governed mode: the engine's dependencies action, served from the same fake tables ──
+
+import { resetServerModeForTests } from "../src/mode"
+import { EngineMoveFacts } from "../src/tools/transportMove"
+
+/** What the engine's dependencies action answers, computed from `db` the way the ABAP does. */
+function engineFromDb(body: Record<string, unknown>): Record<string, unknown> {
+  const ok = (data: unknown) => ({ STATUS: "ok", VERSION: "x", MESSAGES: [], DATA_JSON: JSON.stringify(data) })
+  if (body.operation === "transport_move") return { STATUS: "ok", MESSAGES: ["A1T → B1T: 3 entries pass SAP's test move."] }
+  if (body.operation !== "dependencies") return { STATUS: "error", MESSAGES: [`Unknown operation: '${body.operation}'`] }
+  const E070 = db.E070 ?? [], E071 = db.E071 ?? []
+  if (body.action === "FACTS") {
+    const covered = new Set<string>(), fam = new Set<string>()
+    for (const raw of [body.from_trkorr, body.to_trkorr].map(String)) {
+      const id = raw.toUpperCase(); covered.add(id); fam.add(id)
+      const parent = E070.find(r => r.TRKORR === id)?.STRKORR
+      if (parent) { covered.add(parent); fam.add(parent) }
+    }
+    for (const r of E070) if (fam.has(r.STRKORR)) covered.add(r.TRKORR)
+    const requests = E070.filter(r => covered.has(r.TRKORR)).map(r => ({ ...r,
+      CLIENT: db.E070C?.find(c => c.TRKORR === r.TRKORR)?.CLIENT ?? "", TEXT: db.E07T?.find(t => t.TRKORR === r.TRKORR)?.AS4TEXT ?? "" }))
+    const entries = E071.filter(e => covered.has(e.TRKORR))
+    const groups = entries.filter(e => e.PGMID === "R3TR" && e.OBJECT === "FUGR").map(e => e.OBJ_NAME)
+    const functions = (db.TFDIR ?? []).filter(f => groups.some(g => f.PNAME === `SAPL${g}`)).map(f => ({ FGROUP: f.PNAME.slice(4), FUNCNAME: f.FUNCNAME }))
+    return ok({ COVERED: [...covered], REQUESTS: requests, ENTRIES: entries, FUNCTIONS: functions })
+  }
+  if (body.action === "WHERE_USED") {
+    const objs = JSON.parse(String(body.objects_json)) as Array<{ NAME: string; TYPE: string }>
+    const like = (p: string) => new RegExp("^" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*") + "$")
+    return ok(objs.map(o => {
+      const pat = o.TYPE === "PROG" ? like(o.NAME) : o.TYPE === "FUGR" ? like(`L${o.NAME}%`) : like(`${o.NAME.padEnd(30, "=")}%`)
+      const used = (db.WBCROSSGT ?? []).filter(w => pat.test(w.INCLUDE)).map(w => w.NAME.split("\\")[0])
+      const includes = (db.WBCROSSGT ?? []).filter(w => w.NAME === o.NAME || w.NAME.startsWith(`${o.NAME}\\`)).map(w => w.INCLUDE)
+      return { NAME: o.NAME, USED: [...new Set(used)].sort(), INCLUDES: [...new Set(includes)].sort() }
+    }))
+  }
+  if (body.action === "HOLDERS") {
+    const names = new Set((JSON.parse(String(body.objects_json)) as Array<{ NAME: string }>).map(n => n.NAME))
+    return ok(E071.filter(e => e.PGMID === "R3TR" && names.has(e.OBJ_NAME)).flatMap(e => {
+      const h = E070.find(r => r.TRKORR === e.TRKORR)
+      if (!h) return []
+      return [{ NAME: e.OBJ_NAME, TRKORR: h.TRKORR, TRSTATUS: h.TRSTATUS, STRKORR: h.STRKORR, AS4USER: h.AS4USER,
+        PARENT_USER: E070.find(r => r.TRKORR === h.STRKORR)?.AS4USER ?? "" }]
+    }))
+  }
+  return { STATUS: "error", MESSAGES: ["bad action"] }
+}
+
+describe("transport_move — governed mode reads through the engine and plans the same", () => {
+  const scenarios = [
+    { from: "A1", to: "B1", objects: ["ZCL_A"] },
+    { from: "A1T", to: "B1T" },
+    { from: "A1", to: "B1" },
+    { from: "A1", to: "REL", objects: ["ZCL_A"] },
+    { from: "A1", to: "W1", objects: ["ZCL_A"] },
+    { from: "A1", to: "C2", objects: ["ZCL_A"] },
+    { from: "A1", to: "B1", objects: ["ZCL_NOPE"] },
+    { from: "A1", to: "B1", objects: ["LIMU METH ZCL_A*"] },
+    { from: "A1", to: "OTH", objects: ["ZREPORT"] },
+    { from: "NOPE", to: "B1", objects: ["ZCL_A"] },
+  ]
+  const run = async (mode: "direct" | "governed", args: (typeof scenarios)[number]) => {
+    process.env.ABAP_MCP_MODE = mode
+    resetServerModeForTests()
+    vi.mocked(callEngine).mockImplementation(async (_c, body) => engineFromDb(body as never) as never)
+    try { return (await handleTransportMove(args)).content[0].text } finally { delete process.env.ABAP_MCP_MODE; resetServerModeForTests() }
+  }
+
+  for (const args of scenarios) {
+    it(`${args.from} → ${args.to} ${args.objects?.join(", ") ?? "(whole task)"}`, async () => {
+      const direct = await run("direct", args)
+      const governed = await run("governed", args)
+      expect(governed).toBe(direct)
+    })
+  }
+
+  it("governed mode asks the engine, not SQL", async () => {
+    await run("governed", scenarios[0])
+    const ops = vi.mocked(callEngine).mock.calls.map(c => `${(c[1] as { operation: string }).operation}:${(c[1] as { action?: string }).action ?? ""}`)
+    expect(ops).toEqual(["dependencies:FACTS", "dependencies:WHERE_USED", "dependencies:HOLDERS", "dependencies:HOLDERS", "transport_move:OBJECTS"])
+  })
+
+  it("a question outside the two request families is an error, not an empty answer", async () => {
+    const facts = new EngineMoveFacts(async b => engineFromDb(b as never) as never, "A1", "B1")
+    await expect(facts.entriesOf(["OTHT"])).rejects.toThrow(/outside A1 and B1/)
+  })
+
+  it("too many entries stops the plan before anything moves", async () => {
+    const facts = new EngineMoveFacts(async () => ({ STATUS: "ok", DATA_JSON: JSON.stringify({ COVERED: ["A1"], ENTRIES_MORE: "X" }) }), "A1", "B1")
+    await expect(facts.readRequests(["A1"])).rejects.toThrow(/more than 20,000 object entries/)
+  })
+
+  it("an engine without the action says to update it", async () => {
+    const facts = new EngineMoveFacts(async () => ({ STATUS: "error", VERSION: "0.9.39", MESSAGES: ["Unknown operation: 'dependencies'"] }), "A1", "B1")
+    await expect(facts.readRequests(["A1"])).rejects.toThrow(/has no dependencies action.*Install it with abapGit/)
+  })
+})
