@@ -86,6 +86,9 @@ function setMode(m: string | undefined) {
   resetServerModeForTests()
 }
 
+// These tests look at the per-tool layer under the groups (toolGroups.test.ts covers the groups).
+process.env.ABAP_MCP_TOOLS = "legacy"
+
 beforeEach(() => {
   adtConstructed.n = 0
   engineReply.status = 200

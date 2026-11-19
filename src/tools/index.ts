@@ -22,10 +22,30 @@ import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
 import { wrapServerWithAnnotations } from "./toolAnnotations"
 import { log } from "../connections"
 import { serverMode, wrapServerWithModeGating, GOVERNED_TOOLS } from "../mode"
+import { groupingServer, toolSurface, type ToolSurface } from "./toolGroups"
 
 let _governedLogged = false
 
-export function registerAllTools(server: McpServer): void {
+let _surfaceLogged = false
+
+export function registerAllTools(server: McpServer, opts: { surface?: ToolSurface } = {}): void {
+  // Outermost of all: the grouped surface (default) collects every tool that the layers below let
+  // through and registers a dozen group tools with an action each — see toolGroups.ts.
+  const surface = opts.surface ?? toolSurface()
+  const grouping = surface === "grouped" ? groupingServer(server) : undefined
+  registerTools(grouping?.target ?? server)
+  if (grouping) {
+    const { groups, ungrouped } = grouping.flush()
+    if (!_surfaceLogged) {
+      _surfaceLogged = true
+      log("INFO", `Tools: ${groups.length} groups (${groups.map(g => `${g.name}: ${g.actions.length}`).join(", ")})` +
+        (ungrouped.length ? `; not in a group, registered as they are: ${ungrouped.join(", ")}` : "") +
+        `. ABAP_MCP_TOOLS=legacy gives the one-tool-per-operation names instead.`)
+    }
+  }
+}
+
+function registerTools(server: McpServer): void {
   // Every handler registered below gets automatic forceReconnect-and-retry
   // on session-degradation errors (HTTP 400 after heavy use) — see
   // sessionRecovery.ts.

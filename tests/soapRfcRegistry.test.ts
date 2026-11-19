@@ -18,7 +18,7 @@ type Handler = (args: unknown, extra: unknown) => Promise<any>
 
 // The real registry, on a stand-in server that records each tool's final (fully wrapped) handler.
 const handlers = new Map<string, Handler>()
-registerAllTools({ registerTool: (name: string, _cfg: unknown, h: Handler) => { handlers.set(name, h) } } as any)
+registerAllTools({ registerTool: (name: string, _cfg: unknown, h: Handler) => { handlers.set(name, h) } } as any, { surface: "legacy" })
 
 let logged: string[] = []
 let sent = 0
