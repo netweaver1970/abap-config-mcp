@@ -43,8 +43,14 @@ CLASS zcl_mcp_pp_profile IMPLEMENTATION.
     ENDIF.
     lv_bak = |{ lv_pf }.mcp-pp-backup|.
     out->write( |instance profile: { lv_pf }| ).
-    SELECT COUNT(*) FROM tpfht WHERE pfname LIKE '%CAR_D01%' INTO @DATA(lv_db).
-    out->write( |RZ10 database copies of instance profiles named like it: { lv_db }| ).
+    " RZ10 keeps profiles under the file name without directory, in upper case
+    DATA(lv_base) = to_upper( substring_after( val = lv_pf sub = `/profile/` ) ).
+    SELECT pfname, versnr FROM tpfht WHERE pfname = @lv_base INTO TABLE @DATA(lt_db).
+    out->write( |RZ10 database copies of { lv_base }: { lines( lt_db ) }| ).
+    LOOP AT lt_db INTO DATA(ls_db).
+      SELECT COUNT(*) FROM tpfet WHERE pfname = @ls_db-pfname AND versnr = @ls_db-versnr AND parname LIKE 'icm/server_port%' INTO @DATA(lv_ports).
+      out->write( |  version { ls_db-versnr }: { lv_ports } icm/server_port line(s); if that is fewer than in the file, the copy is out of date| ).
+    ENDLOOP.
     IF c_mode = 'ADDFILE'.
       OPEN DATASET lv_pf FOR INPUT IN BINARY MODE.
       READ DATASET lv_pf INTO lv_x.

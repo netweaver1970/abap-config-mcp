@@ -220,7 +220,10 @@ release order, plan building); only where it gets its facts from changes.
    certificate + SSL_CLIENT_CERT, icm/trusted_reverse_proxy_0 set in the running ICM) also 8/8;
    without the trusted proxy ICM ignored the header (401). Finding: behind a trusted proxy ICM does
    not check the forwarded certificate's issuer, so a DN-only mapping let a rogue-CA certificate log
-   on; mapping with the issuer (VUSREXTID) or CERTRULE closes it (tested). CAR was reverted. Set-up guide: docs/PRINCIPAL_PROPAGATION.md.
+   on; mapping with the issuer (VUSREXTID) or CERTRULE closes it (tested). CAR was reverted.
+   Made permanent on CAR, then redone on S4 from docs/PRINCIPAL_PROPAGATION.md (user GEERT): both
+   systems 8/8 in both modes. The redo found that the back end's clock matters: S4 runs about two
+   hours ahead and refused every short-lived certificate as expired (simulator: --skew-minutes). Set-up guide: docs/PRINCIPAL_PROPAGATION.md.
    Still open: the real BTP side (IAS, destination, MCP server artifact, Cloud Connector).
    NEEDS CONFIRMATION, before building: a one-day test that the agent's own user reaches SAP
    end to end (SAP's July 2026 roadmap still listed full propagation as coming), payload and

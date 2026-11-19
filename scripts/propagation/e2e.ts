@@ -4,7 +4,7 @@
  * the token into a short-lived X.509 certificate and calls SAP; the engine says who SAP sees.
  *
  *   node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap https://car.seasnake.be:44301 \
- *     --client 600 --user BASIS [--resolve car.seasnake.be=172.26.114.77] [--mode direct|header]
+ *     --client 600 --user BASIS [--resolve car.seasnake.be=172.26.114.77] [--mode direct|header] [--skew-minutes 150]
  *
  * Prints one line per scenario (PASS / FAIL with what came back) and exits 1 on any FAIL.
  */
@@ -16,6 +16,7 @@ import { createIdp, createGatewayServer, cloudConnectorCall, type CloudConnector
 const arg = (k: string, d?: string) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d }
 const pkiDir = arg("pki")!, sapUrl = arg("sap")!, sapClient = arg("client", "600")!, user = arg("user", "BASIS")!.toUpperCase()
 const mode = (arg("mode", "direct") as "direct" | "header")
+const skew = Number(arg("skew-minutes", "0"))
 const resolve = Object.fromEntries((arg("resolve") ?? "").split(",").filter(Boolean).map(p => p.split("=")))
 const pki = { dir: pkiDir, caCert: path.join(pkiDir, "ca.crt"), caKey: path.join(pkiDir, "ca.key"), ccCert: path.join(pkiDir, "cc.crt"), ccKey: path.join(pkiDir, "cc.key") }
 
@@ -23,7 +24,7 @@ const idp = createIdp()
 const foreignIdp = createIdp(idp.issuer, idp.audience)   // same names, other key: a forged token
 
 async function gatewayClient(token: () => string | undefined, cc: Partial<CloudConnectorOptions> = {}) {
-  const ccOpts: CloudConnectorOptions = { idp, pki, mode, sapUrl, sapClient, resolve, ...cc }
+  const ccOpts: CloudConnectorOptions = { idp, pki, mode, sapUrl, sapClient, resolve, clockSkewMinutes: skew, ...cc }
   const server = createGatewayServer({ idp, token, forward: (t, p, b) => cloudConnectorCall(ccOpts, t, p, b) })
   const [a, b] = InMemoryTransport.createLinkedPair()
   await server.connect(a)
@@ -55,8 +56,9 @@ async function scenario(name: string, token: () => string | undefined, tool: str
   await scenario(`${user} signed in: SAP sees ${user}, logged on by certificate`, good, "whoami", {},
     new RegExp(`HTTP 200 .*${user} on .*logged on by X\\.509 client certificate`))
   await scenario("read through the gateway (BW capabilities) as that user", good, "bw_capabilities", {}, /HTTP 200 .*ok: .*BW on this system|HTTP 200 .*ok/)
-  await scenario("write tool stays a dry run without commit", good, "bw_create",
-    { tlogo: "IOBJ", name: "ZMCPPPT1", details_json: JSON.stringify({ TYPE: "CHA", DATATP: "CHAR", INTLEN: 8, TEXTSHORT: "PP test" }) }, /HTTP 200 .*DRY RUN/)
+  // a customizing copy (units of measure, KG → ZZ9) exists on every ABAP system; without commit nothing is written
+  await scenario("write tool stays a dry run without commit", good, "write",
+    { table: "T006", key_field: "MSEHI", source_key: "KG", target_key: "ZZ9" }, /HTTP 200 .*ok: DRY RUN/)
   await scenario("no sign-in: the gateway refuses, SAP is never called", () => undefined, "whoami", {}, /Gateway refused the call: no token/)
   await scenario("forged token (other key): refused", () => foreignIdp.issue(user), "whoami", {}, /Gateway refused the call: signature/)
   await scenario("expired token: refused", () => idp.issue(user, { ttlSeconds: -5 }), "whoami", {}, /Gateway refused the call: token expired/)

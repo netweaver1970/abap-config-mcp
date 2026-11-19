@@ -90,7 +90,10 @@ With the pattern `CN=${login_name}` and IAS login names equal to SAP user names,
    goes into STRUST in part 3.
 4. **Principal propagation** (Configuration → On Premise → Principal Propagation): set the
    subject pattern, e.g. `CN=${login_name}, O=Example, C=BE`, and the validity of the issued
-   certificates (short, e.g. 10 minutes). Then Cloud To On-Premise → Principal Propagation →
+   certificates (short, e.g. 10 minutes). **The clocks of the Cloud Connector host and the ABAP
+   system must agree** (NTP on both): a short-lived certificate is refused as "certificate expired"
+   as soon as the back end's clock is ahead by more than its validity. On the lab system S4, whose
+   clock ran about two hours ahead, every propagated logon failed that way. Then Cloud To On-Premise → Principal Propagation →
    **Synchronize**, so Cloud Connector trusts the subaccount's IAS tokens.
 5. **System mapping** (Cloud To On-Premise → Access Control → Add): back-end type ABAP System,
    protocol **HTTPS**, internal host and port of ICM's HTTPS service (e.g. `sapcar:44301`),
@@ -231,9 +234,10 @@ node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap htt
 ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-setup.ts --connection CAR --user BASIS --pki <dir> --mode revert
 ```
 
-Result on CAR, 8 of 8 in both modes: the user signed in at the identity provider reached SAP as
+Result on CAR (BASIS) and S4 (GEERT; S4 with `--skew-minutes 150`), 8 of 8 in both modes each: the user signed in at the identity provider reached SAP as
 that user, logged on by X.509 client certificate over TLS; a read and a dry-run write worked
-through the gateway's tools; missing, forged and expired tokens were refused by the gateway; a
+through the gateway's tools (the write: a customizing copy of units of measure, KG to ZZ9, without
+commit); missing, forged and expired tokens were refused by the gateway; a
 user without a mapping got 401 from SAP; a certificate from an untrusted CA was refused (direct
 mode: in the TLS handshake; header mode: 401, once the mapping named the issuer, see part 3).
 Header mode is what Cloud Connector does: the simulator connects with its system certificate and
@@ -243,9 +247,10 @@ forwards the user's certificate in `SSL_CLIENT_CERT`; ICM trusted it through
 The lab system was put back to its original state after each run: PSE file restored byte for
 byte from the backup, mappings removed, trusted-proxy entry cleared.
 
-### The permanent test set-up on CAR (since 19 November 2026)
+### The permanent test set-up on CAR and S4 (since 19 November 2026)
 
-CAR (client 600) keeps the rehearsal chain in place, so the simulator works any time:
+CAR (client 600, user BASIS) and S4 (A4H client 250, user GEERT; redone from this guide) keep the
+rehearsal chain in place, so the simulator works any time. On CAR:
 
 | What | Where | Undo |
 |---|---|---|
@@ -253,6 +258,19 @@ CAR (client 600) keeps the rehearsal chain in place, so the simulator works any 
 | `CN=BASIS, O=MCP Simulation, C=BE`, issuer "MCP Test CA" → BASIS | VUSREXTID (type DN) | `pp-setup.ts --mode revert` |
 | Cloud Connector simulator as trusted reverse proxy | instance profile `/usr/sap/CAR/SYS/profile/CAR_D01_sapcar` (2 lines appended, backup `CAR_D01_sapcar.mcp-pp-backup`) and the running ICM | `pp-profile.ts --mode removefile` |
 | Test keys (CA, Cloud Connector, rogue CA; valid until November 2028) | `~/.abap-config-mcp/pp-test-pki` on the Mac, owner-only | delete the folder after the undo steps |
+
+On S4 the same three changes, with its own paths and user:
+
+| What | Where | Undo |
+|---|---|---|
+| "MCP Test CA" trusted | `/usr/sap/A4H/D88/sec/SAPSSLS.pse`, backup `SAPSSLS.pse.mcp-pp-backup` | `pp-setup.ts --connection S4 --user GEERT --mode revert` |
+| `CN=GEERT, O=MCP Simulation, C=BE`, issuer "MCP Test CA" → GEERT | VUSREXTID (type DN) | same |
+| Cloud Connector simulator as trusted reverse proxy | `/usr/sap/A4H/SYS/profile/A4H_D88_s4hana2025` (backup `.mcp-pp-backup`) and the running ICM | `pp-profile.ts --connection S4 --mode removefile` |
+
+S4's clock runs about two hours ahead, so its test runs need `--skew-minutes 150` until the host's
+time is corrected (a real Cloud Connector would fail there the same way). Its RZ10 copy
+(`A4H_D88_S4HANA2025`, newest version 5) is behind the file as well: one `icm/server_port` line
+against three in the file; the RZ10 note below applies to S4 too.
 
 Whoever holds `ca.key` or `cc.key` from that folder can log on to CAR as BASIS without a password:
 keep it private, and remove the set-up when the rehearsal is no longer needed:
@@ -283,5 +301,6 @@ What can undo it without anyone running those:
 | RZ11: "Parameter not found" for `icm/trusted_reverse_proxy_0` | it is not in any profile yet: add it in RZ10, or change it in the running ICM (SMICM) |
 | Certificates of any CA log on behind Cloud Connector | the mapping is by DN only; add the issuer (part 4) or use CERTRULE |
 | ICM trace: "PSE does not exist" after a STRUST action | file-only SSL server PSE wiped by a database sync (part 3, note) |
+| "certificate expired" (TLS alert 45) for a certificate issued seconds ago | the ABAP system's clock is ahead of Cloud Connector's (S4: two hours); sync both with NTP |
 | Engine answers 500 "Syntax error in program ZCL_MCP_CUST_ENGINE" | abapGit pulled a version that does not compile on this release; check the syntax and pull a fixed one |
 | The agent's calls all run as one technical user | the destination is not PrincipalPropagation, or the agent sends a client-credentials token |

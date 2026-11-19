@@ -86,12 +86,14 @@ export interface CloudConnectorOptions {
   signWith?: { cert: string; key: string }
   /** Host name → address, when the SAP host name in the TLS certificate is not in DNS here */
   resolve?: Record<string, string>
+  /** Widen the user certificate's validity by this many minutes on both sides, for a back end whose clock is off */
+  clockSkewMinutes?: number
 }
 
 export interface IssuedCert { subject: string; certPem: string; keyPem: string }
 
 /** A short-lived certificate for the token's user, signed by the given CA (openssl). */
-export function issueUserCert(claims: TokenClaims, pattern: string, ca: { cert: string; key: string }, minutes: number): IssuedCert {
+export function issueUserCert(claims: TokenClaims, pattern: string, ca: { cert: string; key: string }, minutes: number, skewMinutes = 0): IssuedCert {
   const subject = pattern.replace(/\$\{(\w+)\}/g, (_m, k: string) => String((claims as unknown as Record<string, unknown>)[k] ?? ""))
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-cc-"))
   try {
@@ -102,7 +104,7 @@ export function issueUserCert(claims: TokenClaims, pattern: string, ca: { cert: 
     // valid from now (minus a minute of clock skew) for the given minutes, like Cloud Connector's short-lived certificates
     const stamp = (d: Date) => d.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z"
     execFileSync("openssl", ["x509", "-req", "-in", csr, "-CA", ca.cert, "-CAkey", ca.key, "-set_serial", "0x" + crypto.randomBytes(8).toString("hex"),
-      "-not_before", stamp(new Date(Date.now() - 60_000)), "-not_after", stamp(new Date(Date.now() + minutes * 60_000)),
+      "-not_before", stamp(new Date(Date.now() - (1 + skewMinutes) * 60_000)), "-not_after", stamp(new Date(Date.now() + (minutes + skewMinutes) * 60_000)),
       "-out", crt, "-extfile", ext], { stdio: "ignore" })
     return { subject, certPem: fs.readFileSync(crt, "utf8"), keyPem: fs.readFileSync(key, "utf8") }
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
@@ -114,7 +116,7 @@ export interface SapCall { status: number; body: string; userCertSubject: string
 export async function cloudConnectorCall(o: CloudConnectorOptions, token: string | undefined, sapPath: string, body: unknown): Promise<SapCall> {
   const claims = verifyToken(token, o.idp)   // Cloud Connector trusts only the subaccount's IdP
   const ca = o.signWith ?? { cert: o.pki.caCert, key: o.pki.caKey }
-  const user = issueUserCert(claims, o.subjectPattern ?? "CN=${user_name},O=MCP Simulation,C=BE", ca, o.certMinutes ?? 5)
+  const user = issueUserCert(claims, o.subjectPattern ?? "CN=${user_name},O=MCP Simulation,C=BE", ca, o.certMinutes ?? 5, o.clockSkewMinutes ?? 0)
   const url = new URL(sapPath, o.sapUrl)
   url.searchParams.set("sap-client", o.sapClient)
   const payload = JSON.stringify(body ?? {})
