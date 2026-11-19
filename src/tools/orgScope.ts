@@ -27,6 +27,9 @@
 import type { ADTClient } from "abap-adt-api"
 import { runSql, tableRows, col } from "./customizing"
 import { log } from "../connections"
+import { GOVERNED_ENGINE_NOTE } from "../mode"
+import { ENGINE_VERSION } from "../abap/zcl_mcp_cust_engine"
+import type { EngineRequest, EngineResponse } from "./customizingEngine"
 
 export const CUST_CLASSES = ["C", "G", "E"]
 const BATCH = 40
@@ -43,6 +46,7 @@ export interface ScopeTable {
   src?: number             // rows for the source key (undefined: not counted)
   tgt?: number             // rows for the target key
   unreadable?: boolean
+  noAuth?: boolean         // governed mode: the user may not display it, so it was not counted
 }
 
 export interface OrgScope {
@@ -152,44 +156,54 @@ export async function tableTexts(client: ADTClient, tables: ScopeTable[]): Promi
   }))
 }
 
-/** Build the three-section scope. copiedSet = the copier's dependent tables (engine dry run). */
-export async function buildOrgScope(client: ADTClient, args: {
+export interface ScopeArgs {
   domain: string; sourceKey: string; targetKey: string
   copiedSet: Array<{ tab: string; text?: string }>
   deadline: number
   /** Count only this part (a re-run when the budget ran out). Default: all, customizing first. */
   only?: "customizing" | "application"
-}): Promise<OrgScope> {
-  const { domain, sourceKey, targetKey, deadline } = args
-  const { tables, truncated } = await findKeyedTables(client, domain)
+}
+
+/** The three sections, from keyed tables whose counts are already filled in (or not, when not reached). */
+function splitScope(tables: ScopeTable[], truncated: boolean, args: ScopeArgs): { scope: OrgScope; order: ScopeTable[] } {
   const keyed = new Map(tables.map(t => [t.tab, t]))
   const copiedNames = new Set(args.copiedSet.map(c => c.tab.toUpperCase()))
-
+  // A copier table keyed on the domain is the same object as in `tables`, so counts filled in later show in both.
   const copied: ScopeTable[] = args.copiedSet.map(c => {
     const k = keyed.get(c.tab.toUpperCase())
-    return k ? { ...k, text: c.text || undefined } : { tab: c.tab.toUpperCase(), text: c.text || undefined }
+    if (k) { if (c.text && !k.text) k.text = c.text; return k }
+    return { tab: c.tab.toUpperCase(), text: c.text || undefined }
   })
   const rest = tables.filter(t => !copiedNames.has(t.tab))
   const cust = rest.filter(t => CUST_CLASSES.includes(t.cls ?? ""))
   const app = rest.filter(t => t.cls === "A")
-
   // Priority under the deadline: customizing first (the retest list), then the
   // copier's own tables, then application data (a summary only).
   const order = args.only === "application" ? app
     : args.only === "customizing" ? [...cust, ...copied.filter(c => c.field)]
     : [...cust, ...copied.filter(c => c.field), ...app]
-  await countRows(client, order, sourceKey, targetKey, deadline)
-
-  const counted = (t: ScopeTable) => t.src !== undefined || t.unreadable
   const scope: OrgScope = {
-    domain, sourceKey, targetKey, copied,
-    notCopied: cust.filter(counted),
-    application: app.filter(counted),
-    notProbed: [...cust, ...app].filter(t => !counted(t)),
-    candidates: tables.length,
-    truncated,
-    only: args.only,
+    domain: args.domain, sourceKey: args.sourceKey, targetKey: args.targetKey, copied,
+    notCopied: cust, application: app, notProbed: [],
+    candidates: tables.length, truncated, only: args.only,
   }
+  return { scope, order }
+}
+
+/** Once counted: move what was not reached to notProbed. */
+function settleScope(scope: OrgScope): OrgScope {
+  const counted = (t: ScopeTable) => t.src !== undefined || t.unreadable
+  const cust = scope.notCopied, app = scope.application
+  return { ...scope, notCopied: cust.filter(counted), application: app.filter(counted), notProbed: [...cust, ...app].filter(t => !counted(t)) }
+}
+
+/** Build the three-section scope through ADT (direct mode). copiedSet = the copier's dependent tables (engine dry run). */
+export async function buildOrgScope(client: ADTClient, args: ScopeArgs): Promise<OrgScope> {
+  const { sourceKey, targetKey, deadline } = args
+  const { tables, truncated } = await findKeyedTables(client, args.domain)
+  const { scope: draft, order } = splitScope(tables, truncated, args)
+  await countRows(client, order, sourceKey, targetKey, deadline)
+  const scope = settleScope(draft)
   // Texts only for what gets listed by name.
   const listed = [
     ...retestList(scope).slice(0, LIST_RETEST),
@@ -199,6 +213,54 @@ export async function buildOrgScope(client: ADTClient, args: {
   // (the caller's budget leaves room below the HTTP watchdog).
   if (Date.now() < deadline + 8_000) await tableTexts(client, listed)
   return scope
+}
+
+/** retest_scope's DATA_JSON. */
+interface EngineScope {
+  DOMAIN?: string
+  CANDIDATES?: number
+  TRUNCATED?: boolean | string
+  COUNTED?: number
+  ELAPSED_MS?: number
+  TABLES?: { TAB: string; FIELD: string; CLS: string; COUNTED?: boolean | string; SRC?: number; TGT?: number;
+             UNREADABLE?: boolean | string; NOAUTH?: boolean | string; TEXT?: string }[]
+}
+const flag = (v: unknown) => v === true || v === "X" || v === "true"
+
+/**
+ * Build the scope through the engine's retest_scope action (governed mode): it finds the
+ * keyed tables and counts them in SAP, in the same priority order, until its time budget
+ * is spent. Counts only; tables the user may not display come back uncounted.
+ */
+export async function buildOrgScopeViaEngine(
+  call: (req: EngineRequest, timeoutMs: number) => Promise<EngineResponse>, args: ScopeArgs,
+): Promise<OrgScope> {
+  // Leave the engine's budget a margin for the texts and the answer itself.
+  const budget = Math.max(1_000, args.deadline - Date.now() - 3_000)
+  const r = await call({
+    operation: "retest_scope", org_unit: args.domain, source_key: args.sourceKey, target_key: args.targetKey,
+    tables_json: JSON.stringify(args.copiedSet.map(c => c.tab.toUpperCase())), only: args.only ?? "", budget_ms: budget,
+  }, budget + 60_000)
+  if (r.STATUS !== "ok") {
+    const msgs = (r.MESSAGES ?? []).join(" ")
+    if (/Unknown operation/i.test(msgs)) {
+      throw new Error(`the engine on this system (v${r.VERSION ?? "?"}) has no retest_scope action, which this server needs ` +
+        `(engine v${ENGINE_VERSION}). Update the engine: ${GOVERNED_ENGINE_NOTE}.`)
+    }
+    throw new Error(msgs || `the engine answered ${r.STATUS ?? "without a status"}`)
+  }
+  const e = JSON.parse(r.DATA_JSON || "{}") as EngineScope
+  const tables: ScopeTable[] = (e.TABLES ?? []).map(t => {
+    const counted = flag(t.COUNTED)
+    return {
+      tab: t.TAB, field: t.FIELD, cls: t.CLS, text: t.TEXT || undefined,
+      ...(counted ? { src: Number(t.SRC) || 0, tgt: Number(t.TGT) || 0 } : {}),
+      ...(flag(t.UNREADABLE) ? { unreadable: true } : {}),
+      ...(flag(t.NOAUTH) ? { noAuth: true } : {}),
+    }
+  })
+  const { scope } = splitScope(tables, flag(e.TRUNCATED), args)
+  return settleScope(scope)
 }
 
 const LIST_RETEST = 40
@@ -251,7 +313,9 @@ export function formatOrgScope(s: OrgScope): string[] {
   }
   if (tgtOnly.length) out.push(`     Target only: ${tgtOnly.length} — ${names(tgtOnly)}`)
   out.push(`     Source has no rows (nothing to carry over): ${empty.length}`)
-  if (unreadable.length) out.push(`     Could not be read: ${unreadable.length} — ${names(unreadable)}`)
+  const noAuth = unreadable.filter(t => t.noAuth).length
+  if (unreadable.length) out.push(`     Could not be read: ${unreadable.length} — ${names(unreadable)}` +
+    (noAuth ? ` (${noAuth} of them: you are not authorized to display them, S_TABU_DIS / S_TABU_NAM)` : ""))
   }
 
   if (s.only !== "customizing") {

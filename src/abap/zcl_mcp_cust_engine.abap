@@ -48,6 +48,9 @@ CLASS zcl_mcp_cust_engine DEFINITION
              pgmid            TYPE string,     " transport_info: R3TR (default)
              obj_type         TYPE string,     " transport_info: TADIR object type, e.g. PROG, CLAS
              obj_name         TYPE string,     " transport_info: object name
+             tables_json      TYPE string,     " retest_scope: JSON array of the copier's table names (counted after the rest of customizing)
+             only             TYPE string,     " retest_scope: 'customizing' | 'application' | '' (all)
+             budget_ms        TYPE i,          " retest_scope: stop starting counts after this many ms (default 25000, max 120000)
            END OF ty_request.
 
     " Field override for handle_write: applied to each planned row after the
@@ -237,6 +240,32 @@ CLASS zcl_mcp_cust_engine DEFINITION
              requests        TYPE ty_tr_req_tt,
            END OF ty_tr_info.
 
+    " retest_scope: one table keyed on the org-unit domain, with its counts.
+    TYPES: BEGIN OF ty_scope_tab,
+             tab        TYPE string,
+             field      TYPE string,
+             cls        TYPE string,
+             counted    TYPE abap_bool,
+             src        TYPE i,
+             tgt        TYPE i,
+             unreadable TYPE abap_bool,
+             noauth     TYPE abap_bool,
+             text       TYPE string,
+           END OF ty_scope_tab,
+           ty_scope_tab_tt TYPE STANDARD TABLE OF ty_scope_tab WITH DEFAULT KEY,
+           BEGIN OF ty_scope,
+             domain     TYPE string,
+             candidates TYPE i,
+             truncated  TYPE abap_bool,
+             counted    TYPE i,
+             elapsed_ms TYPE i,
+             tables     TYPE ty_scope_tab_tt,
+           END OF ty_scope.
+
+    CONSTANTS: c_scope_max_candidates TYPE i VALUE 8000,
+               c_scope_default_ms     TYPE i VALUE 25000,
+               c_scope_max_ms         TYPE i VALUE 120000.
+
     CONSTANTS: c_tr_max_requests TYPE i VALUE 500,
                c_tr_max_with_obj TYPE i VALUE 100,
                c_tr_max_objects  TYPE i VALUE 500.
@@ -278,6 +307,17 @@ CLASS zcl_mcp_cust_engine DEFINITION
     "! the open request holding it, and the user's open workbench requests that
     "! go to the package's transport target. Read-only; needs S_TRANSPRT display.
     METHODS handle_transport_info
+      IMPORTING is_req         TYPE ty_request
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+
+    "! Retest scope of an org-unit copy: the client-dependent transparent tables
+    "! with a key field on the org-unit domain (customizing C/G/E and application
+    "! A, at most 8000 key fields per group), and for each the number of rows for
+    "! the source and the target key, counted in priority order (customizing the
+    "! copier leaves alone, then the copier's tables, then application data) until
+    "! the time budget is spent. COUNTS ONLY, never rows; a table the user may not
+    "! display (S_TABU_DIS, else S_TABU_NAM) is not counted.
+    METHODS handle_retest_scope
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
@@ -588,6 +628,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
             WHEN 'ddic_describe'. ls_resp = handle_ddic_describe( ls_req ).
             WHEN 'transports'.     ls_resp = handle_transports( ls_req ).
             WHEN 'transport_info'. ls_resp = handle_transport_info( ls_req ).
+            WHEN 'retest_scope'.   ls_resp = handle_retest_scope( ls_req ).
             WHEN 'write'.    ls_resp = handle_write( ls_req ).
             WHEN 'create'.   ls_resp = handle_create( ls_req ).
             WHEN 'listing'.  ls_resp = handle_listing( ls_req ).
@@ -1506,6 +1547,311 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
     rs_desc-cccategory = ls_caps-category.
     rs_desc-cccoractiv = ls_caps-coractiv.
     rs_desc-ccnocliind = ls_caps-nocliind.
+  ENDMETHOD.
+
+
+  METHOD handle_retest_scope.
+    TYPES: BEGIN OF ty_key,
+             tabname   TYPE dd03l-tabname,
+             fieldname TYPE dd03l-fieldname,
+             position  TYPE dd03l-position,
+             contflag  TYPE dd02l-contflag,
+           END OF ty_key,
+           BEGIN OF ty_cnt,
+             k TYPE string,
+             n TYPE i,
+           END OF ty_cnt,
+           BEGIN OF ty_grp,
+             cclass TYPE tddat-cclass,
+             ok     TYPE abap_bool,
+           END OF ty_grp,
+           BEGIN OF ty_name,
+             tabname TYPE tabname,
+           END OF ty_name.
+    DATA: ls_scope   TYPE ty_scope,
+          lt_keys    TYPE STANDARD TABLE OF ty_key WITH DEFAULT KEY,
+          lt_app     TYPE STANDARD TABLE OF ty_key WITH DEFAULT KEY,
+          lt_cnt     TYPE STANDARD TABLE OF ty_cnt WITH DEFAULT KEY,
+          lt_grp     TYPE HASHED TABLE OF ty_grp WITH UNIQUE KEY cclass,
+          lt_names   TYPE STANDARD TABLE OF ty_name WITH DEFAULT KEY,
+          lt_copied  TYPE string_table,
+          lt_order   TYPE STANDARD TABLE OF i WITH DEFAULT KEY,
+          lv_dom     TYPE dd03l-domname,
+          lv_src     TYPE string,
+          lv_tgt     TYPE string,
+          lv_budget  TYPE i,
+          lv_t0      TYPE i,
+          lv_now     TYPE i,
+          lv_fields  TYPE string,
+          lv_where   TYPE string,
+          lv_group   TYPE string,
+          lv_tab     TYPE tabname,
+          lv_cls     TYPE tddat-cclass,
+          lv_pass    TYPE i.
+    FIELD-SYMBOLS <t> TYPE ty_scope_tab.
+
+    rs_resp-operation = 'retest_scope'.
+    IF is_valid_name( is_req-org_unit ) = abap_false OR is_req-source_key IS INITIAL OR is_req-target_key IS INITIAL.
+      rs_resp-status = 'error'.
+      APPEND |Counting the retest scope stopped: give the org-unit domain (for example WERKS), a source key and a target key; | &&
+             |got '{ is_req-org_unit }', '{ is_req-source_key }', '{ is_req-target_key }'.| TO rs_resp-messages.
+      RETURN.
+    ENDIF.
+    lv_dom = to_upper( is_req-org_unit ).
+    ls_scope-domain = lv_dom.
+    lv_src = esc_quote( is_req-source_key ).
+    lv_tgt = esc_quote( is_req-target_key ).
+    lv_budget = COND #( WHEN is_req-budget_ms <= 0             THEN c_scope_default_ms
+                        WHEN is_req-budget_ms > c_scope_max_ms THEN c_scope_max_ms
+                        ELSE is_req-budget_ms ).
+    GET RUN TIME FIELD lv_t0.
+
+    " 1. Tables with a KEY field on the domain: client-dependent, transparent, active.
+    "    Customizing and application classes separately, so neither cuts the other off.
+    SELECT a~tabname, a~fieldname, a~position, b~contflag FROM dd03l AS a
+      INNER JOIN dd02l AS b ON b~tabname = a~tabname AND b~as4local = a~as4local AND b~as4vers = a~as4vers
+      WHERE a~domname = @lv_dom AND a~keyflag = 'X' AND a~as4local = 'A'
+        AND b~tabclass = 'TRANSP' AND b~clidep = 'X' AND b~contflag IN ('C','G','E')
+      ORDER BY a~tabname, a~position
+      INTO TABLE @lt_keys
+      UP TO @c_scope_max_candidates ROWS.
+    IF lines( lt_keys ) >= c_scope_max_candidates.
+      ls_scope-truncated = abap_true.
+    ENDIF.
+    SELECT a~tabname, a~fieldname, a~position, b~contflag FROM dd03l AS a
+      INNER JOIN dd02l AS b ON b~tabname = a~tabname AND b~as4local = a~as4local AND b~as4vers = a~as4vers
+      WHERE a~domname = @lv_dom AND a~keyflag = 'X' AND a~as4local = 'A'
+        AND b~tabclass = 'TRANSP' AND b~clidep = 'X' AND b~contflag = 'A'
+      ORDER BY a~tabname, a~position
+      INTO TABLE @lt_app
+      UP TO @c_scope_max_candidates ROWS.
+    IF lines( lt_app ) >= c_scope_max_candidates.
+      ls_scope-truncated = abap_true.
+    ENDIF.
+    APPEND LINES OF lt_app TO lt_keys.
+
+    " First key field on the domain per table (each group arrives sorted by table and position).
+    DATA lv_prev TYPE dd03l-tabname.
+    LOOP AT lt_keys INTO DATA(ls_key).
+      IF ls_key-tabname = lv_prev.
+        CONTINUE.
+      ENDIF.
+      lv_prev = ls_key-tabname.
+      IF is_valid_name( CONV string( ls_key-tabname ) ) = abap_false
+      OR is_valid_name( CONV string( ls_key-fieldname ) ) = abap_false.
+        CONTINUE.
+      ENDIF.
+      APPEND VALUE #( tab = ls_key-tabname field = ls_key-fieldname cls = ls_key-contflag ) TO ls_scope-tables.
+    ENDLOOP.
+    ls_scope-candidates = lines( ls_scope-tables ).
+
+    " 2. Display authorization per table: S_TABU_DIS per group (checked once), else S_TABU_NAM.
+    LOOP AT ls_scope-tables ASSIGNING <t>.
+      APPEND VALUE #( tabname = <t>-tab ) TO lt_names.
+    ENDLOOP.
+    IF lt_names IS NOT INITIAL.
+      SELECT tabname, cclass FROM tddat
+        FOR ALL ENTRIES IN @lt_names
+        WHERE tabname = @lt_names-tabname
+        INTO TABLE @DATA(lt_tddat).
+      SORT lt_tddat BY tabname.
+    ENDIF.
+    LOOP AT ls_scope-tables ASSIGNING <t>.
+      lv_tab = <t>-tab.
+      READ TABLE lt_tddat INTO DATA(ls_tddat) WITH KEY tabname = lv_tab BINARY SEARCH.
+      lv_cls = COND #( WHEN sy-subrc = 0 AND ls_tddat-cclass IS NOT INITIAL THEN ls_tddat-cclass ELSE '&NC&' ).
+      READ TABLE lt_grp INTO DATA(ls_grp) WITH TABLE KEY cclass = lv_cls.
+      IF sy-subrc <> 0.
+        AUTHORITY-CHECK OBJECT 'S_TABU_DIS'
+          ID 'DICBERCLS' FIELD lv_cls
+          ID 'ACTVT'     FIELD '03'.
+        ls_grp = VALUE #( cclass = lv_cls ok = xsdbool( sy-subrc = 0 ) ).
+        INSERT ls_grp INTO TABLE lt_grp.
+      ENDIF.
+      IF ls_grp-ok = abap_false.
+        AUTHORITY-CHECK OBJECT 'S_TABU_NAM'
+          ID 'ACTVT' FIELD '03'
+          ID 'TABLE' FIELD lv_tab.
+        IF sy-subrc <> 0.
+          <t>-noauth = abap_true.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+    " 3. Order: customizing the copier leaves alone, then the copier's own tables,
+    "    then application data ('customizing' / 'application' count only that part).
+    IF is_req-tables_json IS NOT INITIAL.
+      TRY.
+          /ui2/cl_json=>deserialize( EXPORTING json = is_req-tables_json CHANGING data = lt_copied ).
+        CATCH cx_root.
+          CLEAR lt_copied.
+      ENDTRY.
+      LOOP AT lt_copied ASSIGNING FIELD-SYMBOL(<c>).
+        <c> = to_upper( <c> ).
+      ENDLOOP.
+      SORT lt_copied.
+    ENDIF.
+    DO 3 TIMES.
+      lv_pass = sy-index.
+      IF ( is_req-only = 'application' AND lv_pass <> 3 ) OR ( is_req-only = 'customizing' AND lv_pass = 3 ).
+        CONTINUE.
+      ENDIF.
+      LOOP AT ls_scope-tables ASSIGNING <t>.
+        DATA(lv_row) = sy-tabix.
+        READ TABLE lt_copied TRANSPORTING NO FIELDS WITH KEY table_line = <t>-tab BINARY SEARCH.
+        DATA(lv_is_copied) = xsdbool( sy-subrc = 0 ).
+        IF ( lv_pass = 1 AND <t>-cls <> 'A' AND lv_is_copied = abap_false )
+        OR ( lv_pass = 2 AND lv_is_copied = abap_true )
+        OR ( lv_pass = 3 AND <t>-cls = 'A' AND lv_is_copied = abap_false ).
+          APPEND lv_row TO lt_order.
+        ENDIF.
+      ENDLOOP.
+    ENDDO.
+
+    " 4. Count until the budget is spent: eight tables per statement (a UNION ALL
+    "    of eight dynamic branches, each numbered by an integer literal), so SAP
+    "    prepares one statement per eight tables. A batch that fails is counted
+    "    again table by table, which finds the one that cannot be read.
+    TYPES: BEGIN OF ty_branch,
+             f TYPE string,
+             t TYPE string,
+             w TYPE string,
+             g TYPE string,
+           END OF ty_branch.
+    TYPES: BEGIN OF ty_ucnt,
+             b TYPE i,
+             k TYPE string,
+             n TYPE i,
+           END OF ty_ucnt.
+    DATA: lt_pending TYPE STANDARD TABLE OF i WITH DEFAULT KEY,
+          lt_ucnt    TYPE STANDARD TABLE OF ty_ucnt WITH DEFAULT KEY,
+          lt_br      TYPE STANDARD TABLE OF ty_branch WITH DEFAULT KEY,
+          lv_bi      TYPE i,
+          lv_batched TYPE abap_bool,
+          b1 TYPE ty_branch, b2 TYPE ty_branch, b3 TYPE ty_branch, b4 TYPE ty_branch,
+          b5 TYPE ty_branch, b6 TYPE ty_branch, b7 TYPE ty_branch, b8 TYPE ty_branch.
+    DATA(lv_k_src) = condense( is_req-source_key ).
+    DATA(lv_k_tgt) = condense( is_req-target_key ).
+    DATA(lv_left) = lines( lt_order ).
+
+    LOOP AT lt_order INTO DATA(lv_ix).
+      lv_left = lv_left - 1.
+      READ TABLE ls_scope-tables ASSIGNING <t> INDEX lv_ix.
+      IF <t>-noauth = abap_true.
+        <t>-counted    = abap_true.
+        <t>-unreadable = abap_true.
+      ELSE.
+        APPEND lv_ix TO lt_pending.
+      ENDIF.
+      IF lines( lt_pending ) < 8 AND lv_left > 0.
+        CONTINUE.
+      ENDIF.
+      GET RUN TIME FIELD lv_now.
+      IF ( lv_now - lv_t0 ) / 1000 >= lv_budget.
+        EXIT.
+      ENDIF.
+
+      CLEAR: lt_br, lv_batched.
+      LOOP AT lt_pending INTO DATA(lv_p).
+        lv_bi = sy-tabix.
+        READ TABLE ls_scope-tables ASSIGNING <t> INDEX lv_p.
+        APPEND VALUE #( f = |{ lv_bi } AS B, { <t>-field } AS K, COUNT(*) AS N|
+                        t = <t>-tab
+                        w = |{ <t>-field } IN ('{ lv_src }','{ lv_tgt }')|
+                        g = <t>-field ) TO lt_br.
+      ENDLOOP.
+      IF lines( lt_br ) = 8.
+        b1 = lt_br[ 1 ]. b2 = lt_br[ 2 ]. b3 = lt_br[ 3 ]. b4 = lt_br[ 4 ].
+        b5 = lt_br[ 5 ]. b6 = lt_br[ 6 ]. b7 = lt_br[ 7 ]. b8 = lt_br[ 8 ].
+        CLEAR lt_ucnt.
+        TRY.
+            SELECT (b1-f) FROM (b1-t) WHERE (b1-w) GROUP BY (b1-g)
+              UNION ALL SELECT (b2-f) FROM (b2-t) WHERE (b2-w) GROUP BY (b2-g)
+              UNION ALL SELECT (b3-f) FROM (b3-t) WHERE (b3-w) GROUP BY (b3-g)
+              UNION ALL SELECT (b4-f) FROM (b4-t) WHERE (b4-w) GROUP BY (b4-g)
+              UNION ALL SELECT (b5-f) FROM (b5-t) WHERE (b5-w) GROUP BY (b5-g)
+              UNION ALL SELECT (b6-f) FROM (b6-t) WHERE (b6-w) GROUP BY (b6-g)
+              UNION ALL SELECT (b7-f) FROM (b7-t) WHERE (b7-w) GROUP BY (b7-g)
+              UNION ALL SELECT (b8-f) FROM (b8-t) WHERE (b8-w) GROUP BY (b8-g)
+              INTO CORRESPONDING FIELDS OF TABLE @lt_ucnt.
+            lv_batched = abap_true.
+            LOOP AT lt_pending INTO lv_p.
+              lv_bi = sy-tabix.
+              READ TABLE ls_scope-tables ASSIGNING <t> INDEX lv_p.
+              <t>-counted = abap_true.
+              LOOP AT lt_ucnt INTO DATA(ls_u) WHERE b = lv_bi.
+                IF condense( ls_u-k ) = lv_k_src.
+                  <t>-src = ls_u-n.
+                ENDIF.
+                IF condense( ls_u-k ) = lv_k_tgt.
+                  <t>-tgt = ls_u-n.
+                ENDIF.
+              ENDLOOP.
+              ls_scope-counted = ls_scope-counted + 1.
+            ENDLOOP.
+          CATCH cx_root.
+            lv_batched = abap_false.
+        ENDTRY.
+      ENDIF.
+
+      IF lv_batched = abap_false.
+        " Fewer than eight left, or the batch failed: one table per statement.
+        LOOP AT lt_pending INTO lv_p.
+          READ TABLE ls_scope-tables ASSIGNING <t> INDEX lv_p.
+          lv_fields = |{ <t>-field } AS K, COUNT(*) AS N|.
+          lv_where  = |{ <t>-field } IN ('{ lv_src }','{ lv_tgt }')|.
+          lv_group  = <t>-field.
+          CLEAR lt_cnt.
+          TRY.
+              SELECT (lv_fields) FROM (<t>-tab)
+                WHERE (lv_where)
+                GROUP BY (lv_group)
+                INTO CORRESPONDING FIELDS OF TABLE @lt_cnt.
+              <t>-counted = abap_true.
+              LOOP AT lt_cnt INTO DATA(ls_cnt).
+                IF condense( ls_cnt-k ) = lv_k_src.
+                  <t>-src = ls_cnt-n.
+                ENDIF.
+                IF condense( ls_cnt-k ) = lv_k_tgt.
+                  <t>-tgt = ls_cnt-n.
+                ENDIF.
+              ENDLOOP.
+            CATCH cx_root.
+              <t>-counted    = abap_true.
+              <t>-unreadable = abap_true.
+          ENDTRY.
+          ls_scope-counted = ls_scope-counted + 1.
+        ENDLOOP.
+      ENDIF.
+      CLEAR lt_pending.
+    ENDLOOP.
+
+    " 5. Short texts for the tables that have rows (the ones a report lists by name).
+    CLEAR lt_names.
+    LOOP AT ls_scope-tables ASSIGNING <t> WHERE src > 0 OR tgt > 0.
+      APPEND VALUE #( tabname = <t>-tab ) TO lt_names.
+    ENDLOOP.
+    IF lt_names IS NOT INITIAL.
+      SELECT tabname, ddtext FROM dd02t
+        FOR ALL ENTRIES IN @lt_names
+        WHERE tabname = @lt_names-tabname AND ddlanguage = 'E' AND as4local = 'A'
+        INTO TABLE @DATA(lt_txt).
+      LOOP AT lt_txt INTO DATA(ls_txt).
+        READ TABLE ls_scope-tables ASSIGNING <t> WITH KEY tab = ls_txt-tabname.
+        IF sy-subrc = 0.
+          <t>-text = ls_txt-ddtext.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    GET RUN TIME FIELD lv_now.
+    ls_scope-elapsed_ms = ( lv_now - lv_t0 ) / 1000.
+    rs_resp-status       = 'ok'.
+    rs_resp-rows_planned = ls_scope-counted.
+    /ui2/cl_json=>serialize(
+      EXPORTING data        = ls_scope
+                pretty_name = /ui2/cl_json=>pretty_mode-none
+      RECEIVING r_json      = rs_resp-data_json ).
   ENDMETHOD.
 
 

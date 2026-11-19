@@ -94,6 +94,8 @@ export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
   // phase 2: transports and transport_info (engine 0.9.38)
   "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
+  // phase 2: retest_scope (engine 0.9.39)
+  "org_copy",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown

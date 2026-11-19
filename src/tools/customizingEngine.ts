@@ -31,7 +31,7 @@ import { selectTransport, rememberTransport, workKey } from "./transportSelectio
 import { lookupRequest, listOpenRequests as listOpenRequestsSql } from "./transportSql"
 import { resolveConnectionId } from "../connections"
 import { getCapabilities, requireCaps, type PingResponse } from "./capabilities"
-import { buildOrgScope, formatOrgScope } from "./orgScope"
+import { buildOrgScope, buildOrgScopeViaEngine, formatOrgScope } from "./orgScope"
 
 // ─── Raw HTTP helper ───────────────────────────────────────────────────────────
 // The engine is reached via its SICF node, not an ADT endpoint, so we use the
@@ -39,7 +39,7 @@ import { buildOrgScope, formatOrgScope } from "./orgScope"
 
 // Keys are lowercase — /ui2/cl_json deserialize maps case-insensitively.
 export interface EngineRequest {
-  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe" | "transports" | "transport_info"
+  operation: "ping" | "read" | "write" | "create" | "listing" | "delete" | "selftest" | "status" | "img_index_read" | "img_search" | "hana_memory" | "abap_memory" | "org_copy" | "transport_move" | "ddic_describe" | "transports" | "transport_info" | "retest_scope"
   table?: string
   key_field?: string
   source_key?: string
@@ -75,6 +75,9 @@ export interface EngineRequest {
   pgmid?: string              // transport_info: R3TR
   obj_type?: string           // transport_info: TADIR object type
   obj_name?: string           // transport_info: object name
+  tables_json?: string        // retest_scope: JSON array of the copier's table names
+  only?: string               // retest_scope: "customizing" | "application" | ""
+  budget_ms?: number          // retest_scope: stop starting counts after this many ms
 }
 
 // ─── transport selection ─────────────────────────────────────────────────────
@@ -812,10 +815,13 @@ export async function handleOrgCopy(args: {
     }
     if (copiedSet && deadline - Date.now() > 10_000) {
       try {
-        const client = await ensureConnected(args.connectionId)
-        const scope = await buildOrgScope(client, {
+        const scopeArgs = {
           domain: orgUnit, sourceKey: args.sourceKey, targetKey: args.targetKey!, copiedSet, deadline,
-          only: typeof args.retestScope === "string" ? args.retestScope : undefined })
+          only: typeof args.retestScope === "string" ? args.retestScope : undefined }
+        // Governed mode counts in SAP through the engine; direct mode with SQL through ADT.
+        const scope = isGoverned()
+          ? await buildOrgScopeViaEngine((req, timeout) => callEngine(args.connectionId, req, args.icfPath, timeout), scopeArgs)
+          : await buildOrgScope(await ensureConnected(args.connectionId), scopeArgs)
         lines.push(...formatOrgScope(scope))
       } catch (err) {
         lines.push("", `   Retest scope not available: ${String((err as Error).message ?? err)}`)

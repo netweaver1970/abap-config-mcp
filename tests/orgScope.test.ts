@@ -45,7 +45,7 @@ vi.mock("../src/tools/customizing", async (importOriginal) => ({
   runSql: vi.fn(answerSql),
 }))
 
-import { buildOrgScope, formatOrgScope, countRows, countSql, retestList, type ScopeTable } from "../src/tools/orgScope"
+import { buildOrgScope, buildOrgScopeViaEngine, formatOrgScope, countRows, countSql, retestList, type ScopeTable } from "../src/tools/orgScope"
 
 const client = {} as never
 const k = (TABNAME: string, CONTFLAG: string, FIELDNAME = "WERKS") => keyed.push({ TABNAME, FIELDNAME, POSITION: "0002", CONTFLAG })
@@ -157,5 +157,52 @@ describe("countRows", () => {
     await countRows(client, ts, "1000", "1010", Date.now() - 1)
     expect(ts[0].src).toBeUndefined()
     expect(statements).toEqual([])
+  })
+})
+
+describe("buildOrgScopeViaEngine (governed mode)", () => {
+  const T = (tab: string, cls: string, counted: boolean, src = 0, tgt = 0, extra: Record<string, unknown> = {}) =>
+    ({ TAB: tab, FIELD: "WERKS", CLS: cls, COUNTED: counted ? "X" : "", SRC: src, TGT: tgt, ...extra })
+  const engineAnswer = (tables: unknown[], truncated = false) => async () =>
+    ({ STATUS: "ok", VERSION: "x", DATA_JSON: JSON.stringify({ DOMAIN: "WERKS", CANDIDATES: tables.length, TRUNCATED: truncated ? "X" : "", TABLES: tables }) })
+  const args = (over: Partial<Parameters<typeof buildOrgScopeViaEngine>[1]> = {}) => ({
+    domain: "WERKS", sourceKey: "1000", targetKey: "2000", deadline: Date.now() + 20_000,
+    copiedSet: [{ tab: "T001W", text: "Plants" }, { tab: "T001K" }], ...over })
+
+  it("sends the copier's tables, the part to count and a budget below the deadline", async () => {
+    const calls: Array<{ req: Record<string, unknown>; timeout: number }> = []
+    await buildOrgScopeViaEngine(async (req, timeout) => { calls.push({ req: req as never, timeout }); return { STATUS: "ok", DATA_JSON: "{}" } },
+      args({ only: "customizing" }))
+    const { req, timeout } = calls[0]
+    expect(req).toMatchObject({ operation: "retest_scope", org_unit: "WERKS", source_key: "1000", target_key: "2000", only: "customizing" })
+    expect(JSON.parse(String(req.tables_json))).toEqual(["T001W", "T001K"])
+    expect(Number(req.budget_ms)).toBeGreaterThan(10_000)
+    expect(Number(req.budget_ms)).toBeLessThan(20_000)
+    expect(timeout).toBeGreaterThan(Number(req.budget_ms))
+  })
+
+  it("sorts the engine's counts into copied, not copied, application and not reached", async () => {
+    const scope = await buildOrgScopeViaEngine(engineAnswer([
+      T("T001W", "C", true, 1, 1),                 // copier's own
+      T("T024E", "C", true, 3, 0, { TEXT: "Purchasing orgs" }),   // retest
+      T("TVKWZ", "C", true, 2, 2),                 // both
+      T("ZNOAUTH", "C", true, 0, 0, { UNREADABLE: "X", NOAUTH: "X" }),
+      T("MARC", "A", true, 50, 0),                 // application
+      T("MBEW", "A", false),                       // not reached
+    ]), args())
+    expect(scope.copied.map(t => [t.tab, t.src, t.tgt, t.text])).toEqual([["T001W", 1, 1, "Plants"], ["T001K", undefined, undefined, undefined]])
+    expect(retestList(scope).map(t => [t.tab, t.src, t.text])).toEqual([["T024E", 3, "Purchasing orgs"]])
+    expect(scope.notCopied.map(t => t.tab)).toEqual(["T024E", "TVKWZ", "ZNOAUTH"])
+    expect(scope.application.map(t => t.tab)).toEqual(["MARC"])
+    expect(scope.notProbed.map(t => t.tab)).toEqual(["MBEW"])
+    const text = formatOrgScope(scope).join("\n")
+    expect(text).toContain("RETEST FIRST — source has rows, target has none: 1")
+    expect(text).toContain("Could not be read: 1 — ZNOAUTH (1 of them: you are not authorized to display them")
+    expect(text).toContain("Time budget reached, not counted: 1 application table(s)")
+  })
+
+  it("an engine without the action says to update it", async () => {
+    await expect(buildOrgScopeViaEngine(async () => ({ STATUS: "error", VERSION: "0.9.38", MESSAGES: ["Unknown operation: 'retest_scope'"] }), args()))
+      .rejects.toThrow(/has no retest_scope action.*Install it with abapGit/)
   })
 })

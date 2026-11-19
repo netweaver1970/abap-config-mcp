@@ -88,7 +88,7 @@ code side (for example: "to activate, use SAP's ADT MCP server").
 | `read` (extended) | rows of a customizing table, optionally where one field of it equals one value (the server resolves a view to its root table first) | database tables of delivery class C, G or E only; maxRows capped (default 200, max 1000) and the answer says when it was cut; display authorization (S_TABU_DIS, else S_TABU_NAM) |
 | `transports` | requests with their tasks: number, kind, status, owner, date, client, text, target, optionally their objects; or one request looked up by number (a task gives its request); filters: kinds, statuses, owner (optionally with the requests the owner has a task in), client | modifiable only by default; capped at 500 requests, objects for the newest 100 and at most 500 per request; S_TRANSPRT display |
 | `transport_info` | for one object (R3TR type and name; the server maps an ADT URL): package, whether it records (TDEVC-KORRFLAG), transport layer and target (TR_GET_TRANSPORT_TARGET, guarded by FUNCTION_EXISTS), the open request and task holding it, and the user's open workbench requests to that target | read-only; S_TRANSPRT display |
-| `retest_scope` | for an org key and source/target values: row counts per keyed table, in the three lists org_copy shows today | counts only, never rows; stops after a time budget and reports what it didn't count |
+| `retest_scope` | for an org-key domain and source/target values: the client-dependent transparent tables keyed on the domain (C/G/E and A, at most 8000 key fields each), with source and target row counts, counted in org_copy's priority order (customizing outside the copier's set, then the copier's tables, then application data); the server sorts them into the three lists org_copy shows today | counts only, never rows; eight tables per statement (a UNION ALL of eight dynamic branches); stops after a time budget (default 25 s, max 120 s) and reports what it didn't count; a table the user may not display (S_TABU_DIS, else S_TABU_NAM) is not counted |
 | `dependencies` | for objects on a request: what they use and what uses them on other open requests, from the where-used index | read-only; capped |
 
 The server keeps the logic it has today (transport selection rules, retest classification,
@@ -147,6 +147,15 @@ release order, plan building); only where it gets its facts from changes.
   package, lock and allowed requests as ADT. Direct mode's object listing reads 8 requests at a time
   with one 2000-row cap, so a large request crowds out its neighbours (A4HK900030: 8 objects shown,
   over 500 there); the engine reads each request on its own.
+- Step 3 (engine 0.9.39): `retest_scope` added; `org_copy` registered in governed mode
+  (`buildOrgScopeViaEngine` in `orgScope.ts`, same classification and output as direct mode).
+  One table per statement was too slow (about 22 ms a table, cold; the plant's application part
+  ran out of time); eight per statement brought the plant (WERKS, about 1,800 keyed tables) to
+  28 s cold and 5 s warm, against 17 s in direct mode. Compared live on S4: VKORG and WERKS
+  dry runs byte-identical; BUKRS (about 5,000 keyed tables) gives the same customizing section
+  in both modes, and both run out of time in the application part, which the re-run with
+  `retestScope: "application"` covers. ABAP SQL goes through S/4's replacement objects
+  (MARD and the like), which is why the counts match.
 
 ## Tests
 
