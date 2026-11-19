@@ -3,8 +3,8 @@
  * an MCP client calls the gateway's tools as a signed-in user; the Cloud Connector simulator turns
  * the token into a short-lived X.509 certificate and calls SAP; the engine says who SAP sees.
  *
- *   node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap https://car.seasnake.be:44301 \
- *     --client 600 --user BASIS [--resolve car.seasnake.be=172.26.114.77] [--mode direct|header] [--skew-minutes 150]
+ *   node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap https://sap.example.com:44300 \
+ *     --client 600 --user BASIS [--resolve sap.example.com=10.0.0.10] [--mode direct|header] [--skew-minutes 150]
  *
  * Prints one line per scenario (PASS / FAIL with what came back) and exits 1 on any FAIL.
  */
