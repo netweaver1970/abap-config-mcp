@@ -192,3 +192,33 @@ describe("the tools in governed mode", () => {
     expect(adtConstructed.n).toBe(0)
   })
 })
+
+import { handleImgSearch } from "../src/tools/customizing"
+
+describe("img_search in governed mode", () => {
+  it("searches through the engine only, with the namespace applied afterwards", async () => {
+    engine.reply = req => req.operation === "img_search"
+      ? ok([{ ACTIVITY: "/POSDW/IMG_TASK", TEXT: "Define tasks", OBJECTTYPE: "C", OBJECTNAME: "/POSDW/VC_TASK", TCODE: "SM34" },
+            { ACTIVITY: "SIMG_TASKS", TEXT: "Tasks elsewhere", OBJECTTYPE: "V", OBJECTNAME: "V_TASK", TCODE: "SM30" }])
+      : ok({})
+    const r = await handleImgSearch({ keyword: "task", namespace: "/POSDW/", connectionId: "DEV" })
+    expect(r.content[0].text).toContain("/POSDW/IMG_TASK")
+    expect(r.content[0].text).not.toContain("SIMG_TASKS")
+    expect(engine.requests.map(q => q.operation)).toEqual(["img_search"])
+    expect(adtConstructed.n).toBe(0)
+  })
+
+  it("needs a keyword, and says why", async () => {
+    const r = await handleImgSearch({ keyword: "  ", connectionId: "DEV" })
+    expect(r.content[0].text).toMatch(/^Searching the IMG stopped: no keyword was given/)
+    expect(engine.requests).toEqual([])
+  })
+
+  it("an engine that does not answer gives the reason, with no ADT fallback", async () => {
+    engine.reply = () => ({ STATUS: "error", VERSION: "0.0.1", MESSAGES: ["Unknown operation: 'img_search'"] })
+    const r = await handleImgSearch({ keyword: "plant", connectionId: "DEV" })
+    expect(r.content[0].text).toMatch(/the engine's img_search did not answer, and in governed mode there is no fallback through ADT/)
+    expect(r.content[0].text).toContain("Install it with abapGit")
+    expect(adtConstructed.n).toBe(0)
+  })
+})

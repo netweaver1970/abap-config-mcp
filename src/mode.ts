@@ -98,6 +98,8 @@ export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "org_copy",
   // phase 2: dependencies (engine 0.9.40)
   "transport_move",
+  // phase 2: the engine's img_search (no new action)
+  "img_search",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown

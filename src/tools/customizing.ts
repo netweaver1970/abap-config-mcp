@@ -18,6 +18,7 @@ import { ensureConnected, forceReconnect, isRequestError, isSessionDegradedError
 import { formatQueryResult, freestyleQuery } from "./data"
 import { imgIndexRead, imgSearchViaEngine, type ImgIndexHit, type ImgSearchHit } from "./customizingEngine"
 import { customizingSource, type RowsResult } from "./customizingSource"
+import { isGoverned, engineFixHint } from "../mode"
 import type { ADTClient, QueryResult } from "abap-adt-api"
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -307,6 +308,7 @@ export async function handleImgSearch(args: {
   maxResults?: number
   connectionId?: string
 }) {
+  if (isGoverned()) return imgSearchGoverned(args)
   const client = await ensureConnected(args.connectionId)
 
   // Preferred: the in-system engine's img_search op — a full CUS_IMGACT scan with
@@ -340,6 +342,27 @@ export async function handleImgSearch(args: {
     }
   }
   return imgSearchRaw(client, args)
+}
+
+/**
+ * Governed mode: only the engine's img_search (a full CUS_IMGACT scan in SAP, title and
+ * activity id). The STREE index and raw-table fallbacks read through ADT, so they are not used;
+ * when the engine does not answer, say so instead of falling back.
+ */
+async function imgSearchGoverned(args: { keyword: string; namespace?: string; inScopeOnly?: boolean; language?: string; maxResults?: number; connectionId?: string }) {
+  const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] })
+  const kw = args.keyword.trim()
+  if (!kw) {
+    return text(`Searching the IMG stopped: no keyword was given, and in governed mode the search runs in SAP through the engine, ` +
+      `which needs one. Give a keyword (a word from the activity title, or part of its id such as TSW or /POSDW/).`)
+  }
+  const viaEngine = await imgSearchViaEngine(args.connectionId, { keyword: kw, language: args.language, maxRows: args.maxResults })
+  if (!viaEngine) {
+    return text(`Searching the IMG for "${kw}" stopped: the engine's img_search did not answer, and in governed mode there is no ` +
+      `fallback through ADT. Run customizing_engine_ping; if the engine is missing or too old, ${engineFixHint()}.`)
+  }
+  const out = formatImgSearchHits(args.keyword, viaEngine, args.namespace)
+  return text(args.inScopeOnly ? `${out}\n(inScopeOnly is not applied in governed mode: the engine's search does not read the client's IMG scope.)` : out)
 }
 
 // Index-backed search: resolve the indexed IMG tree(s) from the TTREESRCH

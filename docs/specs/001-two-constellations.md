@@ -191,6 +191,11 @@ release order, plan building); only where it gets its facts from changes.
   lab); the floor is read from the syntax. Open: on a 7.40 system a company code's scope may not
   finish within the 30 s budget even with retestScope: "customizing"; a background job (as org_copy
   uses) would lift that limit.
+- Step 5: `img_search` registered in governed mode. It uses only the engine's existing img_search
+  action (a full CUS_IMGACT scan in SAP); the STREE-index and raw-table fallbacks read through ADT and
+  are left out, so an engine that does not answer gives the reason instead. An empty keyword is refused
+  (the engine needs one) and `inScopeOnly` is not applied (the engine does not read CUS_IMGACH_SCOPE),
+  which the answer says. Compared live on S4: three searches identical in both modes.
 
 ## Tests
 
