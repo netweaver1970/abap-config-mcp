@@ -25,7 +25,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { loadConfig } from "../config"
-import { checkArgs } from "./paramGuard"
+import { checkArgs, SELF_CHECKED_TOOLS } from "./paramGuard"
 import { hintsFor, type ToolHints } from "./toolAnnotations"
 
 export type ToolSurface = "grouped" | "legacy"
@@ -298,13 +298,16 @@ export function buildGroup(g: GroupDef, collected: Map<string, Collected>): Buil
 
   const byAction = new Map(avail.map(a => [a.action, a]))
   const handler = async (args: Record<string, unknown>, extra: unknown) => {
-    const { action, ...rest } = args ?? {}
+    const { action, ...given } = args ?? {}
     const a = byAction.get(String(action))
     if (!a) throw new McpError(ErrorCode.InvalidParams,
       `❌ ${g.name} was not run: action ${JSON.stringify(action)} is not one of ${avail.map(x => x.action).join(", ")}. Pass one of those as action.`)
     const c = collected.get(a.tool)!
     const shape = shapes.get(a.action)!
     const label = `${g.name}(action: "${a.action}")`
+    // connectionId is offered for every action; one that works without a system just ignores it
+    const { connectionId, ...rest } = given
+    if (connectionId !== undefined && "connectionId" in shape) rest.connectionId = connectionId
     const r = checkArgs(label, z.object(shape), rest)
     if (!r.ok) throw new McpError(ErrorCode.InvalidParams, r.message)
     const result = await c.handler({ ...r.args, ...(a.fixed ?? {}) }, extra)
@@ -344,6 +347,7 @@ export function groupingServer(server: McpServer): { target: McpServer; flush: (
     for (const g of TOOL_GROUPS) {
       const b = buildGroup(g, collected)
       if (!b) continue
+      SELF_CHECKED_TOOLS.add(b.name)
       ;(server.registerTool as AnyFn).call(server, b.name, b.config, b.handler)
       groups.push(b)
     }

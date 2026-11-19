@@ -140,7 +140,21 @@ describe("abap_debug_delete_breakpoint", () => {
 
 // ─── abap_debug_step ─────────────────────────────────────────────────────────
 
+describe("stepping and inspecting without a stopped program", () => {
+  it.each([
+    ["step", () => handleAbapDebugStep({ stepType: "stepOver" })],
+    ["variable", () => handleAbapDebugVariable({ variables: ["X"] } as any)],
+    ["stack", () => handleAbapDebugStack({})],
+    ["set_variable", () => handleAbapDebugSetVariable({ variableName: "X", value: "1" } as any)],
+  ] as const)("%s is refused before calling SAP", async (_n, call) => {
+    const r = await call()
+    expect(r.content[0].text).toMatch(/stopped: no program is stopped in the debugger/)
+    expect(ensureConnected).not.toHaveBeenCalled()
+  })
+})
+
 describe("abap_debug_step", () => {
+  beforeEach(() => { debugSessions.set("default", { terminalId: "t", ideId: "i", user: "BASIS" } as any) })
   it.each(["stepInto", "stepOver", "stepReturn", "stepContinue", "terminateDebuggee"] as const)(
     "calls debuggerStep with %s",
     async (stepType) => {
@@ -155,6 +169,7 @@ describe("abap_debug_step", () => {
 // ─── abap_debug_variable ──────────────────────────────────────────────────────
 
 describe("abap_debug_variable", () => {
+  beforeEach(() => { debugSessions.set("default", { terminalId: "t", ideId: "i", user: "BASIS" } as any) })
   it("returns formatted variable values", async () => {
     mockClient.debuggerVariables.mockResolvedValue([
       { NAME: "LV_COUNT", ACTUAL_TYPE_NAME: "I", DECLARED_TYPE_NAME: "I", VALUE: "42" },
@@ -176,6 +191,7 @@ describe("abap_debug_variable", () => {
 // ─── abap_debug_stack ─────────────────────────────────────────────────────────
 
 describe("abap_debug_stack", () => {
+  beforeEach(() => { debugSessions.set("default", { terminalId: "t", ideId: "i", user: "BASIS" } as any) })
   it("returns JSON-serialised stack", async () => {
     mockClient.debuggerStackTrace.mockResolvedValue([{ program: "ZPROG", line: 10 }])
     const result = await handleAbapDebugStack({})
@@ -186,6 +202,7 @@ describe("abap_debug_stack", () => {
 // ─── abap_debug_set_variable ─────────────────────────────────────────────────
 
 describe("abap_debug_set_variable", () => {
+  beforeEach(() => { debugSessions.set("default", { terminalId: "t", ideId: "i", user: "BASIS" } as any) })
   it("sets variable value and confirms", async () => {
     mockClient.debuggerSetVariableValue.mockResolvedValue("99")
     const result = await handleAbapDebugSetVariable({ variableName: "LV_COUNT", value: "99" })

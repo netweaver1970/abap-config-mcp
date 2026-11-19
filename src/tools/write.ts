@@ -62,7 +62,9 @@ export async function resolveWorkbenchTransport(
   // source, 2026-09-18), and dropping the transport there leaves SAP to pick the
   // user's default request, which then collides with the request the object is
   // already locked in ("Object LIMU CPRI ... is already locked in request ...").
-  const pkg = (info.DEVCLASS || devClass || "").trim()
+  // A package's own URL names it; ADT may leave DEVCLASS empty for a package.
+  const urlPkg = /\/packages\/([^/?#]+)/.exec(refUrl)?.[1]
+  const pkg = (info.DEVCLASS || devClass || (urlPkg ? decodeURIComponent(urlPkg).toUpperCase() : "")).trim()
   if ((!info.RECORDING || info.RECORDING.trim() === "") && pkg.startsWith("$")) {
     return { note: `No transport — local package ${pkg}${args.transport ? ` (${args.transport} ignored)` : ""}.` }
   }
@@ -409,7 +411,7 @@ export async function handleDeleteAbapObject(args: {
   // should not leave the object locked).
   const t = await resolveWorkbenchTransport(
     client, args.url, undefined, undefined, args, extra?.sessionId,
-    `deleting ${args.url.split("/").pop()}`, `MCP delete ${args.url.split("/").pop()}`)
+    `deleting ${decodeURIComponent(args.url.split("/").pop() ?? "")}`, `MCP delete ${decodeURIComponent(args.url.split("/").pop() ?? "")}`)
   if (t.prompt) return { content: [{ type: "text" as const, text: t.prompt }] }
 
   const held = getHeldLock(args.connectionId, args.url)

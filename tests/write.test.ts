@@ -260,6 +260,13 @@ describe("create_abap_object", () => {
 // ─── delete_abap_object ───────────────────────────────────────────────────────
 
 describe("delete_abap_object", () => {
+  it("a local package named only by its URL needs no transport (ADT leaves DEVCLASS empty for a package)", async () => {
+    mockClient.transportInfo.mockResolvedValue({ RECORDING: "", DEVCLASS: "" })
+    const result = await handleDeleteAbapObject({ url: "/sap/bc/adt/packages/%24mcp_pkg" })
+    expect(result.content[0].text).not.toMatch(/Which transport/)
+    expect(mockClient.deleteObject).toHaveBeenCalledWith("/sap/bc/adt/packages/%24mcp_pkg", "LOCK_ABC123", undefined)
+  })
+
   it("locks, deletes, unlocks, and clears registry", async () => {
     const result = await handleDeleteAbapObject({ url: "/sap/bc/adt/programs/ZPROG" })
     expect(mockClient.lock).toHaveBeenCalledWith("/sap/bc/adt/programs/ZPROG")

@@ -5,7 +5,7 @@ CLASS zcl_mcp_cust_engine DEFINITION
 
   PUBLIC SECTION.
     INTERFACES if_http_extension.
-    CONSTANTS c_version TYPE string VALUE '0.10.1'.
+    CONSTANTS c_version TYPE string VALUE '0.10.2'.
 
   PRIVATE SECTION.
     TYPES: ty_tabkey_tt TYPE STANDARD TABLE OF trobj_name WITH DEFAULT KEY.
@@ -1143,9 +1143,15 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       ENDIF.
 
       rs_resp-status = 'ok'.
-      APPEND |DRY RUN — { lv_action } '{ lv_desc }' ({ lv_org_unit }): { lv_source } → { lv_target } | &&
-             |— { lines( lt_deptabs ) } dependent table(s); commit to copy the org unit with its dependent customizing|
-        TO rs_resp-messages.
+      IF lv_action = 'DELE'.
+        APPEND |DRY RUN — delete '{ lv_desc }' ({ lv_org_unit }) { lv_source } | &&
+               |— { lines( lt_deptabs ) } dependent table(s); commit to delete the org unit's entries in them|
+          TO rs_resp-messages.
+      ELSE.
+        APPEND |DRY RUN — copy '{ lv_desc }' ({ lv_org_unit }): { lv_source } → { lv_target } | &&
+               |— { lines( lt_deptabs ) } dependent table(s); commit to copy the org unit with its dependent customizing|
+          TO rs_resp-messages.
+      ENDIF.
       RETURN.
     ENDIF.
 

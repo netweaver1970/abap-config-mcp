@@ -125,12 +125,19 @@ export function checkArgs(toolName: string, schema: any, rawArgs: unknown): { ok
   }
 }
 
+/**
+ * Tools that check their own arguments (the group tools, per action): the guard leaves them alone,
+ * so a problem is reported against the action's parameters, not the group's merged ones.
+ */
+export const SELF_CHECKED_TOOLS = new Set<string>()
+
 /** Hook the SDK's argument validation for every tool on this server. */
 export function installParamGuard(server: McpServer): void {
   const s = server as unknown as { validateToolInput?: (tool: any, args: unknown, name: string) => Promise<unknown> }
   const original = s.validateToolInput?.bind(server)
   if (!original) return
   s.validateToolInput = async (tool: any, args: unknown, toolName: string) => {
+    if (SELF_CHECKED_TOOLS.has(toolName)) return (args && typeof args === "object" ? args : {})
     if (!tool?.inputSchema || !shapeOf(tool.inputSchema)) return original(tool, args, toolName)
     const r = checkArgs(toolName, tool.inputSchema, args)
     if (!r.ok) throw new McpError(ErrorCode.InvalidParams, r.message)

@@ -105,6 +105,18 @@ describe("grouped surface", () => {
     expect(t.description).toContain("• org_delete — Delete an org unit's entries")
   })
 
+  it("through the server, a parameter problem is reported per action, and connectionId is taken by every action", async () => {
+    setEnv("governed")
+    const server = createMcpServer()
+    const validate = (server as any).validateToolInput.bind(server)
+    const tools = toolsOf(server)
+    // the group-level guard lets the group check its own arguments
+    const passed = await validate(tools.bw, { action: "read", type: "IOBJ", name: 5 }, "bw")
+    await expect(tools.bw.handler(passed, {})).rejects.toThrow(/bw\(action: "read"\) was not run[\s\S]*Parameter "name"/)
+    const r = await tools.sap_system.handler({ action: "systems", connectionId: "DEV" }, { sessionId: "g2" })
+    expect(r.content[0].text).toMatch(/governed/i)
+  })
+
   it("a split action shows and takes only its own parameters", async () => {
     setEnv("direct")
     const tools = toolsOf(createMcpServer())

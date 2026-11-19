@@ -74,6 +74,14 @@ export async function handleAbapDebugSession(args: {
   }
 }
 
+/** Stepping and inspecting need a program stopped at a breakpoint, caught by a listener of this server. */
+function noDebuggee(connectionId: string | undefined, what: string) {
+  if (debugSessions.has(connectionId ?? "default")) return undefined
+  return { content: [{ type: "text" as const, text:
+    `${what} stopped: no program is stopped in the debugger for this connection, so there is nothing to ${what.toLowerCase().startsWith("read") ? "read" : "act on"}. ` +
+    `Set a breakpoint with abap_debug_set_breakpoint, start abap_debug_session with action listen, run the program as that user, then call this again.` }] }
+}
+
 export async function handleAbapDebugSetBreakpoint(args: {
   sourceUrl: string
   line: number
@@ -125,6 +133,8 @@ export async function handleAbapDebugStep(args: {
   stepType: "stepInto" | "stepOver" | "stepReturn" | "stepContinue" | "terminateDebuggee"
   connectionId?: string
 }) {
+  const refused = noDebuggee(args.connectionId, "Stepping")
+  if (refused) return refused
   const client = await ensureConnected(args.connectionId)
   const result = await client.debuggerStep(args.stepType)
   return {
@@ -139,6 +149,8 @@ export async function handleAbapDebugVariable(args: {
   variables: string[]
   connectionId?: string
 }) {
+  const refused = noDebuggee(args.connectionId, "Reading variables")
+  if (refused) return refused
   const client = await ensureConnected(args.connectionId)
   const result = await client.debuggerVariables(args.variables)
   const lines = result.map(v =>
@@ -150,6 +162,8 @@ export async function handleAbapDebugVariable(args: {
 }
 
 export async function handleAbapDebugStack(args: { connectionId?: string }) {
+  const refused = noDebuggee(args.connectionId, "Reading the call stack")
+  if (refused) return refused
   const client = await ensureConnected(args.connectionId)
   const stack = await client.debuggerStackTrace()
   return {
@@ -162,6 +176,8 @@ export async function handleAbapDebugSetVariable(args: {
   value: string
   connectionId?: string
 }) {
+  const refused = noDebuggee(args.connectionId, "Setting a variable")
+  if (refused) return refused
   const client = await ensureConnected(args.connectionId)
   const result = await client.debuggerSetVariableValue(args.variableName, args.value)
   return {

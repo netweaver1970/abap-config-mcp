@@ -122,6 +122,13 @@ describe("manage_transport_requests details", () => {
     ]
   } as unknown as TransportRequest
 
+  it("an object name the XML parser read as a number is shown, not a crash", async () => {
+    mockClient.transportDetails.mockResolvedValue({ ...detailTransport,
+      objects: [{ "tm:pgmid": "R3TR", "tm:type": "TABU", "tm:name": 151, "tm:dummy_uri": "", "tm:obj_info": "Table contents" }] })
+    const text = (await handleManageTransportRequests({ action: "details", transportNumber: "CARX000010" })).content[0].text
+    expect(text).toMatch(/TABU\s+151/)
+  })
+
   it("shows owner, status, description, and objects", async () => {
     mockClient.transportDetails.mockResolvedValue(detailTransport)
     const result = await handleManageTransportRequests({ action: "details", transportNumber: "CARX000010" })

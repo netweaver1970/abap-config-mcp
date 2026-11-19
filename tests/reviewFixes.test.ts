@@ -20,11 +20,16 @@ beforeEach(() => {
 
 describe("query errors are not session errors", () => {
   it("does not treat an SQL mistake answered with HTTP 400 as a degraded session", () => {
-    for (const message of ['Unknown column name "TABCLASS".', '"LIKE" is not allowed here. ") " is expected.', "Cannot find 'OIJLOCTT'"]) {
+    for (const message of ['Unknown column name "TABCLASS".', '"LIKE" is not allowed here. ") " is expected.', "Cannot find 'OIJLOCTT'", "Resource Package $MCP_LT_PKG does already exist."]) {
       const err = Object.assign(new Error(message), { status: 400 })
       expect(isRequestError(err)).toBe(true)
       expect(isSessionDegradedError(err)).toBe(false)
     }
+  })
+
+  it("does not treat a lock conflict answered with HTTP 400 as a degraded session", () => {
+    const err = Object.assign(new Error("Package $MCP_LT_PKG is already locked"), { status: 400 })
+    expect(isSessionDegradedError(err)).toBe(false)
   })
 
   it("does not treat a transport-system refusal as a degraded session", () => {

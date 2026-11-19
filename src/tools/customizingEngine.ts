@@ -879,7 +879,7 @@ export async function handleOrgCopy(args: {
   const stillGoing = isRunStillGoing(r.STATUS)
   const lines: string[] = [
     ...(deployNote ? [deployNote.trimEnd()] : []),
-    isDry ? `📋 DRY RUN — nothing copied`
+    isDry ? `📋 DRY RUN — nothing ${isDelete ? "deleted" : "copied"}`
       : r.STATUS === "ok" ? `✏️  ${isDelete ? "DELETED" : "COPIED"}`
       : stillGoing ? `⚙️  RUNNING in a background job`
       : `❌ FAILED`,

@@ -469,7 +469,7 @@ export function forgetLock(connectionId: string | undefined, objectUrl: string):
  */
 export function isRequestError(err: unknown): boolean {
   const msg = String((err as { message?: unknown })?.message ?? "")
-  return /unknown column|is invalid here|is expected|not allowed|literals? across|syntax|cannot find|does not exist|unknown table|not supported|only select|must start with select|invalid (table|field|name)/i.test(msg)
+  return /unknown column|is invalid here|is expected|not allowed|literals? across|syntax|cannot find|does not exist|already exists?|unknown table|not supported|only select|must start with select|invalid (table|field|name)/i.test(msg)
 }
 
 /**
@@ -536,7 +536,7 @@ export function isInvalidLockError(err: unknown): boolean {
 
 export function isEditingError(err: unknown): boolean {
   const msg = String((err as { message?: string })?.message ?? "").toLowerCase()
-  return msg.includes("currently editing") || msg.includes("being edited")
+  return msg.includes("currently editing") || msg.includes("being edited") || msg.includes("is already locked")
 }
 
 /** Appends SM12 cleanup instructions to "currently editing" error messages. */

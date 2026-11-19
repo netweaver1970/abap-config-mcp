@@ -140,15 +140,15 @@ function workItemsFor(connectionId: string | undefined, trkorr: string): string 
 }
 
 export function formatRequest(r: TransportRequest): string {
-  return `${r["tm:number"]} | ${r["tm:status"]} | ${r["tm:owner"].padEnd(12)} | ${r["tm:desc"]}`
+  return `${r["tm:number"]} | ${r["tm:status"]} | ${String(r["tm:owner"] ?? "").padEnd(12)} | ${r["tm:desc"]}`
 }
 
 function formatObject(o: TransportObject): string {
-  return `    ${o["tm:pgmid"].padEnd(6)} ${o["tm:type"].padEnd(8)} ${o["tm:name"].padEnd(40)} ${o["tm:obj_info"] ?? ""}`.trimEnd()
+  return `    ${String(o["tm:pgmid"] ?? "").padEnd(6)} ${String(o["tm:type"] ?? "").padEnd(8)} ${String(o["tm:name"] ?? "").padEnd(40)} ${o["tm:obj_info"] ?? ""}`.trimEnd()
 }
 
 function formatTaskBlock(task: TransportTask, indent = "  "): string {
-  const header = `${indent}Task ${task["tm:number"]} | ${task["tm:owner"].padEnd(12)} | ${task["tm:desc"]}`
+  const header = `${indent}Task ${task["tm:number"]} | ${String(task["tm:owner"] ?? "").padEnd(12)} | ${task["tm:desc"]}`
   if (task.objects.length === 0) return header + "\n" + indent + "  (no objects)"
   const objLines = task.objects.map(o => indent + "  " + formatObject(o).trimStart())
   return [header, ...objLines].join("\n")
