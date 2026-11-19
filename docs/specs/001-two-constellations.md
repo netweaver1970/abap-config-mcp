@@ -186,6 +186,15 @@ release order, plan building); only where it gets its facts from changes.
 3. **Engine through abapGit.** Publish the engine objects (ZCL_MCP_CUST_ENGINE,
    ZMCP_CUST_WRITE, ZCL_MCP_DIAG) as an abapGit repository, with a short install guide
    including the SICF node. `engine_deploy` in direct mode stays as it is.
+   DONE (engine 0.10.1): `abapgit/` generated from the deployed sources (`npm run abapgit`, plus the
+   offline zip in release/ and a root `.abapgit.xml` for linking the repository online), metadata
+   byte-identical to abapGit 1.133's own serializers (taken from a headless export on S4), and a
+   test that keeps the folder current. Installed on CAR through abapGit's own offline import and
+   pull, headless (`scripts/abapgit-install.ts`): fresh install into `$MCP_ENGINE`, 7 objects
+   active, ping through the new SICF node, 13/13 ABAP Unit tests, and abapGit's export of the
+   package identical to `abapgit/` (round trip, `--verify`). Found on the way: abapGit matches an
+   existing SICF node by a hash of its URL; a node from an older ADT deploy did not match on CAR,
+   and abapGit nested a second node under it, so the guide says to remove an earlier node first.
 4. **Engine behind SAP's MCP Gateway** (optional). SAP's MCP Gateway in Integration Suite
    (Premium and Enhanced editions, trial and free plan for trying; Integration Cell runtime
    only; up to 50 tools per MCP server; OAuth in front) can turn an on-premise HTTP endpoint

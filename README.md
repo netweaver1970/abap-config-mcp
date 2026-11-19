@@ -394,7 +394,7 @@ customizing is the point. It is **not** meant to perform development or customiz
 ### 4. Risk tiers — cap the tool surface with `ABAP_MCP_MAX_TIER`
 
 SAP authorizations are the *real* control, but the server can also hide whole classes of
-tool so a deployment exposes only what corporate security accepts. All 60 tools are
+tool so a deployment exposes only what corporate security accepts. All operations are
 classified into three risk tiers (full registry: **[docs/TIERS.md](docs/TIERS.md)**):
 
 | Tier | What it does | Examples |
@@ -457,6 +457,36 @@ Workbench Z package on a transport (CTS to Prod), or `transportable:false` for `
 (Dev-only); re-run any time to flip a unit. The unit's **SICF node is registered
 automatically** as part of the deploy. See **[docs/TIERS.md](docs/TIERS.md)** for the
 full deployment + capability-awareness story.
+
+### 5b. Installing the engine with abapGit
+
+The engine is also an abapGit repository: [`abapgit/`](abapgit/) holds the classes
+`ZCL_MCP_CUST_ENGINE` (with its ABAP Unit tests), `ZCL_MCP_SCOPE_BATCH`, `ZCL_MCP_BW_ENGINE`
+and `ZCL_MCP_DIAG`, the report `ZMCP_CUST_WRITE` and the SICF nodes `/sap/bc/zmcp_cust` and
+`/sap/bc/zmcp_diag`. It is generated from the same ABAP the server deploys (`npm run abapgit`,
+which also writes the offline zip `release/abap-config-mcp-engine-<version>.zip`), and a test keeps
+it current. This is the route for governed mode, where the server deploys nothing.
+
+1. Create a package for it (for example `ZMCP_ENGINE`, transportable, or `$MCP_ENGINE`, local).
+2. In abapGit: **New Offline** for that package, then **Import zip** with the release zip (or
+   **New Online** with this Git repository; the root `.abapgit.xml` points abapGit at `abapgit/src/`).
+3. **Pull**. In a transportable package abapGit asks for a Workbench request.
+4. Check it with `admin(action: "engine_ping")` and `abap_test(action: "unit")` on
+   `ZCL_MCP_CUST_ENGINE`.
+
+Notes:
+- On SAP_BASIS 7.40, `ZCL_MCP_SCOPE_BATCH` does not activate (it uses UNION, 7.50+). The engine works
+  without it and counts one table at a time; delete that class or ignore its activation error.
+- If the engine was deployed before with `engine_deploy` or `admin(action: "engine_install")`, delete
+  its SICF node `/sap/bc/zmcp_cust` first. abapGit recognises an existing node by a hash of its URL; a
+  node created by older deploys may not match, and abapGit then nests a second node under it.
+- A new engine version means a new pull. The server reports a version mismatch in `engine_ping`.
+
+Tested end to end on CAR (SAP_BASIS 757, abapGit 1.133.0): fresh install into `$MCP_ENGINE` through
+abapGit's own offline import and pull, all 7 objects active, engine answering through the new SICF
+node, 13/13 ABAP Unit tests passing, and abapGit's export of the package identical to `abapgit/`
+file for file. `scripts/abapgit-install.ts` does that install headless on a lab system
+(`--verify` compares the round trip).
 
 ### 6. SAP's API Policy: where this server stands
 
@@ -636,7 +666,7 @@ M365 Copilot connects to MCP servers through **Copilot Studio**, which then surf
    | Authentication | **API Key** |
    | API Key | your `server.apiKey` value from `connections.json` |
 
-5. Copilot Studio auto-discovers all 60 tools via the MCP handshake — no manual tool registration needed
+5. Copilot Studio auto-discovers the tools via the MCP handshake — no manual tool registration needed
 
 6. **Publish** the agent and deploy it to Microsoft 365
 
@@ -674,7 +704,7 @@ IBM Bob is IBM's AI coding IDE (1.0 released March 2026). It has native MCP supp
 
 > If Bob and the SAP system are on the same network (e.g. both inside your corporate VPN), use the plain `http://` URL directly — no need to expose the server externally.
 
-Once configured, Bob's chat and agent modes can call all 60 tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
+Once configured, Bob's chat and agent modes can call all the tools directly: search objects, read/write source, manage transports, browse packages, query tables, and more.
 
 ---
 
@@ -738,7 +768,40 @@ Replace `CAR` with the `id` of any connection in your `connections.json`.
 
 ---
 
-## All 60 tools — detailed reference
+## Tools: a dozen groups, each with an action
+
+By default the server registers one tool per area, each with an `action` parameter; reads and
+writes are separate tools, so a client can allow the read tools as a whole and still confirm every
+write. A call names the action and that action's parameters, for example
+`customizing(action: "read", objectName: "V_T001W", connectionId: "S4")`. The `action` list of each
+tool shows only what this server offers: governed mode, a tier cap (`ABAP_MCP_MAX_TIER`) or the
+data switch leave actions out, and a tool with none left is not registered. Each call is checked
+against its action's own parameters.
+
+`ABAP_MCP_TOOLS=legacy` (or `"tools": "legacy"` in the server section of `connections.json`)
+registers the earlier surface instead: one tool per operation, under the names in the table and
+in the reference below.
+
+| Tool | Actions (operation name under ABAP_MCP_TOOLS=legacy) |
+|---|---|
+| `sap_system` | systems (`connected_systems`), adt_services (`adt_discovery`), dumps (`analyze_dump`), abap_memory (`abap_memory_report`), hana_memory (`hana_memory_report`) |
+| `abap` | search (`search_abap_objects`), info (`get_abap_object_info`), source (`get_abap_object_lines`), sources (`get_abap_batch_lines`), grep (`search_abap_object_lines`), where_used (`where_used`), versions (`version_history`), package (`browse_package`), text_elements (`get_text_elements`), inactive (`check_inactive_objects`), table (`describe_database_table`), tables (`search_database_tables`) |
+| `abap_write` | create (`create_abap_object`), write (`write_abap_object_source`), activate (`abap_activate`), activate_many (`abap_activate_multiple`), delete (`delete_abap_object`), lock (`lock_abap_object`), unlock (`unlock_abap_object`), create_package (`create_package`), create_test_include (`create_test_include`), set_text_elements (`set_text_elements`) |
+| `abap_test` | syntax (`syntax_check`), unit (`run_unit_tests`), atc (`run_atc_analysis`) |
+| `abap_debug` | run_class (`abap_run_class`), listen (`abap_debug_session`), detach (`abap_debug_session`), status (`abap_debug_session`), set_breakpoint (`abap_debug_set_breakpoint`), delete_breakpoint (`abap_debug_delete_breakpoint`), step (`abap_debug_step`), stack (`abap_debug_stack`), variable (`abap_debug_variable`), set_variable (`abap_debug_set_variable`) |
+| `data` | query (`execute_data_query`), rows (`read_table_contents`) |
+| `transport` | list (`list_all_transports`), mine (`manage_transport_requests`), details (`manage_transport_requests`), for_object (`get_transport_for_object`) |
+| `transport_write` | create (`manage_transport_requests`), release (`manage_transport_requests`), delete (`manage_transport_requests`), change_owner (`manage_transport_requests`), move (`transport_move`) |
+| `customizing` | search (`img_search`), describe (`customizing_describe`), read (`customizing_read`), diff (`customizing_diff`), plan (`customizing_plan_change`), status (`customizing_status`) |
+| `customizing_write` | copy (`customizing_apply`), delete (`customizing_apply`), create (`customizing_create`), org_copy (`org_copy`), org_delete (`org_copy`), retail_listing (`retail_listing`) |
+| `bw` | capabilities (`bw_capabilities`), list (`bw_list`), read (`bw_read`), where_used (`bw_where_used`) |
+| `bw_write` | create (`bw_create`), change (`bw_change`), activate (`bw_activate`), delete (`bw_delete`) |
+| `admin` | relogin (`force_relogin`), engine_ping (`customizing_engine_ping`), engine_install (`customizing_engine_bootstrap`), engine_deploy (`engine_deploy`), engine_selftest (`customizing_selftest`), engine_remove (`customizing_engine_cleanup`) |
+
+## Operations — detailed reference
+
+Each operation below is an action of the tool named in the table above (its own name is the tool
+name under `ABAP_MCP_TOOLS=legacy`).
 
 Two of them, `execute_data_query` and `read_table_contents`, are off unless `ABAP_MCP_DATA_TOOLS=1`; see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands).
 
