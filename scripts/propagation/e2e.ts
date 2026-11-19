@@ -61,7 +61,10 @@ async function scenario(name: string, token: () => string | undefined, tool: str
   await scenario("forged token (other key): refused", () => foreignIdp.issue(user), "whoami", {}, /Gateway refused the call: signature/)
   await scenario("expired token: refused", () => idp.issue(user, { ttlSeconds: -5 }), "whoami", {}, /Gateway refused the call: token expired/)
   await scenario("token for a user SAP does not map (JDOE): SAP refuses the logon", () => idp.issue("JDOE"), "whoami", {}, /HTTP 401/)
-  await scenario("certificate from a CA SAP does not trust: TLS refused", good, "whoami", {}, /Cloud Connector refused the call|socket hang up|ECONNRESET|certificate/i,
+  // A certificate from a CA SAP does not trust must not log on. Direct mode: ICM refuses it in the TLS
+  // handshake. Header mode: ICM trusts the proxy and does NOT check the forwarded certificate's issuer, so
+  // only a mapping bound to the issuer (VUSREXTID with issuer, or a CERTRULE rule per issuer) refuses it.
+  await scenario("certificate from a CA SAP does not trust: refused", good, "whoami", {}, /^(?!.*HTTP 200).*(Cloud Connector refused the call|HTTP 401)/,
     { signWith: { cert: path.join(pkiDir, "rogue.crt"), key: path.join(pkiDir, "rogue.key") } })
 
   const failed = results.filter(r => !r[1]).length

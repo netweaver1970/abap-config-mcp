@@ -75,13 +75,16 @@ CLASS zcl_mcp_pp_setup IMPLEMENTATION.
             ENDIF.
             " DN mapping for the user, as SM30 view VUSREXTID maintains it. The logon looks the DN up as
             " "CN=…, O=…, C=…" (comma and space), while the certificate parser prints "CN=…,O=…,C=…".
+            " Bound to the issuer: behind a trusted reverse proxy ICM does not check the forwarded
+            " certificate's issuer, so a DN-only mapping would accept any CA (tested on CAR).
             DATA(lv_dn) = replace( val = lv_u_subj sub = `,` with = `, ` occ = 0 ).
-            DATA(lt_ext_in) = VALUE extid_opt( ( extid = lv_dn operation = 'I' ) ).
+            DATA(lv_iss) = replace( val = lv_u_iss sub = `,` with = `, ` occ = 0 ).
+            DATA(lt_ext_in) = VALUE extid_opt( ( extid = lv_dn issuer = lv_iss operation = 'I' ) ).
             CALL FUNCTION 'SUSR_USER_EXTID_SET'
               EXPORTING if_bname = c_user if_type = 'DN' it_extid = lt_ext_in
               EXCEPTIONS user_not_found = 1 empty_extid = 2 no_authority = 3 lock_failure = 4 hash_error = 5
                          hash_conflict = 6 db_error = 7 rulebased_certmapping = 8 OTHERS = 9.
-            out->write( |MAP: { lv_dn } → { c_user }: rc { sy-subrc }| ).
+            out->write( |MAP: { lv_dn } (issuer { lv_iss }) → { c_user }: rc { sy-subrc }| ).
             COMMIT WORK AND WAIT.
             IF c_with_proxy = abap_true.
               lv_val = |SUBJECT="{ lv_p_subj }", ISSUER="{ lv_p_iss }"|.

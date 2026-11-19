@@ -1,7 +1,7 @@
 /**
- * Show, set or clear icm/trusted_reverse_proxy_0 (the Cloud Connector header path) on a lab system:
+ * Show, set or clear icm/trusted_reverse_proxy_0 (the Cloud Connector header path) in the running ICM of a lab system:
  *   ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-profile.ts --connection CAR --pki <dir> --mode show|set|clear
- * set: SUBJECT/ISSUER of <pki>/cc.crt as SAP renders them; the profile file is backed up by SAP's API.
+ * set: SUBJECT/ISSUER of <pki>/cc.crt as SAP renders them. Runtime only (SMICM change value): no profile is written, an ICM restart drops it.
  */
 import * as fs from "fs"
 import * as path from "path"
