@@ -243,6 +243,36 @@ forwards the user's certificate in `SSL_CLIENT_CERT`; ICM trusted it through
 The lab system was put back to its original state after each run: PSE file restored byte for
 byte from the backup, mappings removed, trusted-proxy entry cleared.
 
+### The permanent test set-up on CAR (since 19 November 2026)
+
+CAR (client 600) keeps the rehearsal chain in place, so the simulator works any time:
+
+| What | Where | Undo |
+|---|---|---|
+| "MCP Test CA" trusted for client certificates | SSL server PSE file `/usr/sap/CAR/D01/sec/SAPSSLS.pse`; original bytes in `SAPSSLS.pse.mcp-pp-backup` next to it | `pp-setup.ts --mode revert` restores the file from the backup |
+| `CN=BASIS, O=MCP Simulation, C=BE`, issuer "MCP Test CA" → BASIS | VUSREXTID (type DN) | `pp-setup.ts --mode revert` |
+| Cloud Connector simulator as trusted reverse proxy | instance profile `/usr/sap/CAR/SYS/profile/CAR_D01_sapcar` (2 lines appended, backup `CAR_D01_sapcar.mcp-pp-backup`) and the running ICM | `pp-profile.ts --mode removefile` |
+| Test keys (CA, Cloud Connector, rogue CA; valid until November 2028) | `~/.abap-config-mcp/pp-test-pki` on the Mac, owner-only | delete the folder after the undo steps |
+
+Whoever holds `ca.key` or `cc.key` from that folder can log on to CAR as BASIS without a password:
+keep it private, and remove the set-up when the rehearsal is no longer needed:
+
+```bash
+ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-profile.ts --connection CAR --pki ~/.abap-config-mcp/pp-test-pki --mode removefile
+ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-setup.ts --connection CAR --user BASIS --pki ~/.abap-config-mcp/pp-test-pki --mode revert
+```
+
+What can undo it without anyone running those:
+
+- **A Let's Encrypt renewal** that rewrites `SAPSSLS.pse` (the current certificate runs until
+  12 February 2027) drops the test CA: run `pp-setup.ts --mode apply --no-proxy` again afterwards.
+  The backup it keeps is then out of date; delete `SAPSSLS.pse.mcp-pp-backup` first so a new one
+  is taken.
+- **RZ10**: its database copy of the instance profile (`CAR_D01_SAPCAR`, version 2) is already
+  behind the file (it has `icm/server_port_0` only, not the HTTPS port). Activating that copy would
+  overwrite the file and drop both the HTTPS port and the trusted proxy. Import the file into RZ10
+  (Utilities → Import profiles of active servers) before maintaining the profile there.
+
 ## Troubleshooting
 
 | Symptom | Cause found |
