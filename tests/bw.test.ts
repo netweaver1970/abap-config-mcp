@@ -51,7 +51,8 @@ beforeEach(() => {
         ROWS: [{ IOBJNM: req.name }], DETAIL: { DETAILS: { INFOOBJECT: req.name, TYPE: "CHA", TEXTLONG: "Customer", INTLEN: "000010" }, COMPOUNDS: [], ATTRIBUTES: [{ ATTRINM: "ZREGION" }] } })
       case "bw_where_used": return ok({ USED_BY: [{ TLOGO: "ADSO", OBJNM: "ZSALES", TLOGO_DEP: "IOBJ", OBJNM_DEP: "ZCUST", ASC_TYPE: "001" }], USES: [] })
       case "transports": return ok([{ TRKORR: "CARK900010", TRFUNCTION: "K", TRSTATUS: "D", AS4USER: "GEERT", TEXT: "BW model" },
-                                    { TRKORR: "CARK900012", TRFUNCTION: "K", TRSTATUS: "D", AS4USER: "GEERT", TEXT: "Other" }])
+                                    { TRKORR: "CARK900012", TRFUNCTION: "K", TRSTATUS: "D", AS4USER: "GEERT", TEXT: "Other" }]
+                                    .filter(r => !req.transport || r.TRKORR === req.transport))
       default: return ok({}, [`${req.operation} done`], { DRY_RUN: req.commit ? "" : "X" })
     }
   }
@@ -143,7 +144,46 @@ describe("BW writing", () => {
 
   it("bw_delete is a dry run unless commit is true", async () => {
     await handleBwDelete({ type: "IOBJ", name: "ZCUST", connectionId: "DEV" })
-    expect(engine.requests[0]).toMatchObject({ operation: "bw_delete", commit: "" })
+    expect(engine.requests.find(r => r.operation === "bw_delete")).toMatchObject({ commit: "" })
     expect(adtConstructed.n).toBe(0)
+  })
+
+  it("a dry run in a transportable package needs no request", async () => {
+    await handleBwCreate({ type: "IOBJ", name: "ZCUST", definition: def, package: "ZBW", connectionId: "DEV" })
+    expect(engine.requests.some(r => r.operation === "transports")).toBe(false)
+    expect(engine.requests.find(r => r.operation === "bw_create")).toMatchObject({ commit: "", package: "ZBW" })
+  })
+
+  const lockedOn = (lock: string) => {
+    const base = engine.reply
+    engine.reply = req => req.operation === "transport_info"
+      ? ok({ PGMID: "R3TR", OBJ_TYPE: "IOBJ", OBJ_NAME: req.obj_name, LOCK_REQUEST: lock, LOCK_TASK: "CARK900011" })
+      : base(req)
+  }
+
+  it("an object already locked on a request is changed on that request, without asking", async () => {
+    lockedOn("CARK900010")
+    const t = (await handleBwChange({ type: "IOBJ", name: "ZTCUST", values: { TEXTLONG: "x" }, commit: true, connectionId: "DEV" }, { sessionId: "bw4" })).content[0].text
+    expect(t).toContain("Transport CARK900010 — the request IOBJ ZTCUST is already locked on")
+    expect(engine.requests.find(r => r.operation === "bw_change")).toMatchObject({ transport: "CARK900010", commit: "X" })
+  })
+
+  it("naming another request than the lock's is refused before anything is written", async () => {
+    lockedOn("CARK900010")
+    const t = (await handleBwChange({ type: "IOBJ", name: "ZTCUST", values: { TEXTLONG: "x" }, transport: "CARK900012", commit: true, connectionId: "DEV" }, { sessionId: "bw5" })).content[0].text
+    expect(t).toContain("is locked on request CARK900010, so it can only be recorded there, not on CARK900012")
+    expect(engine.requests.some(r => r.operation === "bw_change")).toBe(false)
+  })
+
+  it("bw_delete of a transported object records it on the lock's request", async () => {
+    lockedOn("CARK900010")
+    await handleBwDelete({ type: "IOBJ", name: "ZTCUST", commit: true, connectionId: "DEV" }, { sessionId: "bw6" })
+    expect(engine.requests.find(r => r.operation === "bw_delete")).toMatchObject({ transport: "CARK900010", commit: "X" })
+  })
+
+  it("bw_delete of a transported, unlocked object offers the open requests and deletes nothing", async () => {
+    const t = (await handleBwDelete({ type: "IOBJ", name: "ZTCUST", commit: true, connectionId: "DEV" }, { sessionId: "bw7" })).content[0].text
+    expect(t).toContain("2 open Workbench requests")
+    expect(engine.requests.some(r => r.operation === "bw_delete")).toBe(false)
   })
 })

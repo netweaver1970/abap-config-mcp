@@ -155,17 +155,28 @@ release order, plan building); only where it gets its facts from changes.
      `bw_list`, `bw_read` (versions, package, header rows; InfoObject definition through
      BAPI_IOBJ_GETDETAIL) and `bw_where_used` for all 75 types in RSTLOGOPROP on S4, driven by the
      registry, no type named in code; InfoObject create, change (from the current definition, single
-     fields or whole tables), activate and delete (local packages only, where-used checked by BW).
+     fields or whole tables), activate and delete (where-used checked by BW).
      Unknown fields are refused (texts are TEXTSHORT and TEXTLONG in BAPI6108).
    - Writes refuse when BW is not set up in the connection's client (RS_MANDT_UNIQUE_GET).
    - Live: S4 has embedded BW without a BW client and only delivered (D) content, so reads work
      (version D) and writes are refused with that reason. CAR (BW client 600): create, read, change,
      list, where-used, delete of a test InfoObject in $TMP, with texts, through BW's own APIs, no popup.
-   - Not tested live yet: recording on a Workbench request for a transportable package (unit-tested;
-     a live test would leave a transportable InfoObject behind that this version cannot delete), and
-     BW/4HANA (no system). A $TMP object gets no TADIR entry, since BW's transport layer is off.
-   - Next slices: ADSO (CL_RSO_ADSO_API), InfoArea, deletion of transported objects (recorded),
-     CompositeProvider union, transformation and DTP, process chains, classic objects on BW 7.5,
+   - Not tested live yet: BW/4HANA (no system). A $TMP object gets no TADIR entry, since BW's
+     transport layer is off.
+
+   Slice 1b (engine 0.10.1): transportable objects end to end, live on CAR in package ZMCP_BW_E2E
+   (KORRFLAG X, no transport layer) on request CARK900038:
+   - create records R3TR IOBJ on the request's task, locked there, with a TADIR entry in the package;
+     change, activate and delete of an object already locked on a request use that request without
+     asking (SAP accepts no other), and naming another request is refused before anything is written;
+   - a dry run no longer needs a request; it says one is needed to commit;
+   - recorded deletion, as RSD1 does it: the object goes on the request first
+     (RS_TR_WRITE_OBJECTS_TO_REQUEST), then RSDG_IOBJ_MULTI_DELETE deletes it (now with I_MANUAL = 'X',
+     a user's deletion; before it ran in after-import mode). BW's own delete always runs with its
+     transport layer off (I_WITH_CTO false), so recording is the caller's job. The R3TR IOBJ entry
+     stays on the request for an object with no versions left, and BW's export ships the deletion;
+     TADIR keeps the entry until then. BW dropped the generated DDIC objects' TADIR entries itself.
+   - Next slices: ADSO (CL_RSO_ADSO_API), InfoArea, CompositeProvider union, transformation and DTP, process chains, classic objects on BW 7.5,
      ABAP Unit tests for the BW class.
    Still to settle:
    - activation and transport: BW objects record on Workbench requests and need activation, which

@@ -611,7 +611,7 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
 
     DATA(lv_pkg) = COND string( WHEN is_req-package IS NOT INITIAL THEN to_upper( is_req-package ) ELSE `$TMP` ).
     DATA(lv_local) = xsdbool( lv_pkg(1) = '$' ).
-    IF lv_local = abap_false AND is_req-transport IS INITIAL.
+    IF lv_local = abap_false AND is_req-transport IS INITIAL AND is_req-commit = abap_true.
       rs_resp-status = 'error'.
       APPEND |Creating stopped: package { lv_pkg } records changes, and no transport request was given. | &&
              |Name a Workbench request, or use a local package such as $TMP.| TO rs_resp-messages.
@@ -622,7 +622,8 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       rs_resp-status  = 'ok'.
       rs_resp-dry_run = abap_true.
       APPEND |DRY RUN — InfoObject { is_req-name } would be created in package { lv_pkg }| &&
-             COND string( WHEN lv_local = abap_true THEN ` (local, not recorded)` ELSE | on request { is_req-transport }| ) &&
+             COND string( WHEN lv_local = abap_true THEN ` (local, not recorded)` WHEN is_req-transport IS INITIAL THEN ` (records changes: a Workbench request is needed to commit)`
+                          ELSE | on request { is_req-transport }| ) &&
              COND string( WHEN is_req-activate = abap_true THEN `, then activated.` ELSE `, as a modified (M) version.` ) TO rs_resp-messages.
       rs_resp-data_json = |\{"DETAILS":{ to_json( lr_det ) }\}|.
       RETURN.
@@ -736,7 +737,7 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
 
     DATA(lv_pkg) = package_of( iv_tlogo = `IOBJ` iv_name = is_req-name ).
     DATA(lv_local) = xsdbool( lv_pkg IS INITIAL OR lv_pkg(1) = '$' ).
-    IF lv_local = abap_false AND is_req-transport IS INITIAL.
+    IF lv_local = abap_false AND is_req-transport IS INITIAL AND is_req-commit = abap_true.
       rs_resp-status = 'error'.
       APPEND |Changing stopped: { is_req-name } is in package { lv_pkg }, which records changes, and no transport request was given. | &&
              |Name a Workbench request.| TO rs_resp-messages.
@@ -748,7 +749,9 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       rs_resp-dry_run = abap_true.
       APPEND |DRY RUN — InfoObject { is_req-name } would be changed ({ lines( lt_values ) } field(s))| &&
              COND string( WHEN is_req-activate = abap_true THEN ` and activated` ELSE `` ) &&
-             COND string( WHEN lv_local = abap_true THEN `; local, not recorded.` ELSE |; recorded on { is_req-transport }.| ) TO rs_resp-messages.
+             COND string( WHEN lv_local = abap_true THEN `; local, not recorded.`
+                          WHEN is_req-transport IS INITIAL THEN |; package { lv_pkg } records changes, so a Workbench request is needed to commit.|
+                          ELSE |; recorded on { is_req-transport }.| ) TO rs_resp-messages.
       rs_resp-data_json = |\{"DETAILS":{ to_json( lr_d ) }\}|.
       RETURN.
     ENDIF.
@@ -812,7 +815,7 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
     ENDIF.
     DATA(lv_pkg) = package_of( iv_tlogo = `IOBJ` iv_name = is_req-name ).
     DATA(lv_local) = xsdbool( lv_pkg IS INITIAL OR lv_pkg(1) = '$' ).
-    IF lv_local = abap_false AND is_req-transport IS INITIAL.
+    IF lv_local = abap_false AND is_req-transport IS INITIAL AND is_req-commit = abap_true.
       rs_resp-status = 'error'.
       APPEND |Activating stopped: { is_req-name } is in package { lv_pkg }, which records changes, and no transport request was given.| TO rs_resp-messages.
       RETURN.
@@ -821,7 +824,9 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       rs_resp-status  = 'ok'.
       rs_resp-dry_run = abap_true.
       APPEND |DRY RUN — InfoObject { is_req-name } would be activated| &&
-             COND string( WHEN lv_local = abap_true THEN `.` ELSE | and recorded on { is_req-transport }.| ) TO rs_resp-messages.
+             COND string( WHEN lv_local = abap_true THEN `.`
+                          WHEN is_req-transport IS INITIAL THEN |; package { lv_pkg } records changes, so a Workbench request is needed to commit.|
+                          ELSE | and recorded on { is_req-transport }.| ) TO rs_resp-messages.
       RETURN.
     ENDIF.
     DATA lv_ok TYPE abap_bool.
@@ -873,13 +878,14 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       APPEND |Deleting stopped: there is no InfoObject { is_req-name }.| TO rs_resp-messages.
       RETURN.
     ENDIF.
-    " A transported object's deletion has to travel too; this version deletes local objects only.
+    " A transported object's deletion travels with the request: BW's export finds no active version and
+    " ships the deletion, so the object goes on the request before it is deleted (as RSD1 does).
     DATA(lv_pkg) = package_of( iv_tlogo = `IOBJ` iv_name = is_req-name ).
-    IF lv_pkg IS NOT INITIAL AND lv_pkg(1) <> '$'.
+    DATA(lv_local) = xsdbool( lv_pkg IS INITIAL OR lv_pkg(1) = '$' ).
+    IF lv_local = abap_false AND is_req-transport IS INITIAL AND is_req-commit = abap_true.
       rs_resp-status = 'error'.
-      APPEND |Deleting stopped: { is_req-name } is in package { lv_pkg }, which records changes, and this version deletes only | &&
-             |InfoObjects in local packages ($TMP and other $ packages), because the deletion of a transported object must be | &&
-             |recorded as well. Delete it in RSD1, or move it to a local package first.| TO rs_resp-messages.
+      APPEND |Deleting stopped: { is_req-name } is in package { lv_pkg }, which records changes, and no transport request was given. | &&
+             |The deletion has to be recorded so that it reaches the other systems; name a Workbench request.| TO rs_resp-messages.
       RETURN.
     ENDIF.
     " Who still uses it (BW refuses then too; the list is shown either way).
@@ -894,7 +900,20 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       APPEND |DRY RUN — InfoObject { is_req-name } (package { COND string( WHEN lv_pkg IS INITIAL THEN `none` ELSE lv_pkg ) }) | &&
              |would be deleted; { lv_users } where-used entr{ COND string( WHEN lv_users = 1 THEN `y` ELSE `ies` ) } point to it| &&
              COND string( WHEN lv_users > 0 THEN ` (BW refuses while it is used; bw_where_used lists them).` ELSE `.` ) TO rs_resp-messages.
+      APPEND COND string( WHEN lv_local = abap_true THEN `Local package: the deletion is not recorded.`
+                          WHEN is_req-transport IS INITIAL THEN |Package { lv_pkg } records changes: committing needs a Workbench request, which carries the deletion.|
+                          ELSE |The deletion is recorded on { is_req-transport }.| ) TO rs_resp-messages.
       RETURN.
+    ENDIF.
+    IF lv_local = abap_false.
+      DATA lv_rec TYPE abap_bool.
+      record_transport( EXPORTING iv_tlogo = `IOBJ` iv_name = is_req-name iv_package = lv_pkg iv_request = is_req-transport
+                        CHANGING ct_messages = rs_resp-messages RECEIVING rv_ok = lv_rec ).
+      IF lv_rec = abap_false.
+        rs_resp-status = 'error'.
+        APPEND |Deleting stopped: { is_req-name } could not be recorded on { is_req-transport }, so nothing was deleted.| TO rs_resp-messages.
+        RETURN.
+      ENDIF.
     ENDIF.
 
     lr_names = create_by_name( it_names = VALUE #( ( `RSD_T_C30` ) ) ).
@@ -910,7 +929,7 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
     INSERT VALUE #( name = 'I_T_IOBJNM'        kind = abap_func_exporting value = lr_names ) INTO TABLE lt_ptab.
     INSERT VALUE #( name = 'I_WRITE_PROTOCOL'  kind = abap_func_exporting value = REF #( lv_flag_ ) ) INTO TABLE lt_ptab.
     INSERT VALUE #( name = 'I_CHECK_DEPENDENT' kind = abap_func_exporting value = REF #( lv_flag_x ) ) INTO TABLE lt_ptab.
-    INSERT VALUE #( name = 'I_MANUAL'          kind = abap_func_exporting value = REF #( lv_flag_ ) ) INTO TABLE lt_ptab.
+    INSERT VALUE #( name = 'I_MANUAL'          kind = abap_func_exporting value = REF #( lv_flag_x ) ) INTO TABLE lt_ptab.   " a user's deletion, not an import's
     INSERT VALUE #( name = 'I_WITH_AUTHORITY'  kind = abap_func_exporting value = REF #( lv_flag_x ) ) INTO TABLE lt_ptab.
     INSERT VALUE #( name = 'E_T_MSG'           kind = abap_func_importing value = lr_msg ) INTO TABLE lt_ptab.
     INSERT VALUE #( name = 'E_SUBRC'           kind = abap_func_importing value = REF #( lv_subrc ) ) INTO TABLE lt_ptab.
@@ -925,6 +944,9 @@ CLASS zcl_mcp_bw_engine IMPLEMENTATION.
       rs_resp-status = 'error'.
       APPEND |InfoObject { is_req-name } was not deleted{ COND string( WHEN lv_subrc = 4 THEN ` (cancelled)` ELSE `` ) }| &&
              COND string( WHEN lv_users > 0 THEN |: { lv_users } object(s) still use it (bw_where_used lists them).| ELSE `.` ) TO rs_resp-messages.
+      IF lv_local = abap_false.
+        APPEND |It stays on { is_req-transport }, where it now carries the unchanged object.| TO rs_resp-messages.
+      ENDIF.
       RETURN.
     ENDIF.
     rs_resp-status = 'ok'.

@@ -13,7 +13,7 @@ import { z } from "zod"
 import { getConnectionConfig, resolveConnectionId } from "../connections"
 import { callEngine, type EngineRequest, type EngineResponse } from "./customizingEngine"
 import { selectTransport } from "./transportSelection"
-import { listOpenRequests, lookupRequest } from "./transportSql"
+import { engineTransportInfo, listOpenRequests, lookupRequest } from "./transportSql"
 import { engineFixHint } from "../mode"
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] })
@@ -125,9 +125,30 @@ interface WriteArgs {
   transport?: string; workItem?: string; showAllTransports?: boolean; connectionId?: string
 }
 
-/** The Workbench request a write records on: none for a local package, else the shared selection rule. */
-async function bwTransport(args: WriteArgs, pkg: string, what: string, sessionId?: string): Promise<{ transport?: string; note?: string; prompt?: string; confirm?: () => void }> {
+/** The request an existing object is locked on, if any (only that request can take it). */
+async function lockedOn(connectionId: string | undefined, type: string, name: string): Promise<string | undefined> {
+  try {
+    const info = await engineTransportInfo(connectionId, type, name)
+    return info.LOCK_REQUEST?.trim() || undefined
+  } catch { return undefined }   // no display authority for transports: the selection rule decides
+}
+
+/**
+ * The Workbench request a write records on: none for a local package; for an existing object
+ * already locked on a request, that request (SAP accepts no other); else the shared selection rule.
+ */
+async function bwTransport(args: WriteArgs, pkg: string, what: string, sessionId?: string, existing = false):
+    Promise<{ transport?: string; note?: string; prompt?: string; refuse?: string; confirm?: () => void }> {
   if (!args.commit || !pkg || pkg.startsWith("$")) return { transport: args.transport }
+  const lock = existing ? await lockedOn(args.connectionId, args.type, args.name) : undefined
+  if (lock) {
+    const supplied = args.transport?.trim().toUpperCase()
+    if (supplied && supplied !== lock) {
+      const req = await lookupRequest(args.connectionId, supplied)
+      if (req?.trkorr !== lock) return { refuse: `${what[0].toUpperCase()}${what.slice(1)} stopped: ${args.type.toUpperCase()} ${args.name.toUpperCase()} is locked on request ${lock}, so it can only be recorded there, not on ${supplied}. Use transport: "${lock}", or release ${lock} first.` }
+    }
+    return { transport: lock, note: `Transport ${lock} — the request ${args.type.toUpperCase()} ${args.name.toUpperCase()} is already locked on.` }
+  }
   const cfg = getConnectionConfig(args.connectionId)
   const sel = await selectTransport({
     connectionId: resolveConnectionId(args.connectionId), fn: "K", what, supplied: args.transport,
@@ -183,8 +204,8 @@ export async function handleBwChange(args: WriteArgs & { values?: Record<string,
     compounds?: Record<string, unknown>[]; attributes?: Record<string, unknown>[]; navigationAttributes?: Record<string, unknown>[] }, extra?: { sessionId?: string }) {
   const pkg = await packageOf(args.connectionId, args.type, args.name)
   if (pkg === undefined) return text(`Changing stopped: there is no ${args.type.toUpperCase()} ${args.name.toUpperCase()} on this system. Check the name with bw_list.`)
-  const t = await bwTransport(args, pkg, `changing ${args.type.toUpperCase()} ${args.name.toUpperCase()}`, extra?.sessionId)
-  if (t.prompt) return text(t.prompt)
+  const t = await bwTransport(args, pkg, `changing ${args.type.toUpperCase()} ${args.name.toUpperCase()}`, extra?.sessionId, true)
+  if (t.prompt || t.refuse) return text((t.prompt ?? `❌ ${t.refuse}`))
   const up = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o ?? {}).map(([k, v]) => [k.toUpperCase(), v]))
   const r = await bwCall(args.connectionId, {
     operation: "bw_change", tlogo: args.type, name: args.name, transport: t.transport,
@@ -201,16 +222,21 @@ export async function handleBwChange(args: WriteArgs & { values?: Record<string,
 export async function handleBwActivate(args: WriteArgs, extra?: { sessionId?: string }) {
   const pkg = await packageOf(args.connectionId, args.type, args.name)
   if (pkg === undefined) return text(`Activating stopped: there is no ${args.type.toUpperCase()} ${args.name.toUpperCase()} on this system.`)
-  const t = await bwTransport(args, pkg, `activating ${args.type.toUpperCase()} ${args.name.toUpperCase()}`, extra?.sessionId)
-  if (t.prompt) return text(t.prompt)
+  const t = await bwTransport(args, pkg, `activating ${args.type.toUpperCase()} ${args.name.toUpperCase()}`, extra?.sessionId, true)
+  if (t.prompt || t.refuse) return text((t.prompt ?? `❌ ${t.refuse}`))
   const r = await bwCall(args.connectionId, { operation: "bw_activate", tlogo: args.type, name: args.name, transport: t.transport, commit: args.commit ? "X" : "" })
   if (r.STATUS === "ok" && args.commit) t.confirm?.()
   return writeResult(r, t.note)
 }
 
-export async function handleBwDelete(args: { type: string; name: string; commit?: boolean; connectionId?: string }) {
-  const r = await bwCall(args.connectionId, { operation: "bw_delete", tlogo: args.type, name: args.name, commit: args.commit ? "X" : "" })
-  return writeResult(r)
+export async function handleBwDelete(args: WriteArgs, extra?: { sessionId?: string }) {
+  const pkg = await packageOf(args.connectionId, args.type, args.name)
+  if (pkg === undefined) return text(`Deleting stopped: there is no ${args.type.toUpperCase()} ${args.name.toUpperCase()} on this system. Check the name with bw_list.`)
+  const t = await bwTransport(args, pkg, `deleting ${args.type.toUpperCase()} ${args.name.toUpperCase()}`, extra?.sessionId, true)
+  if (t.prompt || t.refuse) return text((t.prompt ?? `❌ ${t.refuse}`))
+  const r = await bwCall(args.connectionId, { operation: "bw_delete", tlogo: args.type, name: args.name, transport: t.transport, commit: args.commit ? "X" : "" })
+  if (r.STATUS === "ok" && args.commit) t.confirm?.()
+  return writeResult(r, t.note)
 }
 
 // ─── registration ────────────────────────────────────────────────────────────
@@ -298,8 +324,8 @@ export function registerBwTools(server: McpServer): void {
 
   server.registerTool("bw_delete", {
     title: "Delete BW Object",
-    description: "Delete a BW object through BW's own function (InfoObjects: RSDG_IOBJ_MULTI_DELETE), which refuses while other objects still use it (see bw_where_used). This version deletes only objects in local packages ($TMP and other $ packages), since a transported object's deletion must be recorded too. " +
+    description: "Delete a BW object through BW's own function (InfoObjects: RSDG_IOBJ_MULTI_DELETE), which refuses while other objects still use it (see bw_where_used). In a package that records changes the object is first recorded on a Workbench request, so the deletion reaches the other systems when the request is imported; an object already locked on a request uses that one. " +
       "Dry run unless commit: true. Irreversible.",
-    inputSchema: { type: typeArg, name: nameArg, commit: z.boolean().optional().describe("true deletes; default is a dry run"), connectionId: conn },
+    inputSchema: { type: typeArg, name: nameArg, ...writeCommon },
   }, handleBwDelete)
 }
