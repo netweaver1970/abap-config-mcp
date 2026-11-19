@@ -308,3 +308,15 @@ the switch, the governed tool list, and the link to the API Policy section.
 - Which CTS function modules are released for `transport_info`, or whether plain SELECTs on
   E070/E071/TLOCK in customer code are the safer route.
 - Phase 4 details from the MCP Gateway scoping.
+
+### Tool groups and full retest (2026-11-19)
+
+- The server's 66 tools are registered as 13 group tools with an `action` each (toolGroups.ts):
+  reads and writes in separate groups, the action list filtered by mode, tier and data switch,
+  per-action argument checks, old names in texts rewritten; `ABAP_MCP_TOOLS=legacy` keeps the old
+  surface. 70 800 instead of 96 400 characters of tool definitions.
+- Live matrix, every action of every group on CAR and S4 in both modes (writes as dry runs or on
+  throwaway `$TMP` objects; transport release not run): CAR direct 82 pass, S4 direct 78 pass,
+  CAR governed 30 pass, S4 governed 25 pass (the rest not offered in governed mode). Fixed on the
+  way: see commit 3abca70. Known edge: deleting a package in the same ADT session that created it
+  answers "is already locked" (SAP keeps the creating session's lock); a new session deletes it.
