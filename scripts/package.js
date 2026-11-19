@@ -68,12 +68,18 @@ async function main() {
   copy(rel("packaging/skill"), skill)
   copy(rel("docs/customizing-engine.md"), path.join(skill, "references/customizing-engine.md"))
   copy(rel("docs/TIERS.md"), path.join(skill, "references/tiers.md"))
-  write(path.join(skill, "references/tools.md"), readmeSection("## All ", "## Typical workflows"))
+  write(path.join(skill, "references/tools.md"), readmeSection("## Tools: ", "## Typical workflows"))
   const skillText = fs.readFileSync(path.join(skill, "SKILL.md"), "utf8")
-  const unknown = [...skillText.matchAll(/`([a-z][a-z0-9_]+)`/g)].map(m => m[1])
-    .filter(n => n.includes("_") && !tools.some(t => t.name === n))
-    .filter(n => n !== "change_owner")   // a manage_transport_requests action, not a tool
-  if (unknown.length) throw new Error(`SKILL.md names tools the server does not have: ${[...new Set(unknown)].join(", ")}`)
+  // every `group(action: "a" | "b")` in the skill must be a tool of the bundle with those actions
+  const actionsOf = t => t.inputSchema?.properties?.action?.enum ?? []
+  const unknown = []
+  for (const m of skillText.matchAll(/`([a-z][a-z0-9_]*)(?:\(action: ((?:"[a-z_]+"(?: \| )?)+)\))?/g)) {
+    const tool = tools.find(t => t.name === m[1])
+    if (!m[2]) { if (m[1].includes("_") && !tool) unknown.push(m[1]); continue }   // a bare name: an old tool name or a typo
+    if (!tool) { unknown.push(m[1]); continue }
+    for (const a of m[2].match(/[a-z_]+/g)) if (!actionsOf(tool).includes(a)) unknown.push(`${m[1]}(action: "${a}")`)
+  }
+  if (unknown.length) throw new Error(`SKILL.md names tools or actions the server does not have: ${[...new Set(unknown)].join(", ")}`)
 
   // ── 4. Claude Code marketplace + plugin
   const market = path.join(OUT, "abap-config-marketplace")

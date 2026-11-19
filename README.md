@@ -20,8 +20,9 @@ A few things I cared about while building it:
 - It never does more than the SAP user it logs on with, and on production you run it read-only.
 - The bit of ABAP it needs inside SAP is transported like any other development, not pushed in from outside.
 - It runs the way your landscape needs it: on your own machine, as a shared server for a team, in Docker, or as a Claude Desktop extension.
+- Its engine can also sit behind SAP's MCP Gateway, so every call reaches SAP as the person who signed in ([5a](#5a-behind-saps-mcp-gateway-as-the-end-user)), and it installs through abapGit ([5b](#5b-installing-the-engine-with-abapgit)).
 
-The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps. 58 tools are on by default, plus two for SQL and table reading that you switch on yourself, usable from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
+The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps. It offers 13 tools, one per area, each with an action (`ABAP_MCP_TOOLS=legacy` keeps the earlier one-tool-per-operation names); SQL and table reading stay off until you switch them on. It works from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
 
 To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#1-install) for Docker, the Claude Desktop extension or building it yourself.
 
@@ -59,7 +60,7 @@ The AI handles the full workflow autonomously: search → read → write → che
 
 ## Feature overview
 
-| Category | Tools | What the AI can do |
+| Category | Operations | What the AI can do |
 |---|---|---|
 | **Discovery** | 4 tools | Find objects by name/wildcard, inspect metadata, list systems, explore ADT services |
 | **Source reading** | 4 tools | Read full source, grep within source, batch-read multiple objects, syntax-check without saving |
