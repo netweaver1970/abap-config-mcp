@@ -44,6 +44,7 @@ export const TOOL_HINTS: Record<string, ToolHints> = {
   customizing_plan_change: READ,      // dry run only
   img_search: READ, customizing_engine_ping: READ, customizing_status: READ,
   hana_memory_report: READ, abap_memory_report: READ,
+  bw_capabilities: READ, bw_list: READ, bw_read: READ, bw_where_used: READ,
   abap_debug_stack: READ, abap_debug_variable: READ,
 
   // Session: ends this conversation's SAP session and releases its locks.
@@ -57,6 +58,9 @@ export const TOOL_HINTS: Record<string, ToolHints> = {
   abap_activate: ADDITIVE_IDEMPOTENT, abap_activate_multiple: ADDITIVE_IDEMPOTENT,
   lock_abap_object: ADDITIVE,
   unlock_abap_object: OVERWRITES_IDEMPOTENT,   // discards unsaved changes
+
+  // BW objects (dry run by default; commit writes).
+  bw_create: ADDITIVE, bw_change: OVERWRITES_IDEMPOTENT, bw_activate: ADDITIVE_IDEMPOTENT, bw_delete: OVERWRITES,
 
   // Running code: the code decides what happens.
   run_unit_tests: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },

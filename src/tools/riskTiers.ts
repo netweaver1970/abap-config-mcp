@@ -41,6 +41,7 @@ export const TOOL_TIERS: Record<string, RiskTier> = {
   describe_database_table: 0, search_database_tables: 0, customizing_read: 0,
   customizing_describe: 0, customizing_diff: 0, img_search: 0,
   customizing_engine_ping: 0, customizing_status: 0,
+  bw_capabilities: 0, bw_list: 0, bw_read: 0, bw_where_used: 0,
 
   // ── Tier 1 — config / data writes ─────────────────────────────────────────
   customizing_apply: 1, customizing_create: 1, customizing_plan_change: 1,
@@ -56,6 +57,8 @@ export const TOOL_TIERS: Record<string, RiskTier> = {
   abap_debug_session: 2, abap_debug_set_breakpoint: 2, abap_debug_delete_breakpoint: 2,
   abap_debug_set_variable: 2, abap_debug_step: 2, abap_debug_stack: 2,
   abap_debug_variable: 2,
+  // BW objects are repository objects (Workbench requests)
+  bw_create: 2, bw_change: 2, bw_activate: 2, bw_delete: 2,
 }
 
 const DEFAULT_TIER: RiskTier = 2   // fail-safe for any unmapped tool

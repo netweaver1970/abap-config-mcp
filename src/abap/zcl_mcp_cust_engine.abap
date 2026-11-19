@@ -393,6 +393,13 @@ CLASS zcl_mcp_cust_engine DEFINITION
       IMPORTING is_req         TYPE ty_request
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
+    "! Hand a bw_* request to ZCL_MCP_BW_ENGINE=>HANDLE (dynamic: the BW class is
+    "! optional and installed only where BW exists); a JSON error when it is absent.
+    METHODS dispatch_bw
+      IMPORTING iv_body        TYPE string
+                iv_operation   TYPE string
+      RETURNING VALUE(rv_json) TYPE string.
+
     "! S_TRANSPRT display (activity 03) for any request type.
     METHODS may_display_transports
       RETURNING VALUE(rv_ok) TYPE abap_bool.
@@ -692,8 +699,15 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
               TO ls_resp-messages.
         ENDTRY.
 
+        " BW operations (bw_*) go to the optional class ZCL_MCP_BW_ENGINE, called
+        " dynamically so this class never depends on BW: it gets the raw request and
+        " answers with a complete JSON response of the same shape.
+        IF ls_resp-status <> 'error' AND to_lower( ls_req-operation ) CP 'bw_*'.
+          lv_out = dispatch_bw( iv_body = lv_body iv_operation = ls_req-operation ).
+        ENDIF.
+
         " Dispatch
-        IF ls_resp-status <> 'error'.
+        IF ls_resp-status <> 'error' AND lv_out IS INITIAL.
           CASE to_lower( ls_req-operation ).
             WHEN 'ping'.     ls_resp = handle_ping( ).
             WHEN 'read'.     ls_resp = handle_read( ls_req ).
@@ -721,13 +735,15 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
           ENDCASE.
         ENDIF.
 
-        ls_resp-version = c_version.
+        IF lv_out IS INITIAL.
+          ls_resp-version = c_version.
 
-        " Serialize response
-        /ui2/cl_json=>serialize(
-          EXPORTING data        = ls_resp
-                    pretty_name = /ui2/cl_json=>pretty_mode-none
-          RECEIVING r_json      = lv_out ).
+          " Serialize response
+          /ui2/cl_json=>serialize(
+            EXPORTING data        = ls_resp
+                      pretty_name = /ui2/cl_json=>pretty_mode-none
+            RECEIVING r_json      = lv_out ).
+        ENDIF.
 
       CATCH cx_root INTO DATA(lx_all).
         " Last-resort: any unhandled exception → hand-built JSON error.
@@ -2157,6 +2173,28 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
         rs_resp-status = 'error'.
         APPEND |The dependency facts stopped: ACTION must be FACTS, WHERE_USED or HOLDERS; got '{ is_req-action }'.| TO rs_resp-messages.
     ENDCASE.
+  ENDMETHOD.
+
+
+  METHOD dispatch_bw.
+    DATA ls_err TYPE ty_response.
+    TRY.
+        CALL METHOD ('ZCL_MCP_BW_ENGINE')=>('HANDLE')
+          EXPORTING iv_json     = iv_body
+                    iv_version  = c_version
+          RECEIVING rv_json     = rv_json.
+        RETURN.
+      CATCH cx_sy_dyn_call_error.
+        APPEND |{ iv_operation } stopped: the BW part of the engine (class ZCL_MCP_BW_ENGINE) is not installed on this system. | &&
+               |Install it with the engine (it is installed where BW exists), then run bw_capabilities.| TO ls_err-messages.
+      CATCH cx_root INTO DATA(lx).
+        APPEND |{ iv_operation } stopped: { lx->get_text( ) }| TO ls_err-messages.
+    ENDTRY.
+    ls_err-status    = 'error'.
+    ls_err-operation = iv_operation.
+    ls_err-version   = c_version.
+    /ui2/cl_json=>serialize( EXPORTING data = ls_err pretty_name = /ui2/cl_json=>pretty_mode-none
+                             RECEIVING r_json = rv_json ).
   ENDMETHOD.
 
 

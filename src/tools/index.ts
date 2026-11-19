@@ -6,6 +6,7 @@ import { registerActivateTools } from "./activate"
 import { registerQualityTools } from "./quality"
 import { registerTransportTools } from "./transports"
 import { registerTransportMoveTools } from "./transportMove"
+import { registerBwTools } from "./bw"
 import { registerDataTools } from "./data"
 import { registerAnalysisTools } from "./analysis"
 import { registerDebugTools } from "./debug"
@@ -70,6 +71,7 @@ export function registerAllTools(server: McpServer): void {
   registerTableDiscoveryTools(target)
   registerCustomizingTools(target)
   registerCustomizingEngineTools(target)
+  registerBwTools(target)
   registerEngineDeployTools(target)
 
   if (governed && !_governedLogged) {

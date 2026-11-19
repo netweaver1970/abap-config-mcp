@@ -27,6 +27,7 @@ import {
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
 import { SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL, SCOPE_BATCH_MIN_BASIS, getScopeBatchSource, basisSupportsScopeBatch } from "../abap/zcl_mcp_scope_batch"
+import { BW_ENGINE_CLASS_NAME, BW_ENGINE_CLASS_URL, getBwEngineSource } from "../abap/zcl_mcp_bw_engine"
 import { runSql, tableRows, col, type ResolvedMaint } from "./customizing"
 import { customizingSource, ddicDescribe } from "./customizingSource"
 import { selectTransport, rememberTransport, workKey } from "./transportSelection"
@@ -409,6 +410,37 @@ async function basisRelease(client: Awaited<ReturnType<typeof ensureConnected>>)
   } catch { return undefined }
 }
 
+/** The BW line from CVERS: DW4CORE → BW/4HANA, SAP_BW → BW 7.5, none. */
+async function bwLine(client: Awaited<ReturnType<typeof ensureConnected>>): Promise<{ line: "BW4HANA" | "BW75" | "NONE"; release?: string }> {
+  try {
+    const rows = tableRows(await runSql(client, `SELECT COMPONENT, RELEASE FROM CVERS WHERE COMPONENT IN ('SAP_BW', 'DW4CORE')`, 5))
+    const dw4 = rows.find(r => col(r, "COMPONENT") === "DW4CORE"), bw = rows.find(r => col(r, "COMPONENT") === "SAP_BW")
+    if (dw4) return { line: "BW4HANA", release: col(dw4, "RELEASE") }
+    if (bw) return { line: "BW75", release: col(bw, "RELEASE") }
+  } catch { /* not readable: treat as no BW */ }
+  return { line: "NONE" }
+}
+
+/** Create (once), write and activate an optional engine class; a failed activation is a warning, never a failed install. */
+async function installOptionalClass(o: { name: string; url: string; source: string; description: string; why: string },
+    client: Awaited<ReturnType<typeof ensureConnected>>, pkg: string, transport: string | undefined, connectionId?: string): Promise<{ ok: boolean; line: string }> {
+  try {
+    let exists = false
+    try { await client.getObjectSource(`${o.url}/source/main`); exists = true } catch { exists = false }
+    if (!exists) {
+      await handleCreateAbapObject({ objectType: "CLAS/OC", name: o.name, description: o.description, packageName: pkg, transport, connectionId })
+    }
+    await handleWriteAbapObjectSource({ url: o.url, source: o.source, transport, connectionId })
+    const act = await handleAbapActivate({ url: o.url, connectionId })
+    if (/❌|Activation failed/i.test(act.content[0].text)) {
+      return { ok: false, line: `⚠️  ${o.name} did not activate, ${o.why}:\n${act.content[0].text}` }
+    }
+    return { ok: true, line: `✅ ${o.name} ${exists ? "updated" : "created"} and activated` }
+  } catch (err) {
+    return { ok: false, line: `⚠️  ${o.name} could not be installed (${String((err as Error)?.message ?? err)}), ${o.why}.` }
+  }
+}
+
 // Connections whose optional batch class was found present or not applicable, so the check runs once per process.
 const scopeBatchChecked = new Set<string>()
 
@@ -546,27 +578,22 @@ export async function handleEngineBootstrap(args: {
     lines.push(`ℹ️  ${SCOPE_BATCH_CLASS_NAME} not installed: SAP_BASIS ${release ?? "(release not read)"} is below ` +
       `${SCOPE_BATCH_MIN_BASIS}, so org_copy's retest scope counts one table at a time (slower on large units, same result).`)
   } else {
-    try {
-      let batchExists = false
-      try { await client.getObjectSource(`${SCOPE_BATCH_CLASS_URL}/source/main`); batchExists = true } catch { batchExists = false }
-      if (!batchExists) {
-        await handleCreateAbapObject({
-          objectType: "CLAS/OC", name: SCOPE_BATCH_CLASS_NAME, description: "MCP engine: batched row counts (7.50+)",
-          packageName: pkg, transport: args.transport, connectionId: args.connectionId,
-        })
-      }
-      await handleWriteAbapObjectSource({ url: SCOPE_BATCH_CLASS_URL, source: getScopeBatchSource(), transport: args.transport, connectionId: args.connectionId })
-      const actB = await handleAbapActivate({ url: SCOPE_BATCH_CLASS_URL, connectionId: args.connectionId })
-      if (/❌|Activation failed/i.test(actB.content[0].text)) {
-        lines.push(`⚠️  ${SCOPE_BATCH_CLASS_NAME} did not activate, so the retest scope counts one table at a time:`, actB.content[0].text)
-      } else {
-        lines.push(`✅ ${SCOPE_BATCH_CLASS_NAME} ${batchExists ? "updated" : "created"} and activated (optional, SAP_BASIS ${release})`)
-        scopeBatchChecked.add(args.connectionId ?? "__default__")
-      }
-    } catch (err) {
-      lines.push(`⚠️  ${SCOPE_BATCH_CLASS_NAME} could not be installed (${String((err as Error)?.message ?? err)}); ` +
-        `the retest scope counts one table at a time.`)
-    }
+    const r = await installOptionalClass({ name: SCOPE_BATCH_CLASS_NAME, url: SCOPE_BATCH_CLASS_URL, source: getScopeBatchSource(),
+      description: "MCP engine: batched row counts (7.50+)", why: "so the retest scope counts one table at a time" },
+      client, pkg, args.transport, args.connectionId)
+    lines.push(r.ok ? `${r.line} (optional, SAP_BASIS ${release})` : r.line)
+    if (r.ok) scopeBatchChecked.add(args.connectionId ?? "__default__")
+  }
+
+  // 4. Optional: ZCL_MCP_BW_ENGINE (the bw_* tools), only where BW exists.
+  const bw = await bwLine(client)
+  if (bw.line === "NONE") {
+    lines.push(`ℹ️  ${BW_ENGINE_CLASS_NAME} not installed: no BW on this system (neither SAP_BW nor DW4CORE), so the bw_* tools have nothing to work on.`)
+  } else {
+    const r = await installOptionalClass({ name: BW_ENGINE_CLASS_NAME, url: BW_ENGINE_CLASS_URL, source: getBwEngineSource(),
+      description: "MCP engine: BW objects", why: "so the bw_* tools are not available" },
+      client, pkg, args.transport, args.connectionId)
+    lines.push(r.ok ? `${r.line} (optional, ${bw.line === "BW4HANA" ? "BW/4HANA" : "BW 7.5"} ${bw.release ?? ""})` : r.line)
   }
 
   lines.push(
@@ -1493,7 +1520,7 @@ export async function handleEngineCleanup(args: {
 }) {
   if (args.confirm !== true) {
     return { content: [{ type: "text" as const, text:
-      `⚠️  This will delete the ABAP classes ${ENGINE_CLASS_NAME} and ${SCOPE_BATCH_CLASS_NAME} (when present) from the system.\n` +
+      `⚠️  This will delete the ABAP classes ${ENGINE_CLASS_NAME}, ${SCOPE_BATCH_CLASS_NAME} and ${BW_ENGINE_CLASS_NAME} (when present) from the system.\n` +
       `   The SICF service must be removed separately in transaction SICF.\n\n` +
       `   Re-run with confirm: true to proceed.` }] }
   }
@@ -1511,11 +1538,13 @@ export async function handleEngineCleanup(args: {
     }
   }
 
-  // The optional batch class (7.50+ systems only); absent is fine.
-  try {
-    await handleDeleteAbapObject({ url: SCOPE_BATCH_CLASS_URL, connectionId: args.connectionId })
-    lines.push(`🗑️  Deleted class ${SCOPE_BATCH_CLASS_NAME}`)
-  } catch { /* not installed */ }
+  // The optional classes (batch counting on 7.50+, BW where BW exists); absent is fine.
+  for (const [name, url] of [[SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL], [BW_ENGINE_CLASS_NAME, BW_ENGINE_CLASS_URL]]) {
+    try {
+      await handleDeleteAbapObject({ url, connectionId: args.connectionId })
+      lines.push(`🗑️  Deleted class ${name}`)
+    } catch { /* not installed */ }
+  }
   scopeBatchChecked.delete(args.connectionId ?? "__default__")
 
   // Release any residual locks from the delete

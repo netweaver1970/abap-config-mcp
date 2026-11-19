@@ -100,6 +100,8 @@ export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "transport_move",
   // phase 2: the engine's img_search (no new action)
   "img_search",
+  // phase 2.5: BW objects through the engine's BW class (the same in both modes)
+  "bw_capabilities", "bw_list", "bw_read", "bw_where_used", "bw_create", "bw_change", "bw_activate", "bw_delete",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown

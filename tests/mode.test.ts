@@ -44,6 +44,7 @@ const GOVERNED = [
   "customizing_describe", "customizing_read", "customizing_diff", "customizing_plan_change",
   "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
   "org_copy", "transport_move", "img_search",
+  "bw_capabilities", "bw_list", "bw_read", "bw_where_used", "bw_create", "bw_change", "bw_activate", "bw_delete",
 ].sort()
 
 /** A plausible engine answer per operation, so each governed tool runs to its end. */
@@ -191,6 +192,9 @@ describe("ADT guard in governed mode", () => {
       org_copy: { orgUnit: "WERKS", sourceKey: "1000", targetKey: "2000" },
       transport_move: { from: "A1T", to: "B1" },
       img_search: { keyword: "plant" },
+      bw_capabilities: {}, bw_list: { type: "IOBJ" }, bw_read: { type: "IOBJ", name: "ZX" }, bw_where_used: { type: "IOBJ", name: "ZX" },
+      bw_create: { type: "IOBJ", name: "ZX", definition: { details: { TYPE: "CHA" } } }, bw_change: { type: "IOBJ", name: "ZX" },
+      bw_activate: { type: "IOBJ", name: "ZX" }, bw_delete: { type: "IOBJ", name: "ZX" },
     }
     for (const name of GOVERNED) {
       const r = await tools[name].handler(args[name] ?? {}, { sessionId: "s1" })

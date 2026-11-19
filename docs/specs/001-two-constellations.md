@@ -109,9 +109,31 @@ release order, plan building); only where it gets its facts from changes.
      modules and classes BW itself uses for create, change, activate and delete) behind the engine,
      guarded the same way as the customizing actions (each one checked with FUNCTION_EXISTS or a class
      lookup before use, an authority check per action, no generic SQL).
+   Design (draft, 19 Nov 2026; the API per object type is filled in from the research below):
+   - **Lab facts.** S4 (SAP_BW 816) and CAR (SAP_BW 757) both have embedded BW of the BW 7.5 line;
+     neither has BW/4HANA (DW4CORE). BW/4HANA support is built from detection and SAP's documented
+     APIs and verified when a BW/4 system is available.
+   - **A separate class, ZCL_MCP_BW_ENGINE**, reached through the existing endpoint: the customizing
+     engine dispatches operations starting with `bw_` to it with a dynamic call, so a system without
+     BW (or with the other BW line) never stops the customizing engine from activating.
+   - **No static references to BW objects.** BW/4HANA has no SAP_BW component and lacks many BW 7.5
+     APIs (InfoCube and classic DSO BAPIs), and BW 7.5 lacks some BW/4 ones, so every BW function
+     module is called by name after FUNCTION_EXISTS, every BW class through a dynamic call after a
+     class lookup, and BW structures are created by name at run time. The class activates on BW 7.5,
+     BW/4HANA and a system with no BW at all.
+   - **Detection, never assumption.** `bw_capabilities` reports the BW line (DW4CORE → BW/4HANA,
+     SAP_BW → BW 7.5, none) and, per object type and operation, whether the API it needs exists.
+     Every other action refuses an operation whose API is missing with a three-part message.
+   - **Tools, the same in both modes** (BW never goes through ADT, so direct and governed register
+     the same BW tools): `bw_list` (type, name pattern, InfoArea), `bw_read` (type, name, version A or
+     M), `bw_where_used` (RSOOBJXREF), and the writes `bw_create`, `bw_change`, `bw_activate`,
+     `bw_delete`, each a dry run unless `commit: true`, each with governed transport selection
+     (Workbench requests, as BW objects record on them), and `bw_delete` refusing while the object is
+     still used, unless the caller names the users to go with it.
+   - **Order:** InfoObject and InfoArea, then ADSO, then CompositeProvider, transformation and DTP,
+     then process chains; classic objects (InfoCube, classic DSO, MultiProvider) on BW 7.5 only;
+     queries read and delete only, if a headless API exists.
    Still to settle:
-   - which objects first: InfoObjects, ADSOs, CompositeProviders, transformations, DTPs, process
-     chains, queries, InfoAreas, source systems and DataSources;
    - activation and transport: BW objects record on Workbench requests and need activation, which
      changes M versions into A versions;
    - test system: a BW system in the lab, since CAR and S4 are not BW systems (embedded BW in S4 may do
