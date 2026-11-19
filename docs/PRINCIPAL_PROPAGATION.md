@@ -93,7 +93,8 @@ With the pattern `CN=${login_name}` and IAS login names equal to SAP user names,
    certificates (short, e.g. 10 minutes). **The clocks of the Cloud Connector host and the ABAP
    system must agree** (NTP on both): a short-lived certificate is refused as "certificate expired"
    as soon as the back end's clock is ahead by more than its validity. On the lab system S4, whose
-   clock ran about two hours ahead, every propagated logon failed that way. Then Cloud To On-Premise → Principal Propagation →
+   clock ran about two hours ahead, every propagated logon failed that way until NTP (chronyd) was
+   enabled on the host. Then Cloud To On-Premise → Principal Propagation →
    **Synchronize**, so Cloud Connector trusts the subaccount's IAS tokens.
 5. **System mapping** (Cloud To On-Premise → Access Control → Add): back-end type ABAP System,
    protocol **HTTPS**, internal host and port of ICM's HTTPS service (e.g. `sapcar:44301`),
@@ -234,7 +235,7 @@ node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap htt
 ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-setup.ts --connection CAR --user BASIS --pki <dir> --mode revert
 ```
 
-Result on CAR (BASIS) and S4 (GEERT; S4 with `--skew-minutes 150`), 8 of 8 in both modes each: the user signed in at the identity provider reached SAP as
+Result on CAR (BASIS) and S4 (GEERT; after S4's clock fix without `--skew-minutes`), 8 of 8 in both modes each: the user signed in at the identity provider reached SAP as
 that user, logged on by X.509 client certificate over TLS; a read and a dry-run write worked
 through the gateway's tools (the write: a customizing copy of units of measure, KG to ZZ9, without
 commit); missing, forged and expired tokens were refused by the gateway; a
@@ -267,8 +268,11 @@ On S4 the same three changes, with its own paths and user:
 | `CN=GEERT, O=MCP Simulation, C=BE`, issuer "MCP Test CA" → GEERT | VUSREXTID (type DN) | same |
 | Cloud Connector simulator as trusted reverse proxy | `/usr/sap/A4H/SYS/profile/A4H_D88_s4hana2025` (backup `.mcp-pp-backup`) and the running ICM | `pp-profile.ts --connection S4 --mode removefile` |
 
-S4's clock runs about two hours ahead, so its test runs need `--skew-minutes 150` until the host's
-time is corrected (a real Cloud Connector would fail there the same way). Its RZ10 copy
+S4's clock ran about two hours ahead until 2026-11-20, when chronyd was enabled on the host; since then
+its test runs pass without `--skew-minutes`. Stepping a host's clock back has side effects: restart
+`sapstartsrv` (sapcontrol `RestartService` per instance) and `saphostexec -restart`, and on a host
+reached over ZeroTier restart `zerotier-one`, whose peer timestamps otherwise lie in the future and
+leave the host unreachable. Its RZ10 copy
 (`A4H_D88_S4HANA2025`, newest version 5) is behind the file as well: one `icm/server_port` line
 against three in the file; the RZ10 note below applies to S4 too.
 
