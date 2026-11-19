@@ -21,8 +21,9 @@ import { engineFixHint, isGoverned, GOVERNED_ENGINE_NOTE } from "../mode"
 import { ensureConnected, dropSessionLocks, log, getConnectionConfig, isSessionDegradedError, assertAdt } from "../connections"
 import { handleCreateAbapObject, handleWriteAbapObjectSource, handleDeleteAbapObject } from "./write"
 import { handleAbapActivate } from "./activate"
+import { handleCreateTestInclude } from "./quality"
 import {
-  getEngineSource, ENGINE_VERSION, ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH,
+  getEngineSource, getEngineTestSource, ENGINE_VERSION, ENGINE_CLASS_NAME, ENGINE_CLASS_URL, ENGINE_ICF_PATH, ENGINE_TEST_INCLUDE_URL,
 } from "../abap/zcl_mcp_cust_engine"
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
 import { SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL, SCOPE_BATCH_MIN_BASIS, getScopeBatchSource, basisSupportsScopeBatch } from "../abap/zcl_mcp_scope_batch"
@@ -423,6 +424,28 @@ async function scopeBatchMissing(client: Awaited<ReturnType<typeof ensureConnect
   } catch { return true }
 }
 
+/** Create (once) and write the engine's test include, then activate; on failure empty it so the class stays active. */
+async function installEngineTests(client: Awaited<ReturnType<typeof ensureConnected>>, transport: string | undefined, connectionId?: string): Promise<string> {
+  try {
+    let exists = false
+    try { await client.getObjectSource(ENGINE_TEST_INCLUDE_URL); exists = true } catch { exists = false }
+    if (!exists) await handleCreateTestInclude({ classUrl: ENGINE_CLASS_URL, transport, connectionId })
+    const write = (source: string) => handleWriteAbapObjectSource({
+      url: ENGINE_CLASS_URL, sourceUrl: ENGINE_TEST_INCLUDE_URL, source, transport, connectionId })
+    await write(getEngineTestSource())
+    const act = await handleAbapActivate({ url: ENGINE_CLASS_URL, connectionId })
+    if (!/❌|Activation failed/i.test(act.content[0].text)) {
+      return `✅ ABAP Unit tests installed (run them with run_unit_tests on ${ENGINE_CLASS_URL})`
+    }
+    await write(`*"* ABAP Unit tests of ${ENGINE_CLASS_NAME}: left empty, they did not activate on this system.\n`)
+    await handleAbapActivate({ url: ENGINE_CLASS_URL, connectionId })
+    return `⚠️  The engine's ABAP Unit tests did not activate on this system, so the test include was left empty; ` +
+      `the engine itself is active. ${act.content[0].text.split("\n").slice(0, 4).join(" ")}`
+  } catch (err) {
+    return `⚠️  The engine's ABAP Unit tests could not be installed (${String((err as Error)?.message ?? err)}); the engine itself is active.`
+  }
+}
+
 // ─── customizing_engine_bootstrap ───────────────────────────────────────────────
 
 export async function handleEngineBootstrap(args: {
@@ -472,6 +495,10 @@ export async function handleEngineBootstrap(args: {
     return { content: [{ type: "text" as const, text: lines.join("\n") }] }
   }
   lines.push(`✅ Class activated`)
+
+  // 1b. The engine's ABAP Unit tests (its test include). Added after the class is active and
+  //     never allowed to block it: a test include that does not activate is emptied again.
+  lines.push(await installEngineTests(client, args.transport, args.connectionId))
 
   // 2. Batch writer report (ZMCP_CUST_WRITE) — runs with sy-batch='X' for TR_OBJECTS_INSERT
   let reportExists = false

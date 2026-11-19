@@ -196,6 +196,16 @@ release order, plan building); only where it gets its facts from changes.
   are left out, so an engine that does not answer gives the reason instead. An empty keyword is refused
   (the engine needs one) and `inScopeOnly` is not applied (the engine does not read CUS_IMGACH_SCOPE),
   which the answer says. Compared live on S4: three searches identical in both modes.
+- Step 6 (engine 0.9.42): ABAP Unit tests in the engine's test include
+  (`zcl_mcp_cust_engine.testclasses.abap`, 13 tests, risk level harmless): the row cap, the delivery
+  classes a read covers, name checks and quoting, and the refusals of read, ddic_describe,
+  retest_scope, transport_info and dependencies. Test tables are picked from the DDIC, not named, so
+  they run on any ABAP system. The bootstrap installs them after the class is active and empties the
+  include again if it does not activate, so the tests never block the engine. 13 of 13 pass on S4
+  (S/4HANA, SAP_BASIS 816) and on CAR (non-S/4 retail, SAP_BASIS 757); on CAR the governed describe,
+  read and img_search of POS DTA customizing match direct mode (field texts added).
+- Phase 2 is complete: 18 tools in governed mode. Left for later: the background-job scope for 7.40
+  systems (see the release-floor note), and phases 2.5, 3 and 4.
 
 ## Tests
 

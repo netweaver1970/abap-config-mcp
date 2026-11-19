@@ -7,6 +7,9 @@ const sap = vi.hoisted(() => ({
   activationFails: new Set<string>(),
   written: [] as string[],
   created: [] as string[],
+  testSources: [] as string[],
+  failTests: false,
+  lastWrite: "",
 }))
 
 vi.mock("../src/connections", async (importOriginal) => ({
@@ -29,12 +32,22 @@ vi.mock("../src/tools/customizing", async (importOriginal) => ({
 }))
 vi.mock("../src/tools/write", () => ({
   handleCreateAbapObject: vi.fn(async (a: { name: string }) => { sap.created.push(a.name); return { content: [{ type: "text", text: "ok" }] } }),
-  handleWriteAbapObjectSource: vi.fn(async (a: { url: string }) => { sap.written.push(a.url); sap.existing.add(a.url); return { content: [{ type: "text", text: "ok" }] } }),
+  handleWriteAbapObjectSource: vi.fn(async (a: { url: string; sourceUrl?: string; source: string }) => {
+    const target = a.sourceUrl ?? a.url
+    sap.written.push(target); sap.existing.add(a.url); sap.existing.add(target); sap.lastWrite = target
+    if (a.sourceUrl?.endsWith("/includes/testclasses")) sap.testSources.push(a.source)
+    return { content: [{ type: "text", text: "ok" }] }
+  }),
   handleDeleteAbapObject: vi.fn(),
 }))
 vi.mock("../src/tools/activate", () => ({
   handleAbapActivate: vi.fn(async (a: { url: string }) => ({ content: [{ type: "text",
-    text: [...sap.activationFails].some(u => a.url.endsWith(u)) ? "❌ Activation failed — UNION is not supported" : "✅ activated" }] })),
+    text: [...sap.activationFails].some(u => a.url.endsWith(u)) ||
+      (sap.failTests && sap.lastWrite.endsWith("/includes/testclasses") && (sap.testSources.at(-1) ?? "").includes("FOR TESTING"))
+      ? "❌ Activation failed — UNION is not supported" : "✅ activated" }] })),
+}))
+vi.mock("../src/tools/quality", () => ({
+  handleCreateTestInclude: vi.fn(async () => { sap.created.push("TESTCLASSES"); return { content: [{ type: "text", text: "ok" }] } }),
 }))
 
 import { handleEngineBootstrap, ensureEngineClass } from "../src/tools/customizingEngine"
@@ -50,6 +63,27 @@ beforeEach(() => {
   sap.activationFails = new Set()
   sap.written = []
   sap.created = []
+  sap.testSources = []
+  sap.failTests = false
+  sap.lastWrite = ""
+})
+
+describe("bootstrap installs the engine's ABAP Unit tests", () => {
+  it("creates the test include once and writes the tests into it", async () => {
+    const r = await handleEngineBootstrap({ connectionId: "T1" })
+    expect(sap.created).toContain("TESTCLASSES")
+    expect(sap.testSources[0]).toContain("CLASS ltc_engine DEFINITION FINAL FOR TESTING")
+    expect(r.content[0].text).toContain("✅ ABAP Unit tests installed")
+  })
+
+  it("tests that do not activate are emptied again and the engine stays installed", async () => {
+    sap.failTests = true
+    const r = await handleEngineBootstrap({ connectionId: "T2" })
+    expect(sap.testSources).toHaveLength(2)
+    expect(sap.testSources[1]).not.toContain("FOR TESTING")
+    expect(r.content[0].text).toContain("⚠️  The engine's ABAP Unit tests did not activate on this system, so the test include was left empty")
+    expect(r.content[0].text).toContain("✅ Report activated")
+  })
 })
 
 describe("the engine keeps its 7.40 floor", () => {

@@ -30,7 +30,7 @@
  */
 import { readAbap, applyPlaceholders } from "./loadSource"
 
-export const ENGINE_VERSION = "0.9.41"
+export const ENGINE_VERSION = "0.9.42"
 
 export const ENGINE_CLASS_NAME = "ZCL_MCP_CUST_ENGINE"
 export const ENGINE_CLASS_URL = `/sap/bc/adt/oo/classes/${ENGINE_CLASS_NAME.toLowerCase()}`
@@ -59,6 +59,14 @@ export function hsrchAreaCases(): string {
  * The engine class source, read from `zcl_mcp_cust_engine.abap` at call time
  * with the version and the generated HSRCH area-CASE substituted in.
  */
+/** ADT URL of the engine class's test include (local ABAP Unit test classes). */
+export const ENGINE_TEST_INCLUDE_URL = `${ENGINE_CLASS_URL}/includes/testclasses`
+
+/** The engine's ABAP Unit tests (its test include), read from `zcl_mcp_cust_engine.testclasses.abap`. */
+export function getEngineTestSource(): string {
+  return readAbap("zcl_mcp_cust_engine.testclasses")
+}
+
 export function getEngineSource(): string {
   return applyPlaceholders(readAbap("zcl_mcp_cust_engine"), {
     ENGINE_VERSION,
