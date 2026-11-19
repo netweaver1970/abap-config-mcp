@@ -119,8 +119,10 @@ With the pattern `CN=${login_name}` and IAS login names equal to SAP user names,
    CA names".
 3. **Accept client certificates**: `icm/HTTPS/verify_client = 1` (the default: request, do not
    require). `2` would require a certificate on every HTTPS connection.
-4. **Trust Cloud Connector as reverse proxy** (RZ10, instance profile, then restart ICM or switch
-   dynamically in RZ11 once the parameter exists in the profile):
+4. **Trust Cloud Connector as reverse proxy**: in the instance profile (RZ10), so it survives a
+   restart, and for an immediate effect in the running ICM (SMICM → Goto → Parameters → Display →
+   Change Value, or function module `ICM_SET_VECTOR_PARM` for vector `icm/trusted_reverse_proxy`;
+   RZ11 refuses it as "Parameter not found" until it exists in a profile):
 
    ```
    icm/trusted_reverse_proxy_0 = SUBJECT="CN=<cc system cert CN>, O=<…>, C=<…>", ISSUER="CN=<its issuer CN>, O=<…>, C=<…>"
@@ -133,19 +135,29 @@ With the pattern `CN=${login_name}` and IAS login names equal to SAP user names,
    (Older releases use `icm/HTTPS/trust_client_with_issuer` and `icm/HTTPS/trust_client_with_subject`,
    which cannot be changed dynamically.)
 
+   > **Bind the user mapping to the Cloud Connector CA.** For a trusted reverse proxy, ICM does not
+   > check who issued the certificate it forwards: on the lab system a certificate for `CN=BASIS`
+   > signed by an unrelated CA, forwarded by the trusted proxy, logged on as BASIS while the mapping
+   > was by DN only. So whoever holds the Cloud Connector's system certificate can name any user,
+   > unless SAP only accepts certificates of the Cloud Connector CA: give every `VUSREXTID` entry the
+   > issuer (part 4), or use CERTRULE, whose rules are per issuer. With the issuer in the mapping the
+   > same forged certificate got 401. Protect the system certificate's private key in any case.
+
 ## Part 4: the ABAP system's users
 
 **Per-user mapping (VUSREXTID)**: SM30 → `VUSREXTID` → External ID type **DN** → New entries:
 
-| External ID | User | Activated |
-|---|---|---|
-| `CN=JDOE, O=Example, C=BE` | JDOE | ✓ |
+| External ID | Issuer | User | Activated |
+|---|---|---|---|
+| `CN=JDOE, O=Example, C=BE` | `CN=<Cloud Connector CA>, O=Example, C=BE` | JDOE | ✓ |
+
+Fill the issuer: see the note in part 3, step 4.
 
 The DN must be written **with a space after each comma**, most specific part first, as SAP renders
 it: `CN=BASIS, O=MCP Simulation, C=BE` mapped on the lab system, while `CN=BASIS,O=MCP Simulation,C=BE`
-(how some tools print the same DN) did not, and the logon failed with 401. Programmatically the
-same is function module `SUSR_USER_EXTID_SET` (type `DN`, operation `I`); `SUSR_USER_EXTID_DEL`
-removes a user's entries.
+(how some tools print the same DN) did not, and the logon failed with 401. The issuer is written the same
+way. Programmatically the same is function module `SUSR_USER_EXTID_SET` (type `DN`, operation `I`,
+fields EXTID and ISSUER); `SUSR_USER_EXTID_DEL` removes a user's entries.
 
 **Rule-based mapping (CERTRULE)**: set `login/certificate_mapping_rulebased = 1` (RZ11, dynamic;
 RZ10 to keep it), then CERTRULE → upload a sample certificate from Cloud Connector → add a rule,
@@ -196,6 +208,7 @@ This is the point of propagation: an agent acting for a user can do exactly what
 | No sign-in, forged or expired token | the gateway refuses; SAP sees no request |
 | Certificate from a CA SAP does not trust | TLS handshake refused |
 | `SSL_CLIENT_CERT` header from a host not in `icm/trusted_reverse_proxy_<n>` | header ignored, 401 |
+| Trusted proxy forwards a certificate of another CA for a mapped DN | 401, only if the mapping names the issuer |
 | SM20 (Security Audit Log), if active | logons of the propagated users by certificate |
 
 ## Part 7: rehearsing it without BTP (what was tested)
@@ -210,20 +223,25 @@ pattern, calls SAP either with that certificate or with its system certificate a
 # test PKI: CA, Cloud Connector system certificate, a rogue CA for negative tests (openssl)
 # SAP side on a lab system: status | apply | revert (trust in the PSE file with a backup, DN mapping)
 ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-setup.ts --connection CAR --user BASIS --pki <dir> --mode apply
+# trusted reverse proxy in the running ICM (header mode): show | set | clear
+ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-profile.ts --connection CAR --pki <dir> --mode set
 # the chain end to end, direct (user certificate) or header (Cloud Connector's way)
 node --require ts-node/register scripts/propagation/e2e.ts --pki <dir> --sap https://<host>:<port> --client 600 --user BASIS --mode direct
 # back to the original state
 ABAP_MCP_CONFIG=<cfg> node --require ts-node/register scripts/propagation/pp-setup.ts --connection CAR --user BASIS --pki <dir> --mode revert
 ```
 
-Result on CAR, direct mode, 8 of 8: the user signed in at the identity provider reached SAP as
+Result on CAR, 8 of 8 in both modes: the user signed in at the identity provider reached SAP as
 that user, logged on by X.509 client certificate over TLS; a read and a dry-run write worked
 through the gateway's tools; missing, forged and expired tokens were refused by the gateway; a
-user without a mapping got 401 from SAP; a certificate from an untrusted CA was refused in the
-TLS handshake. Header mode was run without `icm/trusted_reverse_proxy_0` and SAP ignored the
-forwarded certificate (401), as it should; the positive header-mode run needs that profile
-parameter (part 3, step 4), which SAP's profile API did not write programmatically on the lab
-system, so it is a manual step there.
+user without a mapping got 401 from SAP; a certificate from an untrusted CA was refused (direct
+mode: in the TLS handshake; header mode: 401, once the mapping named the issuer, see part 3).
+Header mode is what Cloud Connector does: the simulator connects with its system certificate and
+forwards the user's certificate in `SSL_CLIENT_CERT`; ICM trusted it through
+`icm/trusted_reverse_proxy_0`, set in the running ICM only (`scripts/propagation/pp-profile.ts`,
+`ICM_SET_VECTOR_PARM`) and cleared afterwards. Without that entry SAP ignored the header (401).
+The lab system was put back to its original state after each run: PSE file restored byte for
+byte from the backup, mappings removed, trusted-proxy entry cleared.
 
 ## Troubleshooting
 
@@ -232,6 +250,8 @@ system, so it is a manual step there.
 | 401 "Anmeldung fehlgeschlagen" / "Logon failed" with a valid certificate | DN in VUSREXTID without the space after each comma; or no mapping; or CERTRULE on (then VUSREXTID is ignored) |
 | TLS handshake fails, curl exit 35 | client certificate's CA not in the SSL server PSE; or (client side) the host name is not the one in SAP's server certificate |
 | 401 through Cloud Connector, direct mTLS works | `icm/trusted_reverse_proxy_0` missing or its SUBJECT/ISSUER do not match the system certificate exactly |
+| RZ11: "Parameter not found" for `icm/trusted_reverse_proxy_0` | it is not in any profile yet: add it in RZ10, or change it in the running ICM (SMICM) |
+| Certificates of any CA log on behind Cloud Connector | the mapping is by DN only; add the issuer (part 4) or use CERTRULE |
 | ICM trace: "PSE does not exist" after a STRUST action | file-only SSL server PSE wiped by a database sync (part 3, note) |
 | Engine answers 500 "Syntax error in program ZCL_MCP_CUST_ENGINE" | abapGit pulled a version that does not compile on this release; check the syntax and pull a fixed one |
 | The agent's calls all run as one technical user | the destination is not PrincipalPropagation, or the agent sends a client-credentials token |

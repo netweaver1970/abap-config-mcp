@@ -216,9 +216,11 @@ release order, plan building); only where it gets its facts from changes.
    stand-in for IdP, gateway and Cloud Connector (src/gateway/simulator.ts). On CAR, through that
    chain: the signed-in user reached SAP as that user by X.509 client certificate over TLS, reads
    and a dry-run write worked, missing/forged/expired tokens, an unmapped user and an untrusted CA
-   were all refused (8/8, scripts/propagation/e2e.ts); the Cloud Connector header path without a
-   trusted proxy was ignored by ICM (401), the positive header run needs icm/trusted_reverse_proxy_0
-   in the profile (manual). CAR was reverted. Set-up guide: docs/PRINCIPAL_PROPAGATION.md.
+   were all refused (8/8, scripts/propagation/e2e.ts). The Cloud Connector header path (system
+   certificate + SSL_CLIENT_CERT, icm/trusted_reverse_proxy_0 set in the running ICM) also 8/8;
+   without the trusted proxy ICM ignored the header (401). Finding: behind a trusted proxy ICM does
+   not check the forwarded certificate's issuer, so a DN-only mapping let a rogue-CA certificate log
+   on; mapping with the issuer (VUSREXTID) or CERTRULE closes it (tested). CAR was reverted. Set-up guide: docs/PRINCIPAL_PROPAGATION.md.
    Still open: the real BTP side (IAS, destination, MCP server artifact, Cloud Connector).
    NEEDS CONFIRMATION, before building: a one-day test that the agent's own user reaches SAP
    end to end (SAP's July 2026 roadmap still listed full propagation as coming), payload and
