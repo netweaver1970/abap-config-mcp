@@ -5,7 +5,7 @@ CLASS zcl_mcp_cust_engine DEFINITION
 
   PUBLIC SECTION.
     INTERFACES if_http_extension.
-    CONSTANTS c_version TYPE string VALUE '0.10.2'.
+    CONSTANTS c_version TYPE string VALUE '0.10.3'.
 
   PRIVATE SECTION.
     TYPES: ty_tabkey_tt TYPE STANDARD TABLE OF trobj_name WITH DEFAULT KEY.
@@ -332,6 +332,11 @@ CLASS zcl_mcp_cust_engine DEFINITION
                c_read_max_rows     TYPE i VALUE 1000,
                c_max_fields        TYPE i VALUE 1000.
 
+    METHODS handle_whoami
+      IMPORTING io_server      TYPE REF TO if_http_server
+      RETURNING VALUE(rs_resp) TYPE ty_response.
+    CLASS-METHODS auth_method_name
+      RETURNING VALUE(rv) TYPE string.
     METHODS handle_ping
       RETURNING VALUE(rs_resp) TYPE ty_response.
 
@@ -699,6 +704,24 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
               TO ls_resp-messages.
         ENDTRY.
 
+        " One path per action (POST /sap/bc/zmcp_cust/<operation>), for an OpenAPI description
+        " with one operation per action, as SAP's MCP gateway turns each operation into a tool.
+        " A body that names its operation wins; the path names it when the body does not.
+        IF ls_resp-status <> 'error' AND ls_req-operation IS INITIAL.
+          DATA(lv_path_op) = to_lower( condense( replace( val = server->request->get_header_field( '~path_info' )
+                                                          sub = `/` with = `` occ = 0 ) ) ).
+          IF lv_path_op IS NOT INITIAL AND is_valid_name( to_upper( lv_path_op ) ) = abap_true.
+            ls_req-operation = lv_path_op.
+            " the BW class reads the operation from the body
+            DATA(lv_trimmed) = condense( lv_body ).
+            IF lv_trimmed IS INITIAL OR lv_trimmed = `{}`.
+              lv_body = |\{"operation":"{ lv_path_op }"\}|.
+            ELSE.
+              lv_body = replace( val = lv_body sub = `{` with = |\{"operation":"{ lv_path_op }",| ).
+            ENDIF.
+          ENDIF.
+        ENDIF.
+
         " BW operations (bw_*) go to the optional class ZCL_MCP_BW_ENGINE, called
         " dynamically so this class never depends on BW: it gets the raw request and
         " answers with a complete JSON response of the same shape.
@@ -710,6 +733,7 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
         IF ls_resp-status <> 'error' AND lv_out IS INITIAL.
           CASE to_lower( ls_req-operation ).
             WHEN 'ping'.     ls_resp = handle_ping( ).
+            WHEN 'whoami'.   ls_resp = handle_whoami( server ).
             WHEN 'read'.     ls_resp = handle_read( ls_req ).
             WHEN 'ddic_describe'. ls_resp = handle_ddic_describe( ls_req ).
             WHEN 'transports'.     ls_resp = handle_transports( ls_req ).
@@ -773,13 +797,43 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD auth_method_name.
+    rv = SWITCH #( cl_http_server=>if_http_server~authentication_method
+           WHEN if_http_server=>authmethod_basic       THEN `basic authentication`
+           WHEN if_http_server=>authmethod_certificate THEN `X.509 client certificate`
+           WHEN if_http_server=>authmethod_sso         THEN `SAP logon ticket`
+           WHEN if_http_server=>authmethod_saml        THEN `SAML`
+           WHEN if_http_server=>authmethod_assertion   THEN `assertion ticket`
+           WHEN if_http_server=>authmethod_oauth       THEN `OAuth`
+           WHEN if_http_server=>authmethod_service     THEN `service user of the SICF node`
+           WHEN if_http_server=>authmethod_none        THEN `none`
+           ELSE |method { cl_http_server=>if_http_server~authentication_method }| ).
+  ENDMETHOD.
+
+
+  METHOD handle_whoami.
+    " Who SAP sees and how the caller logged on: the check for principal propagation.
+    " Reads nothing from the database.
+    rs_resp-status    = 'ok'.
+    rs_resp-operation = 'whoami'.
+    rs_resp-version   = c_version.
+    DATA(lv_tls) = xsdbool( cl_http_server=>if_http_server~ssl_active <> 0 ).
+    APPEND |{ sy-uname } on { sy-sysid }/{ sy-mandt }, logged on by { auth_method_name( ) }| &&
+           |{ COND string( WHEN lv_tls = abap_true THEN `, over TLS` ELSE `, without TLS` ) }| TO rs_resp-messages.
+    rs_resp-data_json = |\{"USER":"{ sy-uname }","CLIENT":"{ sy-mandt }","SYSTEM":"{ sy-sysid }",| &&
+                        |"AUTH_METHOD":{ cl_http_server=>if_http_server~authentication_method },"AUTH":"{ auth_method_name( ) }",| &&
+                        |"TLS":{ COND string( WHEN lv_tls = abap_true THEN `true` ELSE `false` ) },| &&
+                        |"REMOTE_ADDR":"{ io_server->request->get_header_field( '~remote_addr' ) }"\}|.
+  ENDMETHOD.
+
+
   METHOD handle_ping.
     rs_resp-status    = 'ok'.
     rs_resp-operation = 'ping'.
     rs_resp-version   = c_version.
     " sy-uname shows who SAP thinks is calling: the check for per-user logon and principal propagation.
-    APPEND |MCP Customizing Engine alive on { sy-sysid } client { sy-mandt }, running as user { sy-uname }|
-      TO rs_resp-messages.
+    APPEND |MCP Customizing Engine alive on { sy-sysid } client { sy-mandt }, running as user { sy-uname }| &&
+           |, logged on by { auth_method_name( ) }| TO rs_resp-messages.
 
     " Read-on-connect: surface the client's change/transport capability so the
     " caller knows up front whether customizing changes here are recorded onto a

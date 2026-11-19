@@ -37,7 +37,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
-    "abapgit": "node --require ts-node/register scripts/build-abapgit.ts"
+    "abapgit": "node --require ts-node/register scripts/build-abapgit.ts",
+    "openapi": "node --require ts-node/register scripts/build-openapi.ts"
   },
   "license": "MIT",
   "dependencies": {

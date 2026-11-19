@@ -211,6 +211,15 @@ release order, plan building); only where it gets its facts from changes.
    logic the engine doesn't carry (transport rules, release order, retest classification).
    Fallback if HTTP propagation fails: RFC-enabled function modules per action (the gateway's
    RFC source, one tool per function module), about twice the effort.
+   PROGRESS 2026-11-19 (engine 0.10.3): one path per action and a `whoami` action in the engine;
+   OpenAPI 3.0.3 description, 24 operations (src/gateway/openapi.ts, docs/gateway/); a local
+   stand-in for IdP, gateway and Cloud Connector (src/gateway/simulator.ts). On CAR, through that
+   chain: the signed-in user reached SAP as that user by X.509 client certificate over TLS, reads
+   and a dry-run write worked, missing/forged/expired tokens, an unmapped user and an untrusted CA
+   were all refused (8/8, scripts/propagation/e2e.ts); the Cloud Connector header path without a
+   trusted proxy was ignored by ICM (401), the positive header run needs icm/trusted_reverse_proxy_0
+   in the profile (manual). CAR was reverted. Set-up guide: docs/PRINCIPAL_PROPAGATION.md.
+   Still open: the real BTP side (IAS, destination, MCP server artifact, Cloud Connector).
    NEEDS CONFIRMATION, before building: a one-day test that the agent's own user reaches SAP
    end to end (SAP's July 2026 roadmap still listed full propagation as coming), payload and
    timeout limits, metering of MCP calls, and whether SAP sees a customer-namespace

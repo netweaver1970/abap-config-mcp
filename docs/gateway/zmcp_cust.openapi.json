@@ -1,0 +1,1503 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "abap-config-mcp Customizing Engine",
+    "version": "0.10.3",
+    "description": "The in-system engine of abap-config-mcp (ZCL_MCP_CUST_ENGINE behind SICF node /sap/bc/zmcp_cust): customizing, transports and BW objects through SAP's own APIs, as the calling SAP user. Each call runs as the SAP user the logon maps to; with SAP Cloud Connector principal propagation that is the end user (X.509 certificate mapped in SAP). Writes are dry runs unless commit is true."
+  },
+  "servers": [
+    {
+      "url": "https://{host}:{port}/sap/bc/zmcp_cust",
+      "variables": {
+        "host": {
+          "default": "sap-host"
+        },
+        "port": {
+          "default": "44300"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/whoami": {
+      "post": {
+        "operationId": "whoami",
+        "summary": "Who SAP sees",
+        "description": "The SAP user, client and system this call runs as, and how it logged on (basic, X.509 client certificate, …). Use it to confirm principal propagation. Reads nothing. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/ping": {
+      "post": {
+        "operationId": "ping",
+        "summary": "Engine status",
+        "description": "Engine version, the client's change recording (SCC4) and which engine features this system offers. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/ddic_describe": {
+      "post": {
+        "operationId": "ddic_describe",
+        "summary": "Describe a table or view",
+        "description": "Fields, keys, delivery class, text table and maintenance object of a customizing table or view. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Table or view name, e.g. T001W or V_T001W"
+                  }
+                },
+                "required": [
+                  "table"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/read": {
+      "post": {
+        "operationId": "read",
+        "summary": "Read customizing rows",
+        "description": "Rows of one customizing table (delivery class C, G or E), optionally only one key value. Needs display authorization for the table (S_TABU_DIS / S_TABU_NAM). Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Customizing table, e.g. T001W"
+                  },
+                  "key_field": {
+                    "type": "string",
+                    "description": "Key field to filter on, e.g. WERKS"
+                  },
+                  "source_key": {
+                    "type": "string",
+                    "description": "Value of the key field"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "table"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/img_search": {
+      "post": {
+        "operationId": "img_search",
+        "summary": "Find IMG activities",
+        "description": "IMG (SPRO) activities whose text contains a keyword, with their maintenance objects. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keyword": {
+                    "type": "string",
+                    "description": "Text to find, e.g. plant"
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character language (default the logon language)"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "keyword"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/transports": {
+      "post": {
+        "operationId": "transports",
+        "summary": "List transport requests",
+        "description": "Transport requests with their texts, owners and status, optionally with their objects. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "owner": {
+                    "type": "string",
+                    "description": "Only this user's requests"
+                  },
+                  "trfunction": {
+                    "type": "string",
+                    "description": "Request kinds, e.g. K or W (default K, W, T, C)"
+                  },
+                  "statuses": {
+                    "type": "string",
+                    "description": "Statuses, e.g. D (default D and L)"
+                  },
+                  "with_objects": {
+                    "type": "boolean",
+                    "description": "Include each request's objects"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/transport_info": {
+      "post": {
+        "operationId": "transport_info",
+        "summary": "Transport of one object",
+        "description": "Package, recording, transport layer and the request an object is locked on. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pgmid": {
+                    "type": "string",
+                    "description": "R3TR (default)"
+                  },
+                  "obj_type": {
+                    "type": "string",
+                    "description": "TADIR object type, e.g. PROG, CLAS, TABU"
+                  },
+                  "obj_name": {
+                    "type": "string",
+                    "description": "Object name"
+                  }
+                },
+                "required": [
+                  "obj_type",
+                  "obj_name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/status": {
+      "post": {
+        "operationId": "status",
+        "summary": "Status of a background write",
+        "description": "Result of a write that the engine runs as a background job. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "run_id": {
+                    "type": "string",
+                    "description": "Run id returned by the write"
+                  }
+                },
+                "required": [
+                  "run_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_memory": {
+      "post": {
+        "operationId": "abap_memory",
+        "summary": "ABAP memory report",
+        "description": "ABAP application server memory parameters and usage. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/hana_memory": {
+      "post": {
+        "operationId": "hana_memory",
+        "summary": "HANA memory report",
+        "description": "HANA memory usage of the system's database. Read-only.",
+        "tags": [
+          "Reads"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_capabilities": {
+      "post": {
+        "operationId": "bw_capabilities",
+        "summary": "BW capabilities",
+        "description": "Which BW the system has, its BW client, and per BW object type which operations work. Read-only.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_list": {
+      "post": {
+        "operationId": "bw_list",
+        "summary": "List BW objects",
+        "description": "BW objects of one type by name pattern, with texts. Read-only.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "pattern": {
+                    "type": "string",
+                    "description": "Name pattern, * as wildcard (default *)"
+                  },
+                  "objvers": {
+                    "type": "string",
+                    "description": "A active (default), M modified or D delivered",
+                    "enum": [
+                      "A",
+                      "M",
+                      "D"
+                    ]
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "Text language, one character"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "tlogo"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_read": {
+      "post": {
+        "operationId": "bw_read",
+        "summary": "Read a BW object",
+        "description": "Versions, package and definition of one BW object (InfoObjects through BAPI_IOBJ_GETDETAIL). Read-only.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "objvers": {
+                    "type": "string",
+                    "description": "A active (default), M modified or D delivered",
+                    "enum": [
+                      "A",
+                      "M",
+                      "D"
+                    ]
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_where_used": {
+      "post": {
+        "operationId": "bw_where_used",
+        "summary": "BW where-used",
+        "description": "Which BW objects use the object and which it uses (RSOOBJXREF). Read-only.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "objvers": {
+                    "type": "string",
+                    "description": "A active (default), M modified or D delivered",
+                    "enum": [
+                      "A",
+                      "M",
+                      "D"
+                    ]
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/write": {
+      "post": {
+        "operationId": "write",
+        "summary": "Copy customizing entries",
+        "description": "Copy the entries of one key to another through the maintenance object's SM30 runtime, recorded on a Customizing request. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Customizing table"
+                  },
+                  "view_name": {
+                    "type": "string",
+                    "description": "Maintenance view, when it is not the table itself"
+                  },
+                  "key_field": {
+                    "type": "string",
+                    "description": "Key field, e.g. WERKS"
+                  },
+                  "source_key": {
+                    "type": "string",
+                    "description": "Key to copy from"
+                  },
+                  "target_key": {
+                    "type": "string",
+                    "description": "Key to copy to"
+                  },
+                  "values_json": {
+                    "type": "string",
+                    "description": "Field overrides [{FIELD,VALUE}] for every copied row (JSON text)"
+                  },
+                  "only_missing": {
+                    "type": "boolean",
+                    "description": "Only rows that do not exist yet"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "create_transport": {
+                    "type": "boolean",
+                    "description": "Create a Customizing request when none is given"
+                  },
+                  "transport_text": {
+                    "type": "string",
+                    "description": "Text of a created request"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "table",
+                  "key_field",
+                  "source_key",
+                  "target_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/create": {
+      "post": {
+        "operationId": "create",
+        "summary": "Create customizing entries",
+        "description": "Create rows in a customizing table through its SM30 runtime, recorded on a Customizing request. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Customizing table"
+                  },
+                  "view_name": {
+                    "type": "string",
+                    "description": "Maintenance view, when it is not the table itself"
+                  },
+                  "rows_json": {
+                    "type": "string",
+                    "description": "Rows, each an array of {FIELD,VALUE} with the full key (JSON text)"
+                  },
+                  "only_missing": {
+                    "type": "boolean",
+                    "description": "Skip rows that exist"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "create_transport": {
+                    "type": "boolean",
+                    "description": "Create a Customizing request when none is given"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "table",
+                  "rows_json"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/delete": {
+      "post": {
+        "operationId": "delete",
+        "summary": "Delete customizing entries",
+        "description": "Delete the entries of one key through the SM30 runtime, recorded on a Customizing request. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Customizing table"
+                  },
+                  "view_name": {
+                    "type": "string",
+                    "description": "Maintenance view, when it is not the table itself"
+                  },
+                  "key_field": {
+                    "type": "string",
+                    "description": "Key field"
+                  },
+                  "target_key": {
+                    "type": "string",
+                    "description": "Key to delete"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "table",
+                  "key_field",
+                  "target_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/org_copy": {
+      "post": {
+        "operationId": "org_copy",
+        "summary": "Copy or delete an org unit",
+        "description": "Copy an org unit (company code, plant, sales organization, …) with its dependent customizing, or delete one (action DELE), through SAP's entity copier. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "org_unit": {
+                    "type": "string",
+                    "description": "Org-unit domain, e.g. BUKRS, WERKS, VKORG"
+                  },
+                  "source_key": {
+                    "type": "string",
+                    "description": "Org unit to copy (or delete)"
+                  },
+                  "target_key": {
+                    "type": "string",
+                    "description": "New org unit"
+                  },
+                  "action": {
+                    "type": "string",
+                    "description": "COPY (default) or DELE",
+                    "enum": [
+                      "COPY",
+                      "DELE"
+                    ]
+                  },
+                  "create_transport": {
+                    "type": "boolean",
+                    "description": "Create a Customizing request"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "org_unit",
+                  "source_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/listing": {
+      "post": {
+        "operationId": "listing",
+        "summary": "List articles in assortments",
+        "description": "Retail listing of articles into assortments. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "items_json": {
+                    "type": "string",
+                    "description": "Items [{PRODUCT,ASSORTMENT,DATE_FROM,DATE_TO}] (JSON text)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "items_json"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/transport_move": {
+      "post": {
+        "operationId": "transport_move",
+        "summary": "Move objects between requests",
+        "description": "Move object entries from one request or task to another. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "Customizing writes"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "from_trkorr": {
+                    "type": "string",
+                    "description": "Source task"
+                  },
+                  "to_trkorr": {
+                    "type": "string",
+                    "description": "Target request or task"
+                  },
+                  "objects_json": {
+                    "type": "string",
+                    "description": "Entries [{TRKORR,PGMID,OBJECT,OBJ_NAME}] (JSON text)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "from_trkorr",
+                  "to_trkorr"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_create": {
+      "post": {
+        "operationId": "bw_create",
+        "summary": "Create a BW object",
+        "description": "Create a BW object through BW's API (InfoObjects: BAPI_IOBJ_CREATE), activated by default, recorded on a Workbench request unless the package is local. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "package": {
+                    "type": "string",
+                    "description": "Package (default $TMP)"
+                  },
+                  "details_json": {
+                    "type": "string",
+                    "description": "InfoObject: BAPI6108 fields (JSON text)"
+                  },
+                  "compounds_json": {
+                    "type": "string",
+                    "description": "InfoObject: BAPI6108CM rows (JSON text)"
+                  },
+                  "attributes_json": {
+                    "type": "string",
+                    "description": "InfoObject: BAPI6108AT rows (JSON text)"
+                  },
+                  "navattr_json": {
+                    "type": "string",
+                    "description": "InfoObject: BAPI6108AN rows (JSON text)"
+                  },
+                  "activate": {
+                    "type": "boolean",
+                    "description": "Activate after creating (default true)"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name",
+                  "details_json"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_change": {
+      "post": {
+        "operationId": "bw_change",
+        "summary": "Change a BW object",
+        "description": "Change a BW object from its current definition. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "values_json": {
+                    "type": "string",
+                    "description": "Fields to set [{FIELD,VALUE}] (JSON text)"
+                  },
+                  "compounds_json": {
+                    "type": "string",
+                    "description": "Replace the compound rows (JSON text)"
+                  },
+                  "attributes_json": {
+                    "type": "string",
+                    "description": "Replace the attribute rows (JSON text)"
+                  },
+                  "navattr_json": {
+                    "type": "string",
+                    "description": "Replace the navigation attribute rows (JSON text)"
+                  },
+                  "activate": {
+                    "type": "boolean",
+                    "description": "Activate after changing (default true)"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_activate": {
+      "post": {
+        "operationId": "bw_activate",
+        "summary": "Activate a BW object",
+        "description": "Activate a BW object's modified version. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/bw_delete": {
+      "post": {
+        "operationId": "bw_delete",
+        "summary": "Delete a BW object",
+        "description": "Delete a BW object; a transported one is recorded on the request first, so the deletion travels. Dry run unless commit is true. Changes SAP when commit is true; the SAP user's own authorizations apply.",
+        "tags": [
+          "BW"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tlogo": {
+                    "type": "string",
+                    "description": "BW object type as BW names it (TLOGO): IOBJ InfoObject, ADSO, AREA, HCPR, TRFN, DTPA, …"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "BW object name, e.g. ZCUSTOMER or 0MATERIAL"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "description": "Request to record on (Customizing request for customizing, Workbench request for BW objects)"
+                  },
+                  "commit": {
+                    "type": "boolean",
+                    "description": "true writes; default is a dry run that checks and reports only"
+                  }
+                },
+                "required": [
+                  "tlogo",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EngineResponse": {
+        "type": "object",
+        "properties": {
+          "STATUS": {
+            "type": "string",
+            "description": "ok, error, or running for a background write"
+          },
+          "OPERATION": {
+            "type": "string"
+          },
+          "VERSION": {
+            "type": "string",
+            "description": "Engine version"
+          },
+          "DRY_RUN": {
+            "type": "string",
+            "description": "X when nothing was written"
+          },
+          "MESSAGES": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What happened, or what stopped and why, in plain sentences"
+          },
+          "DATA_JSON": {
+            "type": "string",
+            "description": "The result data as JSON text (rows, definitions, lists)"
+          }
+        }
+      }
+    }
+  }
+}

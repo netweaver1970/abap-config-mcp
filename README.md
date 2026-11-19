@@ -458,6 +458,16 @@ Workbench Z package on a transport (CTS to Prod), or `transportable:false` for `
 automatically** as part of the deploy. See **[docs/TIERS.md](docs/TIERS.md)** for the
 full deployment + capability-awareness story.
 
+### 5a. Behind SAP's MCP Gateway, as the end user
+
+The engine can sit behind SAP's MCP Gateway (Integration Suite) with principal propagation through
+Cloud Connector, so every call runs as the person who signed in to the agent. Each engine action
+has its own path (`/sap/bc/zmcp_cust/<action>`), the OpenAPI description the gateway imports is
+[`docs/gateway/zmcp_cust.openapi.json`](docs/gateway/zmcp_cust.openapi.json) (24 operations;
+`npm run openapi`), and the `whoami` action says which SAP user a call runs as and how it logged
+on. Full manual set-up, tested end to end in the ABAP system with a local stand-in for BTP:
+**[docs/PRINCIPAL_PROPAGATION.md](docs/PRINCIPAL_PROPAGATION.md)**.
+
 ### 5b. Installing the engine with abapGit
 
 The engine is also an abapGit repository: [`abapgit/`](abapgit/) holds the classes
