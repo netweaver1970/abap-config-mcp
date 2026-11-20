@@ -1,0 +1,795 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "abap-config-mcp ABAP (read-only)",
+    "version": "0.11.0",
+    "description": "The in-system engine of abap-config-mcp (ZCL_MCP_CUST_ENGINE behind SICF node /sap/bc/zmcp_cust): read-only ABAP: search, source, where-used, versions, packages, text elements, syntax check and short dumps, as the calling SAP user. Each call runs as the SAP user the logon maps to; with SAP Cloud Connector principal propagation that is the end user (X.509 certificate mapped in SAP). Writes are dry runs unless commit is true."
+  },
+  "servers": [
+    {
+      "url": "https://{host}:{port}/sap/bc/zmcp_cust",
+      "variables": {
+        "host": {
+          "default": "sap-host"
+        },
+        "port": {
+          "default": "44300"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/abap_search": {
+      "post": {
+        "operationId": "abap_search",
+        "summary": "Find ABAP objects",
+        "description": "Repository objects whose name matches a pattern (* as wildcard), with type, package and description; only objects the user may display. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "description": "Name or pattern, e.g. ZCL_ORDER*"
+                  },
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character or ISO language (default the logon language)"
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_info": {
+      "post": {
+        "operationId": "abap_info",
+        "summary": "Object details",
+        "description": "Package, author, dates, description, what the object belongs to and its parts (methods, function modules). Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character or ISO language (default the logon language)"
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_source": {
+      "post": {
+        "operationId": "abap_source",
+        "summary": "Read ABAP source",
+        "description": "The active source of a program, include, class, interface, function group or function module. For a class, include picks a part. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  },
+                  "include": {
+                    "type": "string",
+                    "description": "Class part: main (default), definitions, implementations, macros or testclasses",
+                    "enum": [
+                      "main",
+                      "definitions",
+                      "implementations",
+                      "macros",
+                      "testclasses"
+                    ]
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_where_used": {
+      "post": {
+        "operationId": "abap_where_used",
+        "summary": "Where an object is used",
+        "description": "The programs, classes (with method) and function modules that use an object, from SAP's cross-reference index. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_versions": {
+      "post": {
+        "operationId": "abap_versions",
+        "summary": "Version history",
+        "description": "Stored versions of an object (VRSD): version, date, author and transport request. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_package": {
+      "post": {
+        "operationId": "abap_package",
+        "summary": "Contents of a package",
+        "description": "The objects of a package, optionally with its direct sub-packages. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "description": "Package, e.g. ZORDER_API"
+                  },
+                  "subpackages": {
+                    "type": "boolean",
+                    "description": "Also the direct sub-packages (at most 25)"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character or ISO language (default the logon language)"
+                  }
+                },
+                "required": [
+                  "package"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_text_elements": {
+      "post": {
+        "operationId": "abap_text_elements",
+        "summary": "Text elements",
+        "description": "Selection texts, text symbols and headings of a program, function group or class. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character or ISO language (default the logon language)"
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_inactive": {
+      "post": {
+        "operationId": "abap_inactive",
+        "summary": "Inactive objects",
+        "description": "Objects saved but not activated in the user's worklist. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "all_users": {
+                    "type": "boolean",
+                    "description": "Everyone's, not only the caller's"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_tables": {
+      "post": {
+        "operationId": "abap_tables",
+        "summary": "Find tables and views",
+        "description": "Database tables and views by name pattern or by a word from their description. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "description": "Name pattern, e.g. T001*"
+                  },
+                  "keyword": {
+                    "type": "string",
+                    "description": "Word from the description, e.g. plant"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "One-character or ISO language (default the logon language)"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_syntax": {
+      "post": {
+        "operationId": "abap_syntax",
+        "summary": "Syntax check",
+        "description": "Runs SAP's syntax check on an object's active version, or on a program source you supply; saves nothing. Reports the first error. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "object_type": {
+                    "type": "string",
+                    "description": "Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG",
+                    "enum": [
+                      "PROG",
+                      "INCL",
+                      "CLAS",
+                      "INTF",
+                      "FUGR",
+                      "FUNC",
+                      "TABL",
+                      "VIEW",
+                      "DTEL",
+                      "DOMA",
+                      "TTYP",
+                      "TRAN",
+                      "MSAG"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE"
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": "A complete program source to check instead of the stored one (executable programs only)"
+                  }
+                },
+                "required": [
+                  "object_type",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    },
+    "/abap_dumps": {
+      "post": {
+        "operationId": "abap_dumps",
+        "summary": "Short dumps (ST22)",
+        "description": "Recent runtime errors with program, include and line. The caller's own; all users' with S_DEVELOP display for DEBUG. Read-only.",
+        "tags": [
+          "ABAP (read-only)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "days": {
+                    "type": "integer",
+                    "description": "How many days back (default 7, at most 90)",
+                    "minimum": 1,
+                    "maximum": 90
+                  },
+                  "all_users": {
+                    "type": "boolean",
+                    "description": "Everyone's dumps"
+                  },
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "At most this many rows",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The engine's answer; STATUS says whether it worked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No SAP logon: missing or unmapped client certificate, or wrong credentials"
+          },
+          "403": {
+            "description": "The SICF node is inactive, or the SAP user may not call it"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EngineResponse": {
+        "type": "object",
+        "properties": {
+          "STATUS": {
+            "type": "string",
+            "description": "ok, error, or running for a background write"
+          },
+          "OPERATION": {
+            "type": "string"
+          },
+          "VERSION": {
+            "type": "string",
+            "description": "Engine version"
+          },
+          "DRY_RUN": {
+            "type": "string",
+            "description": "X when nothing was written"
+          },
+          "MESSAGES": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What happened, or what stopped and why, in plain sentences"
+          },
+          "DATA_JSON": {
+            "type": "string",
+            "description": "The result data as JSON text (rows, definitions, lists)"
+          }
+        }
+      }
+    }
+  }
+}

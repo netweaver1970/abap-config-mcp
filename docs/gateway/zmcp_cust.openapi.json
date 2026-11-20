@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "abap-config-mcp Customizing Engine",
-    "version": "0.10.3",
+    "version": "0.11.0",
     "description": "The in-system engine of abap-config-mcp (ZCL_MCP_CUST_ENGINE behind SICF node /sap/bc/zmcp_cust): customizing, transports and BW objects through SAP's own APIs, as the calling SAP user. Each call runs as the SAP user the logon maps to; with SAP Cloud Connector principal propagation that is the end user (X.509 certificate mapped in SAP). Writes are dry runs unless commit is true."
   },
   "servers": [
@@ -441,7 +441,7 @@
         "summary": "ABAP memory report",
         "description": "ABAP application server memory parameters and usage. Read-only.",
         "tags": [
-          "Reads"
+          "ABAP (read-only)"
         ],
         "requestBody": {
           "required": true,

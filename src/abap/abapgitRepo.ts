@@ -19,6 +19,7 @@ import { getEngineSource, getEngineTestSource, ENGINE_VERSION } from "./zcl_mcp_
 import { getWriterSource } from "./zmcp_cust_write"
 import { getScopeBatchSource } from "./zcl_mcp_scope_batch"
 import { getBwEngineSource } from "./zcl_mcp_bw_engine"
+import { getAbapEngineSource } from "./zcl_mcp_abap_engine"
 import { getDiagSource } from "./zcl_mcp_diag"
 import { deflateRawSync } from "zlib"
 
@@ -124,6 +125,8 @@ export function buildAbapGitFiles(): Map<string, string> {
   f.set("src/zcl_mcp_scope_batch.clas.xml", clasXml("ZCL_MCP_SCOPE_BATCH", "MCP engine: batched row counts (7.50+)"))
   f.set("src/zcl_mcp_bw_engine.clas.abap", lf(getBwEngineSource()))
   f.set("src/zcl_mcp_bw_engine.clas.xml", clasXml("ZCL_MCP_BW_ENGINE", "MCP engine: BW objects"))
+  f.set("src/zcl_mcp_abap_engine.clas.abap", lf(getAbapEngineSource()))
+  f.set("src/zcl_mcp_abap_engine.clas.xml", clasXml("ZCL_MCP_ABAP_ENGINE", "MCP engine: read-only ABAP"))
   f.set("src/zcl_mcp_diag.clas.abap", lf(getDiagSource()))
   f.set("src/zcl_mcp_diag.clas.xml", clasXml("ZCL_MCP_DIAG", "MCP read-only diagnostics"))
   f.set(`src/${SICF_FILES.ZMCP_DIAG}`, sicfXml("ZMCP_DIAG", "MCP read-only diagnostics", "ZCL_MCP_DIAG"))

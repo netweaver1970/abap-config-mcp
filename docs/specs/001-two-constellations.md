@@ -74,7 +74,8 @@ Exactly today's behaviour and tool set, including the opt-in data tools
 | list_all_transports | yes | new `transports` action |
 | get_transport_for_object | yes | new `transport_info` action |
 | customizing_selftest | yes, without autoDeploy | engine (existing) |
-| All code tools: source, write, create, delete, activate, ATC, unit tests, run class, debugger, where-used, version history, dumps, inactive objects, text elements, packages, table discovery, data tools, manage_transport_requests | no | SAP's ADT MCP server instead |
+| Code reads: search, info, source, batch source, grep, where-used, version history, packages, text elements, inactive objects, table search and describe, syntax check (saves nothing), dumps | yes (engine 0.11.0) | the engine's read-only class ZCL_MCP_ABAP_ENGINE (abap_* actions), S_DEVELOP display checked per object |
+| Code writes: write, create, delete, activate, ATC, unit tests, run class, debugger, data tools, manage_transport_requests | no | SAP's ADT MCP server instead |
 | customizing_engine_bootstrap, engine_deploy, customizing_engine_cleanup | no | abapGit or transport (rule 5) |
 
 Tool descriptions in governed mode say, where it helps, which SAP ADT MCP tool covers the
@@ -212,7 +213,8 @@ release order, plan building); only where it gets its facts from changes.
    Fallback if HTTP propagation fails: RFC-enabled function modules per action (the gateway's
    RFC source, one tool per function module), about twice the effort.
    PROGRESS 2026-11-19 (engine 0.10.3): one path per action and a `whoami` action in the engine;
-   OpenAPI 3.0.3 description, 24 operations (src/gateway/openapi.ts, docs/gateway/); a local
+   OpenAPI 3.0.3 description, 24 operations (src/gateway/openapi.ts, docs/gateway/), plus a second
+   document of 11 read-only ABAP operations for a second MCP server (engine 0.11.0); a local
    stand-in for IdP, gateway and Cloud Connector (src/gateway/simulator.ts). On CAR, through that
    chain: the signed-in user reached SAP as that user by X.509 client certificate over TLS, reads
    and a dry-run write worked, missing/forged/expired tokens, an unmapped user and an untrusted CA
@@ -334,3 +336,23 @@ the switch, the governed tool list, and the link to the API Policy section.
   CAR governed 30 pass, S4 governed 25 pass (the rest not offered in governed mode). Fixed on the
   way: see commit 3abca70. Known edge: deleting a package in the same ADT session that created it
   answers "is already locked" (SAP keeps the creating session's lock); a new session deletes it.
+
+## Read-only ABAP in governed mode (2026-11-20, engine 0.11.0)
+
+The user chose to keep code reading in governed mode instead of leaving all code work to SAP's ADT
+MCP server. ZCL_MCP_ABAP_ENGINE (optional class, installed with the engine) answers abap_search,
+abap_info, abap_source, abap_where_used, abap_versions, abap_package, abap_text_elements,
+abap_inactive, abap_tables, abap_syntax and abap_dumps. It reads the repository (TADIR, READ REPORT,
+cl_oo_factory for class source, WBCROSSGT/CROSS/WBCROSSI, VRSD, DWINACTIV, text pools, SNAP) and runs
+SYNTAX-CHECK, which saves nothing; nothing in it writes. Every object is checked against S_DEVELOP
+display (ACTVT 03) for its type, name and package; other users' dumps need S_DEVELOP display for
+DEBUG. In governed mode the fourteen ABAP read tools keep their parameters (ADT URLs are turned into
+type and name) and get engine-backed handlers (src/tools/abapEngineRead.ts). Through the gateway the
+reads are a second MCP server (docs/gateway/zmcp_abap.openapi.json), because one server takes at most
+30 tools. Writing, activating and deleting code stay with SAP's ADT MCP server.
+
+Tested on CAR: every action called in SAP; the fourteen tools in both modes side by side
+(scripts/abapread/compare.ts); the gateway chain 11/11 in both Cloud Connector modes with three ABAP
+scenarios. Not yet on S4 (unreachable during the test). Limits: where-used depends on SAP's
+cross-reference index; the syntax check reports the first error, and checks a supplied source for
+executable programs only (other objects: the stored version).

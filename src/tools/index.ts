@@ -18,6 +18,7 @@ import { registerCustomizingEngineTools } from "./customizingEngine"
 import { registerEngineDeployTools } from "./engineDeploy"
 import { wrapServerWithSessionRecovery, wrapServerWithSessionScope } from "./sessionRecovery"
 import { wrapServerWithSoapRfcRouting } from "./soapRfcRouting"
+import { GOVERNED_ABAP_HANDLERS } from "./abapEngineRead"
 import { wrapServerWithTierGating, getMaxTier } from "./riskTiers"
 import { wrapServerWithAnnotations } from "./toolAnnotations"
 import { log } from "../connections"
@@ -68,7 +69,7 @@ function registerTools(server: McpServer): void {
   // endpoint are registered; everything that needs ADT is left out. See mode.ts.
   const governed = serverMode() === "governed"
   const modeSkipped: string[] = []
-  const moded = governed ? wrapServerWithModeGating(gated, modeSkipped) : gated
+  const moded = governed ? wrapServerWithModeGating(gated, modeSkipped, GOVERNED_ABAP_HANDLERS as never) : gated
 
   // Outermost: every tool carries MCP annotations (read-only, destructive,
   // idempotent) from one hand-checked table — see toolAnnotations.ts.

@@ -4,10 +4,11 @@ import * as os from "os"
 import * as path from "path"
 import * as crypto from "crypto"
 import { execFileSync } from "child_process"
-import { buildOpenApi, GATEWAY_OPERATIONS, GATEWAY_TOOL_LIMIT } from "../src/gateway/openapi"
+import { buildOpenApi, GATEWAY_OPERATIONS, GATEWAY_TOOL_LIMIT, GATEWAY_SETS, ABAP_GATEWAY_OPERATIONS } from "../src/gateway/openapi"
 import { createIdp, verifyToken, issueUserCert, createGatewayServer, type SapCall } from "../src/gateway/simulator"
 import { getEngineSource } from "../src/abap/zcl_mcp_cust_engine"
 import { getBwEngineSource } from "../src/abap/zcl_mcp_bw_engine"
+import { getAbapEngineSource } from "../src/abap/zcl_mcp_abap_engine"
 
 describe("the engine's OpenAPI for SAP's MCP Gateway", () => {
   const api = buildOpenApi() as { openapi: string; paths: Record<string, { post: { operationId: string; requestBody: { content: { "application/json": { schema: { properties: object; required?: string[] } } } } } }> }
@@ -31,9 +32,21 @@ describe("the engine's OpenAPI for SAP's MCP Gateway", () => {
     expect(getEngineSource()).toContain("WHEN 'whoami'.")
   })
 
-  it("docs/gateway/zmcp_cust.openapi.json is current (npm run openapi)", () => {
-    const file = path.resolve(__dirname, "..", "docs", "gateway", "zmcp_cust.openapi.json")
-    expect(fs.readFileSync(file, "utf8")).toBe(JSON.stringify(api, null, 2) + "\n")
+  it("every docs/gateway/*.openapi.json is current (npm run openapi)", () => {
+    for (const [set, def] of Object.entries(GATEWAY_SETS)) {
+      const file = path.resolve(__dirname, "..", "docs", "gateway", def.file)
+      expect(fs.readFileSync(file, "utf8"), def.file).toBe(JSON.stringify(buildOpenApi(set as never), null, 2) + "\n")
+    }
+  })
+
+  it("the read-only ABAP set fits one gateway server, is all reads, and the ABAP class dispatches each", () => {
+    expect(ABAP_GATEWAY_OPERATIONS.length).toBeLessThanOrEqual(GATEWAY_TOOL_LIMIT)
+    const src = getAbapEngineSource()
+    for (const o of ABAP_GATEWAY_OPERATIONS) {
+      expect(o.write, o.op).toBeFalsy()
+      expect(src, o.op).toContain(`WHEN '${o.op}'.`)
+      for (const r of o.required ?? []) expect(Object.keys(o.props), `${o.op}.${r}`).toContain(r)
+    }
   })
 })
 

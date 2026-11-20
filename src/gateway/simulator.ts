@@ -25,7 +25,7 @@ import * as path from "path"
 import { execFileSync } from "child_process"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { GATEWAY_OPERATIONS, GATEWAY_TOOL_LIMIT } from "./openapi"
+import { GATEWAY_SETS, GATEWAY_TOOL_LIMIT, type GatewaySet } from "./openapi"
 
 // ─── IdP ─────────────────────────────────────────────────────────────────────
 
@@ -153,6 +153,8 @@ export interface GatewayOptions {
   forward: (token: string, path: string, body: unknown) => Promise<SapCall>
   /** Base path of the engine on SAP */
   basePath?: string
+  /** Which gateway MCP server: cust (default) or abap (read-only ABAP) */
+  set?: GatewaySet
 }
 
 const toZod = (s: Record<string, unknown>): z.ZodType => {
@@ -163,9 +165,10 @@ const toZod = (s: Record<string, unknown>): z.ZodType => {
 
 /** An MCP server with one tool per OpenAPI operation, as the gateway exposes them. */
 export function createGatewayServer(o: GatewayOptions): McpServer {
-  if (GATEWAY_OPERATIONS.length > GATEWAY_TOOL_LIMIT) throw new Error(`${GATEWAY_OPERATIONS.length} operations: the gateway takes at most ${GATEWAY_TOOL_LIMIT} per MCP server`)
+  const ops = GATEWAY_SETS[o.set ?? "cust"].ops
+  if (ops.length > GATEWAY_TOOL_LIMIT) throw new Error(`${ops.length} operations: the gateway takes at most ${GATEWAY_TOOL_LIMIT} per MCP server`)
   const server = new McpServer({ name: "sap-mcp-gateway-simulator", version: "1.0.0" })
-  for (const op of GATEWAY_OPERATIONS) {
+  for (const op of ops) {
     const shape: Record<string, z.ZodType> = {}
     for (const [k, s] of Object.entries(op.props)) shape[k] = op.required?.includes(k) ? toZod(s) : toZod(s).optional()
     server.registerTool(op.op, {

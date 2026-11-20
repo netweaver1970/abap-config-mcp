@@ -68,7 +68,9 @@ With the pattern `CN=${login_name}` and IAS login names equal to SAP user names,
 4. **MCP server in Integration Suite**: create an MCP server artifact with source type
    "HTTP endpoint with OpenAPI specification":
    - upload [`docs/gateway/zmcp_cust.openapi.json`](gateway/zmcp_cust.openapi.json) (24 operations,
-     one tool each; the gateway takes at most 30 per MCP server),
+     one tool each; the gateway takes at most 30 per MCP server), and for reading ABAP code a
+     second MCP server artifact from [`docs/gateway/zmcp_abap.openapi.json`](gateway/zmcp_abap.openapi.json)
+     (11 read-only operations) on the same destination,
    - point it at the destination `ZMCP_ENGINE`,
    - curate tool names and descriptions if you like, and leave out the write tools (`write`,
      `create`, `delete`, `org_copy`, `listing`, `transport_move`, `bw_create`, `bw_change`,

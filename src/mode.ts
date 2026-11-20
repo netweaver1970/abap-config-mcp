@@ -102,22 +102,29 @@ export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "img_search",
   // phase 2.5: BW objects through the engine's BW class (the same in both modes)
   "bw_capabilities", "bw_list", "bw_read", "bw_where_used", "bw_create", "bw_change", "bw_activate", "bw_delete",
+  // read-only ABAP through the engine's ZCL_MCP_ABAP_ENGINE (engine 0.11.0); handlers in tools/abapEngineRead.ts
+  "search_abap_objects", "get_abap_object_info", "get_abap_object_lines", "get_abap_batch_lines", "search_abap_object_lines",
+  "where_used", "version_history", "browse_package", "get_text_elements", "check_inactive_objects",
+  "search_database_tables", "describe_database_table", "syntax_check", "analyze_dump",
 ])
 
 type AnyFn = (...args: unknown[]) => unknown
 
 /**
- * Proxy an McpServer so registerTool() skips every tool outside the governed set. Same style as the
+ * Proxy an McpServer so registerTool() skips every tool outside the governed set, and registers the
+ * governed handler from `overrides` instead of the ADT one where there is one. Same style as the
  * risk-tier gating; the names left out are collected in `skipped`.
  */
-export function wrapServerWithModeGating(server: McpServer, skipped: string[]): McpServer {
+export function wrapServerWithModeGating(server: McpServer, skipped: string[],
+  overrides: Record<string, AnyFn> = {}): McpServer {
   return new Proxy(server, {
     get(target, prop) {
       if (prop === "registerTool") {
         const original = (target.registerTool as AnyFn).bind(target)
         return (name: string, config: unknown, handler: AnyFn) => {
           if (!GOVERNED_TOOLS.has(name)) { skipped.push(name); return undefined }
-          return original(name, config, handler)
+          // a tool that reads over ADT in direct mode gets its engine-backed handler here
+          return original(name, config, overrides[name] ?? handler)
         }
       }
       const value = Reflect.get(target, prop, target)

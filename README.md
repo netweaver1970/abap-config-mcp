@@ -28,7 +28,7 @@ To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#
 
 ### Two ways to run it
 
-By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles the code work. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing, the selftest, img_search (through the engine's own search), describe, read, diff and change plan for customizing (customizing tables only, delivery class C, G or E, with your display authorization checked in SAP and at most 1000 rows per read), apply and create with the same transport selection as direct mode, list_all_transports and get_transport_for_object (S_TRANSPRT display), org copy with its retest scope (row counts only, counted in SAP), transport_move with its dependency check, and the BW tools; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
+By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles code changes; reading code works in both modes. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing, the selftest, img_search (through the engine's own search), describe, read, diff and change plan for customizing (customizing tables only, delivery class C, G or E, with your display authorization checked in SAP and at most 1000 rows per read), apply and create with the same transport selection as direct mode, list_all_transports and get_transport_for_object (S_TRANSPRT display), org copy with its retest scope (row counts only, counted in SAP), transport_move with its dependency check, and the BW tools, and reading ABAP code: search, source, where-used, version history, packages, text elements, inactive objects, table search, syntax check and short dumps, through the engine's read-only class with your display authorization checked in SAP; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
 
 ### Acknowledgements
 
@@ -465,7 +465,8 @@ The engine can sit behind SAP's MCP Gateway (Integration Suite) with principal p
 Cloud Connector, so every call runs as the person who signed in to the agent. Each engine action
 has its own path (`/sap/bc/zmcp_cust/<action>`), the OpenAPI description the gateway imports is
 [`docs/gateway/zmcp_cust.openapi.json`](docs/gateway/zmcp_cust.openapi.json) (24 operations;
-`npm run openapi`), and the `whoami` action says which SAP user a call runs as and how it logged
+`npm run openapi`), with read-only ABAP as a second MCP server from
+[`docs/gateway/zmcp_abap.openapi.json`](docs/gateway/zmcp_abap.openapi.json) (11 operations), and the `whoami` action says which SAP user a call runs as and how it logged
 on. Full manual set-up, tested end to end in the ABAP system with a local stand-in for BTP:
 **[docs/PRINCIPAL_PROPAGATION.md](docs/PRINCIPAL_PROPAGATION.md)**.
 

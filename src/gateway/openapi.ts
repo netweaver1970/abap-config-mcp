@@ -55,10 +55,39 @@ export const GATEWAY_OPERATIONS: Op[] = [
   { op: "bw_delete", write: true, summary: "Delete a BW object", description: "Delete a BW object; a transported one is recorded on the request first, so the deletion travels. Dry run unless commit is true.", props: { tlogo, name: bwName, transport, commit }, required: ["tlogo", "name"] },
 ]
 
+// ─── read-only ABAP: a second MCP server on the same endpoint (the gateway takes 30 tools per server) ───
+const objType = str("Object type: PROG program, INCL include, CLAS class, INTF interface, FUGR function group, FUNC function module, TABL, VIEW, DTEL, DOMA, TTYP, TRAN, MSAG", { enum: ["PROG", "INCL", "CLAS", "INTF", "FUGR", "FUNC", "TABL", "VIEW", "DTEL", "DOMA", "TTYP", "TRAN", "MSAG"] })
+const objName = str("Exact object name, e.g. ZCL_ORDER_API or RFC_READ_TABLE")
+const language = str("One-character or ISO language (default the logon language)")
+
+export const ABAP_GATEWAY_OPERATIONS: Op[] = [
+  { op: "abap_search", summary: "Find ABAP objects", description: "Repository objects whose name matches a pattern (* as wildcard), with type, package and description; only objects the user may display.", props: { pattern: str("Name or pattern, e.g. ZCL_ORDER*"), object_type: objType, max_rows: maxRows, language }, required: ["pattern"] },
+  { op: "abap_info", summary: "Object details", description: "Package, author, dates, description, what the object belongs to and its parts (methods, function modules).", props: { object_type: objType, name: objName, language }, required: ["object_type", "name"] },
+  { op: "abap_source", summary: "Read ABAP source", description: "The active source of a program, include, class, interface, function group or function module. For a class, include picks a part.", props: { object_type: objType, name: objName, include: str("Class part: main (default), definitions, implementations, macros or testclasses", { enum: ["main", "definitions", "implementations", "macros", "testclasses"] }) }, required: ["object_type", "name"] },
+  { op: "abap_where_used", summary: "Where an object is used", description: "The programs, classes (with method) and function modules that use an object, from SAP's cross-reference index.", props: { object_type: objType, name: objName, max_rows: maxRows }, required: ["object_type", "name"] },
+  { op: "abap_versions", summary: "Version history", description: "Stored versions of an object (VRSD): version, date, author and transport request.", props: { object_type: objType, name: objName }, required: ["object_type", "name"] },
+  { op: "abap_package", summary: "Contents of a package", description: "The objects of a package, optionally with its direct sub-packages.", props: { package: str("Package, e.g. ZORDER_API"), subpackages: bool("Also the direct sub-packages (at most 25)"), max_rows: maxRows, language }, required: ["package"] },
+  { op: "abap_text_elements", summary: "Text elements", description: "Selection texts, text symbols and headings of a program, function group or class.", props: { object_type: objType, name: objName, language }, required: ["object_type", "name"] },
+  { op: "abap_inactive", summary: "Inactive objects", description: "Objects saved but not activated in the user's worklist.", props: { all_users: bool("Everyone's, not only the caller's") } },
+  { op: "abap_tables", summary: "Find tables and views", description: "Database tables and views by name pattern or by a word from their description.", props: { pattern: str("Name pattern, e.g. T001*"), keyword: str("Word from the description, e.g. plant"), max_rows: maxRows, language } },
+  { op: "abap_syntax", summary: "Syntax check", description: "Runs SAP's syntax check on an object's active version, or on a program source you supply; saves nothing. Reports the first error.", props: { object_type: objType, name: objName, source: str("A complete program source to check instead of the stored one (executable programs only)") }, required: ["object_type", "name"] },
+  { op: "abap_dumps", summary: "Short dumps (ST22)", description: "Recent runtime errors with program, include and line. The caller's own; all users' with S_DEVELOP display for DEBUG.", props: { days: int("How many days back (default 7, at most 90)", { minimum: 1, maximum: 90 }), all_users: bool("Everyone's dumps"), max_rows: maxRows } },
+]
+
+/** The operation sets, one MCP server in the gateway each. */
+export const GATEWAY_SETS = {
+  cust: { ops: GATEWAY_OPERATIONS, title: "abap-config-mcp Customizing Engine", file: "zmcp_cust.openapi.json",
+    what: "customizing, transports and BW objects through SAP's own APIs" },
+  abap: { ops: ABAP_GATEWAY_OPERATIONS, title: "abap-config-mcp ABAP (read-only)", file: "zmcp_abap.openapi.json",
+    what: "read-only ABAP: search, source, where-used, versions, packages, text elements, syntax check and short dumps" },
+} as const
+export type GatewaySet = keyof typeof GATEWAY_SETS
+
 /** SAP's MCP Gateway limit per MCP server artifact. */
 export const GATEWAY_TOOL_LIMIT = 30
 
-export function buildOpenApi(): Record<string, unknown> {
+export function buildOpenApi(set: GatewaySet = "cust"): Record<string, unknown> {
+  const def = GATEWAY_SETS[set]
   const response = {
     type: "object",
     properties: {
@@ -71,13 +100,13 @@ export function buildOpenApi(): Record<string, unknown> {
     },
   }
   const paths: Record<string, unknown> = {}
-  for (const o of GATEWAY_OPERATIONS) {
+  for (const o of def.ops) {
     paths[`/${o.op}`] = {
       post: {
         operationId: o.op,
         summary: o.summary,
         description: o.description + (o.write ? " Changes SAP when commit is true; the SAP user's own authorizations apply." : " Read-only."),
-        tags: [o.op.startsWith("bw_") ? "BW" : o.write ? "Customizing writes" : "Reads"],
+        tags: [o.op.startsWith("bw_") ? "BW" : o.op.startsWith("abap_") ? "ABAP (read-only)" : o.write ? "Customizing writes" : "Reads"],
         requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: o.props, ...(o.required?.length ? { required: o.required } : {}), additionalProperties: false } } } },
         responses: {
           "200": { description: "The engine's answer; STATUS says whether it worked", content: { "application/json": { schema: { $ref: "#/components/schemas/EngineResponse" } } } },
@@ -90,9 +119,9 @@ export function buildOpenApi(): Record<string, unknown> {
   return {
     openapi: "3.0.3",
     info: {
-      title: "abap-config-mcp Customizing Engine",
+      title: def.title,
       version: ENGINE_VERSION,
-      description: "The in-system engine of abap-config-mcp (ZCL_MCP_CUST_ENGINE behind SICF node " + ENGINE_ICF_PATH + "): customizing, transports and BW objects through SAP's own APIs, as the calling SAP user. " +
+      description: "The in-system engine of abap-config-mcp (ZCL_MCP_CUST_ENGINE behind SICF node " + ENGINE_ICF_PATH + "): " + def.what + ", as the calling SAP user. " +
         "Each call runs as the SAP user the logon maps to; with SAP Cloud Connector principal propagation that is the end user (X.509 certificate mapped in SAP). Writes are dry runs unless commit is true.",
     },
     servers: [{ url: "https://{host}:{port}" + ENGINE_ICF_PATH, variables: { host: { default: "sap-host" }, port: { default: "44300" } } }],

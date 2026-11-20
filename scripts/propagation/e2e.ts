@@ -23,9 +23,9 @@ const pki = { dir: pkiDir, caCert: path.join(pkiDir, "ca.crt"), caKey: path.join
 const idp = createIdp()
 const foreignIdp = createIdp(idp.issuer, idp.audience)   // same names, other key: a forged token
 
-async function gatewayClient(token: () => string | undefined, cc: Partial<CloudConnectorOptions> = {}) {
+async function gatewayClient(token: () => string | undefined, cc: Partial<CloudConnectorOptions> = {}, set: "cust" | "abap" = "cust") {
   const ccOpts: CloudConnectorOptions = { idp, pki, mode, sapUrl, sapClient, resolve, clockSkewMinutes: skew, ...cc }
-  const server = createGatewayServer({ idp, token, forward: (t, p, b) => cloudConnectorCall(ccOpts, t, p, b) })
+  const server = createGatewayServer({ idp, token, set, forward: (t, p, b) => cloudConnectorCall(ccOpts, t, p, b) })
   const [a, b] = InMemoryTransport.createLinkedPair()
   await server.connect(a)
   const client = new Client({ name: "agent", version: "1" })
@@ -34,8 +34,8 @@ async function gatewayClient(token: () => string | undefined, cc: Partial<CloudC
 }
 
 const results: [string, boolean, string][] = []
-async function scenario(name: string, token: () => string | undefined, tool: string, args: Record<string, unknown>, expect: RegExp, cc: Partial<CloudConnectorOptions> = {}) {
-  const client = await gatewayClient(token, cc)
+async function scenario(name: string, token: () => string | undefined, tool: string, args: Record<string, unknown>, expect: RegExp, cc: Partial<CloudConnectorOptions> = {}, set: "cust" | "abap" = "cust") {
+  const client = await gatewayClient(token, cc, set)
   let text: string
   try {
     const r = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: 180_000 })
@@ -68,6 +68,16 @@ async function scenario(name: string, token: () => string | undefined, tool: str
   // only a mapping bound to the issuer (VUSREXTID with issuer, or a CERTRULE rule per issuer) refuses it.
   await scenario("certificate from a CA SAP does not trust: refused", good, "whoami", {}, /^(?!.*HTTP 200).*(Cloud Connector refused the call|HTTP 401)/,
     { signWith: { cert: path.join(pkiDir, "rogue.crt"), key: path.join(pkiDir, "rogue.key") } })
+
+  // the second gateway server: read-only ABAP through the engine, as the same user
+  const abapTools = await (await gatewayClient(good, {}, "abap")).listTools()
+  console.log(`\nABAP gateway server offers ${abapTools.tools.length} tools: ${abapTools.tools.map(t => t.name).join(", ")}\n`)
+  await scenario("read ABAP source through the gateway as that user", good, "abap_source", { object_type: "PROG", name: "ZMCP_CUST_WRITE" },
+    /HTTP 200 .*ok: .*REPORT zmcp_cust_write/i, {}, "abap")
+  await scenario("find ABAP objects through the gateway (only what the user may display)", good, "abap_search", { pattern: "ZCL_MCP_*" },
+    /HTTP 200 .*ok: .*ZCL_MCP_CUST_ENGINE/, {}, "abap")
+  await scenario("no sign-in: the ABAP server refuses too", () => undefined, "abap_source", { object_type: "PROG", name: "ZMCP_CUST_WRITE" },
+    /Gateway refused the call: no token/, {}, "abap")
 
   const failed = results.filter(r => !r[1]).length
   console.log(`\n${results.length - failed}/${results.length} scenarios passed (${mode} mode)`)

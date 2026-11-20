@@ -28,6 +28,7 @@ import {
 import { getWriterSource, WRITER_REPORT_NAME, WRITER_REPORT_URL } from "../abap/zmcp_cust_write"
 import { SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL, SCOPE_BATCH_MIN_BASIS, getScopeBatchSource, basisSupportsScopeBatch } from "../abap/zcl_mcp_scope_batch"
 import { BW_ENGINE_CLASS_NAME, BW_ENGINE_CLASS_URL, getBwEngineSource } from "../abap/zcl_mcp_bw_engine"
+import { ABAP_ENGINE_CLASS_NAME, ABAP_ENGINE_CLASS_URL, getAbapEngineSource } from "../abap/zcl_mcp_abap_engine"
 import { runSql, tableRows, col, type ResolvedMaint } from "./customizing"
 import { customizingSource, ddicDescribe } from "./customizingSource"
 import { selectTransport, rememberTransport, workKey } from "./transportSelection"
@@ -594,6 +595,14 @@ export async function handleEngineBootstrap(args: {
       description: "MCP engine: BW objects", why: "so the bw_* tools are not available" },
       client, pkg, args.transport, args.connectionId)
     lines.push(r.ok ? `${r.line} (optional, ${bw.line === "BW4HANA" ? "BW/4HANA" : "BW 7.5"} ${bw.release ?? ""})` : r.line)
+  }
+
+  // 5. ZCL_MCP_ABAP_ENGINE: read-only ABAP (search, source, where-used, ...) for governed mode and the gateway.
+  {
+    const r = await installOptionalClass({ name: ABAP_ENGINE_CLASS_NAME, url: ABAP_ENGINE_CLASS_URL, source: getAbapEngineSource(),
+      description: "MCP engine: read-only ABAP", why: "so the ABAP read actions do not work in governed mode" },
+      client, pkg, args.transport, args.connectionId)
+    lines.push(r.ok ? `${r.line} (read-only ABAP)` : r.line)
   }
 
   lines.push(
@@ -1520,7 +1529,7 @@ export async function handleEngineCleanup(args: {
 }) {
   if (args.confirm !== true) {
     return { content: [{ type: "text" as const, text:
-      `⚠️  This will delete the ABAP classes ${ENGINE_CLASS_NAME}, ${SCOPE_BATCH_CLASS_NAME} and ${BW_ENGINE_CLASS_NAME} (when present) from the system.\n` +
+      `⚠️  This will delete the ABAP classes ${ENGINE_CLASS_NAME}, ${SCOPE_BATCH_CLASS_NAME}, ${BW_ENGINE_CLASS_NAME} and ${ABAP_ENGINE_CLASS_NAME} (when present) from the system.\n` +
       `   The SICF service must be removed separately in transaction SICF.\n\n` +
       `   Re-run with confirm: true to proceed.` }] }
   }
@@ -1539,7 +1548,7 @@ export async function handleEngineCleanup(args: {
   }
 
   // The optional classes (batch counting on 7.50+, BW where BW exists); absent is fine.
-  for (const [name, url] of [[SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL], [BW_ENGINE_CLASS_NAME, BW_ENGINE_CLASS_URL]]) {
+  for (const [name, url] of [[SCOPE_BATCH_CLASS_NAME, SCOPE_BATCH_CLASS_URL], [BW_ENGINE_CLASS_NAME, BW_ENGINE_CLASS_URL], [ABAP_ENGINE_CLASS_NAME, ABAP_ENGINE_CLASS_URL]]) {
     try {
       await handleDeleteAbapObject({ url, connectionId: args.connectionId })
       lines.push(`🗑️  Deleted class ${name}`)

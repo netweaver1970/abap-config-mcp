@@ -404,6 +404,11 @@ CLASS zcl_mcp_cust_engine DEFINITION
       IMPORTING iv_body        TYPE string
                 iv_operation   TYPE string
       RETURNING VALUE(rv_json) TYPE string.
+    "! abap_* operations: the read-only ABAP class ZCL_MCP_ABAP_ENGINE, called dynamically.
+    METHODS dispatch_abap
+      IMPORTING iv_body        TYPE string
+                iv_operation   TYPE string
+      RETURNING VALUE(rv_json) TYPE string.
 
     "! S_TRANSPRT display (activity 03) for any request type.
     METHODS may_display_transports
@@ -727,6 +732,12 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
         " answers with a complete JSON response of the same shape.
         IF ls_resp-status <> 'error' AND to_lower( ls_req-operation ) CP 'bw_*'.
           lv_out = dispatch_bw( iv_body = lv_body iv_operation = ls_req-operation ).
+        ENDIF.
+
+        " Read-only ABAP operations (abap_*, but not abap_memory) go to ZCL_MCP_ABAP_ENGINE.
+        IF ls_resp-status <> 'error' AND lv_out IS INITIAL AND to_lower( ls_req-operation ) CP 'abap_*'
+        AND to_lower( ls_req-operation ) <> 'abap_memory'.
+          lv_out = dispatch_abap( iv_body = lv_body iv_operation = ls_req-operation ).
         ENDIF.
 
         " Dispatch
@@ -2247,6 +2258,28 @@ CLASS zcl_mcp_cust_engine IMPLEMENTATION.
       CATCH cx_sy_dyn_call_error.
         APPEND |{ iv_operation } stopped: the BW part of the engine (class ZCL_MCP_BW_ENGINE) is not installed on this system. | &&
                |Install it with the engine (it is installed where BW exists), then run bw_capabilities.| TO ls_err-messages.
+      CATCH cx_root INTO DATA(lx).
+        APPEND |{ iv_operation } stopped: { lx->get_text( ) }| TO ls_err-messages.
+    ENDTRY.
+    ls_err-status    = 'error'.
+    ls_err-operation = iv_operation.
+    ls_err-version   = c_version.
+    /ui2/cl_json=>serialize( EXPORTING data = ls_err pretty_name = /ui2/cl_json=>pretty_mode-none
+                             RECEIVING r_json = rv_json ).
+  ENDMETHOD.
+
+
+  METHOD dispatch_abap.
+    DATA ls_err TYPE ty_response.
+    TRY.
+        CALL METHOD ('ZCL_MCP_ABAP_ENGINE')=>('HANDLE')
+          EXPORTING iv_json     = iv_body
+                    iv_version  = c_version
+          RECEIVING rv_json     = rv_json.
+        RETURN.
+      CATCH cx_sy_dyn_call_error.
+        APPEND |{ iv_operation } stopped: the read-only ABAP part of the engine (class ZCL_MCP_ABAP_ENGINE) is not installed on this system. | &&
+               |Install or update the engine (abapGit, transport, or customizing_engine_bootstrap).| TO ls_err-messages.
       CATCH cx_root INTO DATA(lx).
         APPEND |{ iv_operation } stopped: { lx->get_text( ) }| TO ls_err-messages.
     ENDTRY.

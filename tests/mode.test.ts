@@ -45,6 +45,9 @@ const GOVERNED = [
   "list_all_transports", "get_transport_for_object", "customizing_apply", "customizing_create",
   "org_copy", "transport_move", "img_search",
   "bw_capabilities", "bw_list", "bw_read", "bw_where_used", "bw_create", "bw_change", "bw_activate", "bw_delete",
+  "search_abap_objects", "get_abap_object_info", "get_abap_object_lines", "get_abap_batch_lines", "search_abap_object_lines",
+  "where_used", "version_history", "browse_package", "get_text_elements", "check_inactive_objects",
+  "search_database_tables", "describe_database_table", "syntax_check", "analyze_dump",
 ].sort()
 
 /** A plausible engine answer per operation, so each governed tool runs to its end. */
@@ -198,6 +201,14 @@ describe("ADT guard in governed mode", () => {
       bw_capabilities: {}, bw_list: { type: "IOBJ" }, bw_read: { type: "IOBJ", name: "ZX" }, bw_where_used: { type: "IOBJ", name: "ZX" },
       bw_create: { type: "IOBJ", name: "ZX", definition: { details: { TYPE: "CHA" } } }, bw_change: { type: "IOBJ", name: "ZX" },
       bw_activate: { type: "IOBJ", name: "ZX" }, bw_delete: { type: "IOBJ", name: "ZX" },
+      search_abap_objects: { query: "ZCL*" }, get_abap_object_info: { url: "/sap/bc/adt/oo/classes/zcl_x" },
+      get_abap_object_lines: { url: "/sap/bc/adt/programs/programs/zreport/source/main" },
+      get_abap_batch_lines: { urls: ["/sap/bc/adt/programs/programs/zreport"] },
+      search_abap_object_lines: { url: "/sap/bc/adt/programs/programs/zreport", pattern: "select" },
+      where_used: { url: "/sap/bc/adt/oo/classes/zcl_x" }, version_history: { url: "/sap/bc/adt/oo/classes/zcl_x" },
+      browse_package: { packageName: "ZPKG" }, get_text_elements: { objectType: "PROG/P", objectName: "ZREPORT" },
+      search_database_tables: { keyword: "plant" }, describe_database_table: { tableName: "T001W" },
+      syntax_check: { url: "/sap/bc/adt/programs/programs/zreport/source/main", source: "REPORT zreport." },
     }
     for (const name of GOVERNED) {
       const r = await tools[name].handler(args[name] ?? {}, { sessionId: "s1" })
