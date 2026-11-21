@@ -17,7 +17,7 @@
   <rect x="80" y="190" width="1040" height="110" rx="18" fill="#14213D"/>
   <text x="110" y="238" font-size="30" font-weight="700" fill="#FFFFFF">AI agent</text>
   <text x="250" y="238" font-size="24" fill="#DCE6F0">Claude · Microsoft 365 Copilot · Cursor · any MCP client</text>
-  <text x="110" y="278" font-size="22" fill="#AFC3D9">You sign in once with your company identity (SAP Cloud Identity Services)</text>
+  <text x="110" y="278" font-size="22" fill="#AFC3D9">Both paths log on as you: ADT with your project logon, the gateway with your company sign-in</text>
 
   <!-- column labels -->
   <text x="80" y="362" font-size="18" font-weight="700" fill="#5A6472" letter-spacing="1.5">CODE CHANGES · SAP STANDARD</text>
@@ -26,7 +26,7 @@
   <!-- left column: SAP's ABAP MCP server -->
   <rect x="80" y="380" width="480" height="140" rx="18" fill="#F1F3F5" stroke="#5A6472" stroke-width="2"/>
   <text x="110" y="428" font-size="28" font-weight="700" fill="#2D3748">SAP's ABAP MCP server</text>
-  <text x="110" y="466" font-size="22" fill="#4A5568">in ADT for Eclipse or VS Code</text>
+  <text x="110" y="466" font-size="22" fill="#4A5568">runs in your IDE: ADT for Eclipse or VS Code</text>
   <text x="110" y="498" font-size="22" fill="#4A5568">write, activate, ATC, unit tests</text>
 
   <!-- right column: gateway + cloud connector -->
@@ -50,7 +50,8 @@
     <line x1="880" y1="712" x2="880" y2="776"/>
   </g>
   <g font-size="19" fill="#4A5568">
-    <text x="336" y="660">ADT</text>
+    <text x="336" y="640">your ADT logon</text>
+    <text x="336" y="666">RFC (SSO) or HTTP</text>
     <text x="896" y="562">OAuth token</text>
     <text x="896" y="752">mTLS, your certificate</text>
   </g>
@@ -62,11 +63,11 @@
   <text x="110" y="866" font-size="22" fill="#DCE6F0">Logs you on: your user, your authorizations, your name on every change</text>
 
   <rect x="110" y="896" width="420" height="234" rx="14" fill="#DCE6F0"/>
-  <text x="138" y="940" font-size="26" font-weight="700" fill="#14213D">ADT services</text>
-  <text x="138" y="974" font-size="20" fill="#2D3748">/sap/bc/adt</text>
-  <text x="138" y="1016" font-size="21" fill="#2D3748">Source code: write, activate</text>
-  <text x="138" y="1050" font-size="21" fill="#2D3748">Quality: ATC, ABAP Unit</text>
-  <text x="138" y="1084" font-size="21" fill="#2D3748">Debugging</text>
+  <text x="138" y="940" font-size="26" font-weight="700" fill="#14213D">ADT back end</text>
+  <text x="138" y="974" font-size="20" fill="#2D3748">the same as for ADT itself</text>
+  <text x="138" y="1016" font-size="21" fill="#2D3748">Read, edit, create, activate</text>
+  <text x="138" y="1050" font-size="21" fill="#2D3748">ATC, ABAP Unit</text>
+  <text x="138" y="1084" font-size="21" fill="#2D3748">Transports, short dumps</text>
 
   <rect x="560" y="896" width="530" height="234" rx="14" fill="#FFFFFF"/>
   <text x="588" y="940" font-size="26" font-weight="700" fill="#14213D">abap-config-mcp engine</text>
