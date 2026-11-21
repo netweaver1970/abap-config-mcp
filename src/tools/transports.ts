@@ -57,7 +57,7 @@ async function objectsOf(connectionId: string | undefined, trkorrs: string[]): P
 
 /**
  * Requests (at most 500, newest first) and, when asked, the objects of the newest 100:
- * SQL through ADT in direct mode, the engine's transports action in governed mode.
+ * SQL through ADT in legacy-adt mode, the engine's transports action in governed mode.
  */
 async function requestListing(connectionId: string | undefined, statuses: string[], owner: string | undefined, withObjects: boolean):
     Promise<{ rows: RequestRow[]; objects: Map<string, string[]>; capped: Set<string>; notes: string[] }> {

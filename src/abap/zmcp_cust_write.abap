@@ -1,5 +1,13 @@
 REPORT zmcp_cust_write NO STANDARD PAGE HEADING.
 
+* Background worker of the MCP customizing engine (abap-config-mcp). ZCL_MCP_CUST_ENGINE
+* schedules this report as a job for every commit (write, create, delete, org copy), so
+* the change runs in its own LUW as the calling user. Parameters arrive in INDX(ZP) under
+* the run id, the result goes back to INDX(ZR); the caller polls the engine's 'status'
+* operation. Do not run it by hand: without a run id it has nothing to do.
+* The engine, its modes, installation and authorizations: see ZCL_MCP_CUST_ENGINE.
+* Project and full documentation: https://github.com/netweaver1970/abap-config-mcp.
+
 " LOWER CASE is essential: the run_id is a mixed-case UUID (cl_system_uuid
 " create_uuid_c22).  Without it the selection-screen parameter upper-cases the
 " value, so this report can't find its own INDX(ZP) params (engine wrote them in

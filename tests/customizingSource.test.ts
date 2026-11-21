@@ -132,8 +132,8 @@ describe("the governed source", () => {
       /Describing T001W stopped: the engine on this system \(v0\.9\.36\) has no ddic_describe action.*Install it with abapGit/)
   })
 
-  it("direct mode keeps the ADT source", async () => {
-    delete process.env.ABAP_MCP_MODE
+  it("legacy-adt mode keeps the ADT source", async () => {
+    process.env.ABAP_MCP_MODE = "legacy-adt"
     resetServerModeForTests()
     const src = customizingSource("DEV")
     expect(src.kind).toBe("adt")

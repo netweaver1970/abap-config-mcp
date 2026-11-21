@@ -199,7 +199,7 @@ function settleScope(scope: OrgScope): OrgScope {
   return { ...scope, notCopied: cust.filter(counted), application: app.filter(counted), notProbed: [...cust, ...app].filter(t => !counted(t)) }
 }
 
-/** Build the three-section scope through ADT (direct mode). copiedSet = the copier's dependent tables (engine dry run). */
+/** Build the three-section scope through ADT (legacy-adt mode). copiedSet = the copier's dependent tables (engine dry run). */
 export async function buildOrgScope(client: ADTClient, args: ScopeArgs): Promise<OrgScope> {
   const { sourceKey, targetKey, deadline } = args
   const { tables, truncated } = await findKeyedTables(client, args.domain)

@@ -5,6 +5,8 @@ CLASS zcl_mcp_bw_engine DEFINITION
 
   "! BW part of the MCP engine (optional; installed where BW exists). Reached
   "! through ZCL_MCP_CUST_ENGINE, which hands every bw_* operation to HANDLE.
+  "! The engine, its modes, installation and authorizations: see ZCL_MCP_CUST_ENGINE.
+  "! Project and full documentation: https://github.com/netweaver1970/abap-config-mcp.
   "!
   "! Works on BW 7.5 (SAP_BW) and BW/4HANA (DW4CORE) without knowing which in
   "! advance: no BW function module, class or DDIC type is referenced statically.

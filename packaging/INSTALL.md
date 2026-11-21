@@ -35,9 +35,19 @@ Then create `~/.abap-mcp/connections.json`:
 }
 ```
 
-and restart Claude Code. `ABAP_MCP_CONFIG` (other file) and `ABAP_MCP_MAX_TIER`
-(`0` read-only, `1` + governed customizing, `2` everything) are honoured when set in the
-environment Claude Code starts from.
+and restart Claude Code. `ABAP_MCP_CONFIG` (other file), `ABAP_MCP_MAX_TIER`
+(`0` read-only, `1` + governed customizing, `2` everything) and `ABAP_MCP_MODE` are
+honoured when set in the environment Claude Code starts from.
+
+## Mode and the engine in SAP
+
+The server starts in **governed** mode: no ADT calls, everything through a small engine
+inside SAP, as the signed-in SAP user. Install the engine once per system with abapGit
+(online repository https://github.com/netweaver1970/abap-config-mcp, or the engine zip
+from the release) or by transport, and activate its SICF service `/sap/bc/zmcp_cust`.
+Its documentation is in SAP as well, at the top of class `ZCL_MCP_CUST_ENGINE`.
+For a sandbox or your own development system, `ABAP_MCP_MODE=legacy-adt` works over ADT
+as well (writing and testing code) and can install the engine itself.
 
 Update: bump the version in the repo, `npm run package`, commit the new marketplace
 folder; users run `/plugin marketplace update abap-config`.
@@ -46,7 +56,8 @@ folder; users run `/plugin marketplace update abap-config`.
 
 Double-click the `.mcpb` (or Settings → Extensions → Install extension…), then fill in
 URL / client / user / password — the password is stored in the OS keychain — or select a
-`connections.json` for several systems. Set **Max risk tier** to `0` for Production.
+`connections.json` for several systems. **Mode** is `governed` (default) or `legacy-adt`.
+Set **Max risk tier** to `0` for Production.
 
 ## Safety
 

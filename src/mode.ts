@@ -1,9 +1,9 @@
 /**
- * Server mode: "direct" (default) or "governed". See docs/specs/001-two-constellations.md.
+ * Server mode: "governed" (default) or "legacy-adt". See docs/specs/001-two-constellations.md.
  *
- *   direct    everything over ADT, as always.
- *   governed  no ADT call at all; only the tools that work through the engine's HTTP
- *             endpoint are registered, and the engine is never deployed from here.
+ *   governed    no ADT call at all; only the tools that work through the engine's HTTP
+ *               endpoint are registered, and the engine is never deployed from here.
+ *   legacy-adt  everything over ADT, as before 2.1 (then called "direct"; that name still works).
  *
  * Read once at startup. This module imports nothing that talks to SAP (not connections.ts),
  * so the connection layer, the tool registration and the entry points can all use it.
@@ -11,11 +11,11 @@
 import { loadConfig, type ConnectionConfig } from "./config"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
-export type ServerMode = "direct" | "governed"
+export type ServerMode = "governed" | "legacy-adt"
 
 let _mode: ServerMode | undefined
 
-/** The configured mode: ABAP_MCP_MODE, else "mode" in the server section of connections.json, else direct. */
+/** The configured mode: ABAP_MCP_MODE, else "mode" in the server section of connections.json, else governed. */
 export function serverMode(): ServerMode {
   if (_mode) return _mode
   const fromEnv = process.env.ABAP_MCP_MODE?.trim()
@@ -28,15 +28,17 @@ export function serverMode(): ServerMode {
       source = `"mode" in the server section of connections.json`
     }
   }
-  if (raw === undefined) return (_mode = "direct")
+  if (raw === undefined) return (_mode = "governed")
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : raw
-  if (v === "direct" || v === "governed") return (_mode = v)
+  if (v === "governed" || v === "legacy-adt") return (_mode = v)
+  if (v === "direct") return (_mode = "legacy-adt")   // the name before 2.1
   throw new Error(
-    `Reading the server mode stopped: ${source} is ${JSON.stringify(raw)}, and the only modes are "direct" and "governed". ` +
-    `Set it to "direct" (everything over ADT) or "governed" (no ADT calls), or remove it to get the default, direct.`)
+    `Reading the server mode stopped: ${source} is ${JSON.stringify(raw)}, and the only modes are "governed" and "legacy-adt". ` +
+    `Set it to "legacy-adt" (everything over ADT) or "governed" (no ADT calls), or remove it to get the default, governed.`)
 }
 
 export const isGoverned = (): boolean => serverMode() === "governed"
+export const isLegacyAdt = (): boolean => serverMode() === "legacy-adt"
 
 /** For tests: forget the mode read at startup. */
 export function resetServerModeForTests(): void { _mode = undefined }
@@ -46,7 +48,7 @@ export function resetServerModeForTests(): void { _mode = undefined }
 /** The refusal every ADT entry point gives in governed mode. */
 export function adtRefusal(purpose: string, connectionId: string): string {
   return `Calling ADT for ${purpose} on ${connectionId} stopped: this server runs in governed mode, which makes no ADT calls. ` +
-    `Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=direct.`
+    `Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=legacy-adt.`
 }
 
 /** Throw the three-part refusal when the server runs in governed mode. */
@@ -57,9 +59,9 @@ export function assertAdtAllowed(purpose: string, connectionId: string): void {
 // ─── Engine installation ─────────────────────────────────────────────────────
 
 export const GOVERNED_ENGINE_NOTE =
-  "this server does not deploy the engine in governed mode. Install it with abapGit, or transport it from a system where it was deployed in direct mode"
+  "this server does not deploy the engine in governed mode. Install it with abapGit, or transport it from a system where it was deployed in legacy-adt mode"
 
-/** What to do about a missing or outdated engine: the bootstrap tool in direct mode, the two routes in governed mode. */
+/** What to do about a missing or outdated engine: the bootstrap tool in legacy-adt mode, the two routes in governed mode. */
 export function engineFixHint(): string {
   return isGoverned() ? GOVERNED_ENGINE_NOTE : "run customizing_engine_bootstrap"
 }
@@ -80,7 +82,7 @@ export function assertGovernedLogon(connections: Pick<ConnectionConfig, "id" | "
     `Starting the HTTP server in governed mode stopped: connection${shared.length > 1 ? "s" : ""} ${list} ` +
     `${shared.length > 1 ? "log" : "logs"} on with one shared SAP user, and in governed mode every call must run as the person making it. ` +
     `Set "logon": "per-user" on ${shared.length > 1 ? "each of them" : "it"} in connections.json (every client then sends its own SAP user), ` +
-    `run the stdio server as your own user, or run this server with ABAP_MCP_MODE=direct.`)
+    `run the stdio server as your own user, or run this server with ABAP_MCP_MODE=legacy-adt.`)
 }
 
 // ─── Tool set ────────────────────────────────────────────────────────────────
@@ -123,7 +125,7 @@ export function wrapServerWithModeGating(server: McpServer, skipped: string[],
         const original = (target.registerTool as AnyFn).bind(target)
         return (name: string, config: unknown, handler: AnyFn) => {
           if (!GOVERNED_TOOLS.has(name)) { skipped.push(name); return undefined }
-          // a tool that reads over ADT in direct mode gets its engine-backed handler here
+          // a tool that reads over ADT in legacy-adt mode gets its engine-backed handler here
           return original(name, config, overrides[name] ?? handler)
         }
       }

@@ -45,7 +45,7 @@ export function refFromUrl(url: string): AbapRef | undefined {
 
 const enc = (s: string) => encodeURIComponent(s.toLowerCase())
 
-/** The ADT URL of an object, as ADT itself names it (so the URL works in direct mode too). */
+/** The ADT URL of an object, as ADT itself names it (so the URL works in legacy-adt mode too). */
 export function urlOf(type: string, name: string, group?: string): string {
   switch (type) {
     case "CLAS": return `/sap/bc/adt/oo/classes/${enc(name)}`

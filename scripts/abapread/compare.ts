@@ -1,4 +1,4 @@
-/** Run the ABAP read tools in direct mode (ADT) and governed mode (engine) on one system and print both. */
+/** Run the ABAP read tools in legacy-adt mode (ADT) and governed mode (engine) on one system and print both. */
 process.env.ABAP_MCP_TOOLS = "legacy"
 import { createMcpServer } from "../../src/server"
 import { resetServerModeForTests } from "../../src/mode"
@@ -19,7 +19,7 @@ const calls: [string, Record<string, unknown>][] = [
   ["analyze_dump", {}],
 ]
 ;(async () => {
-  for (const mode of ["direct", "governed"]) {
+  for (const mode of ["legacy-adt", "governed"]) {
     process.env.ABAP_MCP_MODE = mode; resetServerModeForTests()
     const tools = (createMcpServer() as any)._registeredTools
     console.log(`\n################ ${mode.toUpperCase()} ################`)

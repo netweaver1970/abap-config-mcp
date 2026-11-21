@@ -29,23 +29,33 @@ Create `~/.abap-mcp/connections.json`:
 - Optional environment variables, set before starting Claude Code:
   - `ABAP_MCP_CONFIG=/path/to/connections.json` — use a different file.
   - `ABAP_MCP_MAX_TIER=0` — read-only tool surface (1 = + governed customizing).
+  - `ABAP_MCP_MODE=legacy-adt` — work over ADT as well (writing and testing code,
+    installing the engine from here). The default, `governed`, makes no ADT calls.
 - Requires Node.js 18+ on the `PATH` (`node --version`).
 
 ## Claude Desktop extension (.mcpb)
 
 Settings → Extensions → SAP ABAP & Customizing → Configure. Either fill in one system
 (URL, client, user, password) or point **connections.json** at a file with several
-systems (the file wins when both are set). Lower **Max risk tier** to `0` for a
-read-only setup.
+systems (the file wins when both are set). **Mode** is `governed` (default) or
+`legacy-adt`. Lower **Max risk tier** to `0` for a read-only setup.
 
 ## SAP side
 
-- SAP NetWeaver 7.40+ or S/4HANA with ADT active in SICF (`/sap/bc/adt`).
+- SAP NetWeaver 7.40+ or S/4HANA.
+- **Governed mode (default):** the in-system engine must be installed, with abapGit
+  (online repository https://github.com/netweaver1970/abap-config-mcp, folder
+  `/abapgit/src/`, or the engine zip from a release) or by transport, and its SICF
+  service `/sap/bc/zmcp_cust` active. The engine's own documentation is the comment
+  block at the top of class `ZCL_MCP_CUST_ENGINE` (SE24 or ADT). Code changes go
+  through SAP's ADT MCP server or ADT in Eclipse.
+- **legacy-adt mode:** ADT active in SICF (`/sap/bc/adt`).
 - The SAP user's authorizations are the real limit: `S_DEVELOP` for code, `S_TABU_DIS`
   for table maintenance, `S_TRANSPRT` for transports, debug activities for debugging.
   A read-only user makes every write tool fail, which is right for Production.
-- Customizing tools need the in-system engine (`customizing_engine_ping` tells whether
-  it is installed; `customizing_engine_bootstrap` installs it into `$TMP` or a package).
+- `admin(action: "engine_ping")` tells whether the engine is installed and current. In
+  legacy-adt mode `admin(action: "engine_install")` installs it into `$TMP` or a package;
+  ask the user first.
 
 ## Checking it works
 

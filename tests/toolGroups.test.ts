@@ -47,23 +47,23 @@ afterEach(() => { setEnv(); vi.restoreAllMocks() })
 
 describe("grouped surface", () => {
   it("is the default, and legacy gives the old names", () => {
-    setEnv("direct")
+    setEnv("legacy-adt")
     expect(toolSurface()).toBe("grouped")
     const grouped = Object.keys(toolsOf(createMcpServer()))
     expect(grouped.length).toBeLessThanOrEqual(14)
     expect(grouped).toContain("abap")
-    setEnv("direct", "legacy")
+    setEnv("legacy-adt", "legacy")
     const legacy = Object.keys(toolsOf(createMcpServer()))
     expect(legacy.length).toBeGreaterThan(50)
     expect(legacy).toContain("search_abap_objects")
   })
 
   it("every legacy tool of the full direct surface is an action of some group, so nothing is lost", () => {
-    setEnv("direct", "legacy")
+    setEnv("legacy-adt", "legacy")
     const legacy = Object.keys(toolsOf(createMcpServer()))
     const grouped = new Set(TOOL_GROUPS.flatMap(g => g.actions.map(a => a.tool)))
     expect(legacy.filter(n => !grouped.has(n))).toEqual([])
-    setEnv("direct")
+    setEnv("legacy-adt")
     const names = Object.keys(toolsOf(createMcpServer()))
     expect(names.every(n => TOOL_GROUPS.some(g => g.name === n))).toBe(true)
   })
@@ -79,7 +79,7 @@ describe("grouped surface", () => {
   })
 
   it("read groups are read-only, write groups are not", () => {
-    setEnv("direct")
+    setEnv("legacy-adt")
     const tools = toolsOf(createMcpServer())
     for (const g of ["sap_system", "abap", "transport", "customizing", "bw"]) expect(tools[g].annotations.readOnlyHint, g).toBe(true)
     for (const g of ["abap_write", "transport_write", "customizing_write", "bw_write", "admin"]) expect(tools[g].annotations.readOnlyHint, g).toBe(false)
@@ -118,7 +118,7 @@ describe("grouped surface", () => {
   })
 
   it("a split action shows and takes only its own parameters", async () => {
-    setEnv("direct")
+    setEnv("legacy-adt")
     const tools = toolsOf(createMcpServer())
     expect(tools.transport.description).toContain("• mine — List a user's open requests (default: the connected user). Optional: username.")
     expect(tools.transport.description).not.toMatch(/• mine[^\n]*newOwner/)
@@ -132,7 +132,7 @@ describe("grouped surface", () => {
     expect(rewriteToolNames("Unknown operation: 'bw_list' at /sap/bc/adt/where_used")).toBe("Unknown operation: 'bw_list' at /sap/bc/adt/where_used")
     expect(rewriteToolNames("features: org_copy= cts_task=X")).toBe("features: org_copy= cts_task=X")
     expect(rewriteToolNames("use manage_transport_requests")).toBe('use transport(action: "mine" | "details") or transport_write(action: "create" | "release" | "delete" | "change_owner")')
-    setEnv("direct")
+    setEnv("legacy-adt")
     const all = Object.values(toolsOf(createMcpServer())).map(t => t.description).join("\n")
     expect(all).not.toMatch(/\bcustomizing_engine_bootstrap\b/)
   })

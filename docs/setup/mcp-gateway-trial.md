@@ -19,7 +19,7 @@ your own identity becomes your SAP user. Plan half a day for part 1 and most of 
 ## Before you start
 
 - An SAP system your machine can reach, with the engine at version 0.9.36 or later and its ICF
-  node `/sap/bc/zmcp_cust` active. `customizing_engine_ping` in direct mode shows both.
+  node `/sap/bc/zmcp_cust` active. `customizing_engine_ping` (in either mode) shows both.
 - Your own SAP user on it, and for part 2 an administrator who can use STRUST, the profile
   parameters and CERTRULE (on a sandbox, that's usually you).
 - Java 17 or 21 (SapMachine works) for the Cloud Connector.

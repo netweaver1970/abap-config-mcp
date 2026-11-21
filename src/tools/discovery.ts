@@ -7,7 +7,7 @@ import { ensureConnected, forceReconnect, listConnections, resolveConnectionId }
 function modeLine(): string {
   return serverMode() === "governed"
     ? "Mode: governed (no ADT calls; code work goes through SAP's ADT MCP server)"
-    : "Mode: direct (everything over ADT)"
+    : "Mode: legacy-adt (everything over ADT)"
 }
 
 export async function handleConnectedSystems() {

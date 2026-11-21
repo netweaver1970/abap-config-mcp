@@ -248,7 +248,7 @@ describe("transport_move — governed mode reads through the engine and plans th
     { from: "A1", to: "OTH", objects: ["ZREPORT"] },
     { from: "NOPE", to: "B1", objects: ["ZCL_A"] },
   ]
-  const run = async (mode: "direct" | "governed", args: (typeof scenarios)[number]) => {
+  const run = async (mode: "legacy-adt" | "governed", args: (typeof scenarios)[number]) => {
     process.env.ABAP_MCP_MODE = mode
     resetServerModeForTests()
     vi.mocked(callEngine).mockImplementation(async (_c, body) => engineFromDb(body as never) as never)
@@ -257,7 +257,7 @@ describe("transport_move — governed mode reads through the engine and plans th
 
   for (const args of scenarios) {
     it(`${args.from} → ${args.to} ${args.objects?.join(", ") ?? "(whole task)"}`, async () => {
-      const direct = await run("direct", args)
+      const direct = await run("legacy-adt", args)
       const governed = await run("governed", args)
       expect(governed).toBe(direct)
     })

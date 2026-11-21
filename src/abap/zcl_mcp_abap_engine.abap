@@ -11,6 +11,16 @@ CLASS zcl_mcp_abap_engine DEFINITION
   " tables, VRSD, DWINACTIV, the text pools, SNAP) and runs SYNTAX-CHECK, which saves
   " nothing. Every object is checked against S_DEVELOP display (ACTVT 03) for its type,
   " name and package before anything about it is returned.
+  "
+  " Operations: abap_search (TADIR by name pattern), abap_info, abap_source (programs,
+  " includes, classes, interfaces, function modules), abap_where_used (cross-reference
+  " index WBCROSSGT/CROSS/WBCROSSI), abap_versions (VRSD plus the active version),
+  " abap_package, abap_text_elements, abap_inactive (DWINACTIV), abap_tables (DD02L/DD02T),
+  " abap_syntax (SYNTAX-CHECK, first error only) and abap_dumps (SNAP, as ST22). Other
+  " users' dumps also need S_DEVELOP OBJTYPE DEBUG, ACTVT 03.
+  " Optional: without this class the abap_* operations answer that it is not installed.
+  " The engine, its modes, installation and authorizations: see ZCL_MCP_CUST_ENGINE.
+  " Project and full documentation: https://github.com/netweaver1970/abap-config-mcp
   PUBLIC SECTION.
     CLASS-METHODS handle
       IMPORTING iv_json        TYPE string

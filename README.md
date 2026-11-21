@@ -22,13 +22,28 @@ A few things I cared about while building it:
 - It runs the way your landscape needs it: on your own machine, as a shared server for a team, in Docker, or as a Claude Desktop extension.
 - Its engine can also sit behind SAP's MCP Gateway, so every call reaches SAP as the person who signed in ([5a](#5a-behind-saps-mcp-gateway-as-the-end-user)), and it installs through abapGit ([5b](#5b-installing-the-engine-with-abapgit)).
 
-The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps. It offers 13 tools, one per area, each with an action (`ABAP_MCP_TOOLS=legacy` keeps the earlier one-tool-per-operation names); SQL and table reading stay off until you switch them on. It works from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
+The ABAP side is complete too: search, read, write, activate, ATC, unit tests, debugger, where-used, short dumps (writing and testing code in `legacy-adt` mode, see [Two ways to run it](#two-ways-to-run-it)). It offers 13 tools, one per area, each with an action (`ABAP_MCP_TOOLS=legacy` keeps the earlier one-tool-per-operation names); SQL and table reading stay off until you switch them on. It works from Claude, Cursor, Microsoft 365 Copilot or any other MCP client. More on the customizing engine in [docs/customizing-engine.md](docs/customizing-engine.md).
 
 To try it: `npx -y -p abap-config-mcp abap-config-mcp-stdio`, or see [Install](#1-install) for Docker, the Claude Desktop extension or building it yourself.
 
 ### Two ways to run it
 
-By default (direct mode) it does everything itself over ADT, which suits your own sandbox and development systems. In governed mode (`ABAP_MCP_MODE=governed`) it makes no ADT calls at all and works only through its engine inside SAP, next to SAP's own ADT MCP server, which handles code changes; reading code works in both modes. Governed mode needs per-user logon when the server is shared. In this release governed mode offers the engine's status, the memory reports, the retail listing, the selftest, img_search (through the engine's own search), describe, read, diff and change plan for customizing (customizing tables only, delivery class C, G or E, with your display authorization checked in SAP and at most 1000 rows per read), apply and create with the same transport selection as direct mode, list_all_transports and get_transport_for_object (S_TRANSPRT display), org copy with its retest scope (row counts only, counted in SAP), transport_move with its dependency check, and the BW tools, and reading ABAP code: search, source, where-used, version history, packages, text elements, inactive objects, table search, syntax check and short dumps, through the engine's read-only class with your display authorization checked in SAP; the plan is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
+Since 2.1 the server starts in **governed mode** unless you say otherwise. It then makes no ADT calls at all. Every call goes to a small engine inside SAP, runs as your own SAP user and is checked against your authorizations there. Code changes stay with SAP's ADT MCP server or ADT in Eclipse.
+
+| | `governed` (default) | `legacy-adt` |
+|---|---|---|
+| How it reaches SAP | only the engine's endpoint `/sap/bc/zmcp_cust` | ADT (`/sap/bc/adt`) and the engine |
+| Customizing and IMG: search, describe, read, diff, plan, copy, create, org copy, retail listing | yes | yes |
+| Transports: list, find the request for an object, move objects with a dependency check | yes | yes, plus create, release, delete and change owner |
+| BW modelling objects | yes | yes |
+| Reading ABAP code: search, source, where-used, versions, packages, text elements, inactive objects, tables, syntax check, short dumps | yes, read-only, with S_DEVELOP display checked per object | yes |
+| Writing and activating code, ATC, unit tests, debugger, running a class | no | yes |
+| Installing the engine | with abapGit or a transport ([5b](#5b-installing-the-engine-with-abapgit)) | also from the server itself (`admin(action: "engine_install")`) |
+| Shared HTTP server | every connection must log on per user ([per-user logon](#per-user-logon-on-the-shared-server)) | per-user or one shared SAP user |
+
+Choose the mode with `ABAP_MCP_MODE` or `"mode"` in the `server` section of `connections.json`. `legacy-adt` was called `direct` before 2.1, and `direct` still works. If you used 2.0 or earlier without setting a mode, set `"mode": "legacy-adt"` to keep working as before.
+
+The engine documents itself in SAP too: open class `ZCL_MCP_CUST_ENGINE` in SE24 or ADT. The comment block at its top explains what the engine is, who it runs as, its operations, the authorizations it checks, how writes work, and how to install, check, upgrade and remove it. The other objects point back to it. The phased plan behind the modes is in [docs/specs/001-two-constellations.md](docs/specs/001-two-constellations.md).
 
 ### Acknowledgements
 
@@ -77,6 +92,8 @@ The AI handles the full workflow autonomously: search → read → write → che
 | **BW objects** | 8 tools | `bw_capabilities`, `bw_list`, `bw_read`, `bw_where_used` for every BW object type in BW's registry; `bw_create`, `bw_change`, `bw_activate`, `bw_delete` through BW's own ABAP APIs (InfoObjects so far), dry run by default, Workbench transport recording. BW 7.5 and BW/4HANA, detected at run time; never through ADT, so the same in both modes. Needs BW set up in the connection's client. |
 | **Operations** | 4 tools | Force re-login to heal a degraded ADT session, HANA and ABAP memory reports, install the in-system ABAP as local or transportable (`engine_deploy`) |
 
+In governed mode, the default, the code-writing, activation, quality, debugging and ADT-only rows are left out and the rest goes through the engine; see [Two ways to run it](#two-ways-to-run-it).
+
 ---
 
 ## Quick start
@@ -110,6 +127,8 @@ The quickest start is to let your AI client start the server itself. There's no 
   }
 }
 ```
+
+This starts in governed mode, so the engine must be installed in that SAP system first: [5b](#5b-installing-the-engine-with-abapgit) shows how with abapGit. To work over ADT instead, without an engine (sandbox, your own development system), add `"ABAP_MCP_MODE": "legacy-adt"` to `env`.
 
 With more than one SAP system, leave out the `SAP_*` variables and list the systems in `~/.abap-mcp/connections.json` (format below), or point `ABAP_MCP_CONFIG` at that file. The rest of this Quick start is about the shared HTTP server, the setup for a team.
 
@@ -175,13 +194,15 @@ npm run test-connection            # tests the first configured connection
 npm run test-connection -- CAR     # tests a specific connection by id
 ```
 
-The test logs in, fetches the ADT discovery endpoint, and runs a sample object search. It prints specific troubleshooting hints (port, client, credentials, ICF node) if anything fails.
+The test logs in, fetches the ADT discovery endpoint, and runs a sample object search. It prints specific troubleshooting hints (port, client, credentials, ICF node) if anything fails. It needs ADT; in governed mode, check the connection once the server runs with `admin(action: "engine_ping")`, which also shows the engine's version.
 
 ### 4. Start the server
 
 ```bash
 npm start
 ```
+
+In governed mode, the default, the shared server only starts when every connection has `"logon": "per-user"` (see [per-user logon](#per-user-logon-on-the-shared-server)), so every call runs as the person making it. For one shared SAP user, as in the example above, set `"mode": "legacy-adt"` in the `server` section. The startup message says which connections stop it.
 
 You should see the startup banner (your version numbers may be newer):
 
@@ -477,13 +498,14 @@ The engine is also an abapGit repository: [`abapgit/`](abapgit/) holds the class
 and `ZCL_MCP_DIAG`, the report `ZMCP_CUST_WRITE` and the SICF nodes `/sap/bc/zmcp_cust` and
 `/sap/bc/zmcp_diag`. It is generated from the same ABAP the server deploys (`npm run abapgit`,
 which also writes the offline zip `release/abap-config-mcp-engine-<version>.zip`), and a test keeps
-it current. This is the route for governed mode, where the server deploys nothing.
+it current. This is the route for governed mode, the default, where the server deploys nothing.
+Each object carries its own documentation in its source, starting with `ZCL_MCP_CUST_ENGINE`.
 
 1. Create a package for it (for example `ZMCP_ENGINE`, transportable, or `$MCP_ENGINE`, local).
 2. In abapGit: **New Offline** for that package, then **Import zip** with the release zip (or
    **New Online** with this Git repository; the root `.abapgit.xml` points abapGit at `abapgit/src/`).
 3. **Pull**. In a transportable package abapGit asks for a Workbench request.
-4. Check it with `admin(action: "engine_ping")` and `abap_test(action: "unit")` on
+4. Check it with `admin(action: "engine_ping")`, and run the ABAP Unit tests of
    `ZCL_MCP_CUST_ENGINE`.
 
 Notes:
@@ -1757,7 +1779,7 @@ Parameters:
 | Variable | Description |
 |---|---|
 | `ABAP_MCP_CONFIG` | Path to config JSON file (overrides default search paths) |
-| `ABAP_MCP_MODE` | `direct` (default) or `governed`; `governed` makes no ADT calls and registers only the engine-based tools. Also settable as `"mode"` in the `server` section of the config file; the variable wins |
+| `ABAP_MCP_MODE` | `governed` (default) or `legacy-adt` (`direct` before 2.1, still accepted); `governed` makes no ADT calls and registers only the engine-based tools. Also settable as `"mode"` in the `server` section of the config file; the variable wins. See [Two ways to run it](#two-ways-to-run-it) |
 | `ABAP_MCP_DATA_TOOLS` | `1` switches on `execute_data_query` and `read_table_contents`, off by default; see [SAP's API Policy](#6-saps-api-policy-where-this-server-stands) |
 
 ---
@@ -1765,7 +1787,8 @@ Parameters:
 ## SAP system requirements
 
 - SAP NetWeaver 7.40+ or SAP S/4HANA
-- ADT (ABAP Development Tools) REST service enabled — activate in SICF: `/sap/bc/adt`
+- Governed mode: the engine installed ([5b](#5b-installing-the-engine-with-abapgit)) and its SICF service `/sap/bc/zmcp_cust` active
+- legacy-adt mode: ADT (ABAP Development Tools) REST service enabled — activate in SICF: `/sap/bc/adt`
 - User with development authorizations: `S_DEVELOP`, `S_TCODE` for `SE80`
 - For debugging: `S_ADMI_FCD` with `PADM` activity or equivalent debug authorization
 

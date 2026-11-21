@@ -23,6 +23,11 @@ authorizations are the real control, but treat every write as a change to a shar
    paste a password into the chat; they put it in the config file or the install form.
 3. If calls fail with a session/CSRF/"not logged on" error, call `admin(action: "relogin")`
    once, then retry.
+4. The first line of that answer gives the mode. **governed** (the default) makes no ADT
+   calls: customizing, transports, BW and reading code work through the engine in SAP,
+   but `abap_write`, `abap_test` (except syntax), `abap_debug` and the engine install are
+   not offered. Do code changes with SAP's ADT MCP server if the client has it; otherwise
+   say so. **legacy-adt** offers everything over ADT.
 
 ## Ground rules
 
@@ -95,8 +100,10 @@ program in SAP → `abap_debug(action: "stack")` / `abap_debug(action: "variable
 4. Commits run as a background job: poll `customizing(action: "status")` with the `runId`
    until done.
 5. The engine must be installed in the box: `admin(action: "engine_ping")` checks version
-   and client capabilities; if it is missing or stale, ask before
-   `admin(action: "engine_install")`.
+   and client capabilities. If it is missing or stale: in governed mode tell the user to
+   install or pull it with abapGit (or transport it); in legacy-adt mode ask before
+   `admin(action: "engine_install")`. Its own documentation is at the top of class
+   `ZCL_MCP_CUST_ENGINE` in SAP.
 Writes go through the standard SM30/SM34 view runtime, so FK checks, change documents
 and transport recording happen as in a manual change.
 

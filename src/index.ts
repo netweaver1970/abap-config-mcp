@@ -321,7 +321,7 @@ async function start(): Promise<void> {
   // alive by the time the first tool call arrives.  Fire-and-forget; failures
   // are logged but don't block server startup (SAP may be briefly unreachable).
   // Disable with ABAP_NO_WARMUP=1.
-  if (!process.env.ABAP_NO_WARMUP && mode === "direct") {   // governed mode makes no ADT call, so there is no session to warm up
+  if (!process.env.ABAP_NO_WARMUP && mode === "legacy-adt") {   // governed mode makes no ADT call, so there is no session to warm up
     const conns = listConnections()
     // A SOAP RFC connection has no session to warm up, and a per-user one has no user until a client sends one.
     if (conns.length > 0 && conns[0].protocol !== "soap-rfc" && conns[0].logon !== "per-user") {

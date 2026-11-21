@@ -5,7 +5,7 @@
  * search configuration and, on S4 (2026-09-17), returned nothing at all for a
  * user with two open requests. The tables are the authority.
  *
- * Direct mode reads them with SQL through ADT; governed mode asks the engine's
+ * Legacy-adt mode reads them with SQL through ADT; governed mode asks the engine's
  * transports and transport_info actions, which read the same tables inside SAP
  * behind an S_TRANSPRT display check (docs/specs/001-two-constellations.md).
  */

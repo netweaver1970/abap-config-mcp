@@ -1,4 +1,7 @@
-# 001: Two constellations, direct and governed
+# 001: Two constellations, legacy-adt and governed
+
+> Since 2.1 (21 Nov 2026) governed is the default and the ADT constellation is called **legacy-adt**.
+> This spec was written when it was called **direct**; below, "direct" means legacy-adt.
 
 Status: draft, 12 Nov 2026. Items marked NEEDS CONFIRMATION are open.
 
@@ -21,8 +24,9 @@ in-system engine, which is customer-namespace code.
 
 ## The switch
 
-- `ABAP_MCP_MODE=direct|governed`, or `"mode"` in the `server` section of `connections.json`.
-  The environment variable wins. Default `direct`.
+- `ABAP_MCP_MODE=governed|legacy-adt`, or `"mode"` in the `server` section of `connections.json`.
+  The environment variable wins. Default `governed` since 2.1 (`direct` before); `direct` is still
+  accepted as the old name of `legacy-adt`.
 - Read once at startup; changing it needs a restart. One mode per server process.
 - `connected_systems` and the startup log state the mode.
 - NEEDS CONFIRMATION: a per-connection override (`"mode"` on a connection) for landscapes that
@@ -356,3 +360,24 @@ Tested on CAR: every action called in SAP; the fourteen tools in both modes side
 scenarios. Not yet on S4 (unreachable during the test). Limits: where-used depends on SAP's
 cross-reference index; the syntax check reports the first error, and checks a supplied source for
 executable programs only (other objects: the stored version).
+
+Tested on S4 on 2026-11-21 as well: engine installed, the fourteen tools match between the modes
+(two expected differences: a package that does not exist is reported as such instead of as empty,
+and dumps cover the last 7 days by default), the gateway chain 11/11 in both Cloud Connector modes.
+
+## Governed by default, direct renamed legacy-adt (2026-11-21, 2.1, engine 0.11.1)
+
+With code reading in place, governed mode covers the daily work outside code changes, so it is the
+default for new installs. Direct mode is now called legacy-adt: it still works and is still tested,
+but it is the route for sandboxes and one's own development systems, not the recommended setup.
+
+- `serverMode()` returns `governed` when nothing is set; `legacy-adt` and the old name `direct`
+  select the ADT mode. An installation that relied on the old default sets `"mode": "legacy-adt"`.
+- In governed mode the shared HTTP server still needs per-user logon on every connection (rule 4);
+  stdio runs as its own user and is exempt. The startup message names the connections that stop it.
+- The Claude Desktop extension asks for the mode in its install form, default governed.
+- The engine documents itself in SAP: a comment block at the top of ZCL_MCP_CUST_ENGINE covers what
+  it is, who it runs as, its operations, the authorizations it checks, how writes work and how to
+  install, check, upgrade and remove it, with the GitHub repository for the rest. The other engine
+  objects describe their own part and point to it. Engine 0.11.1 carries only that documentation;
+  installed on CAR through abapGit (round trip identical) and on S4 through ADT.

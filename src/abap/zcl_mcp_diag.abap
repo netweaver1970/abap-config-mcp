@@ -8,6 +8,8 @@ CLASS zcl_mcp_diag DEFINITION
 * SAPTUNE). NO repository or customizing writes — safe to transport to and run
 * in Production independently of the MCP. Operations: ping, hana_memory,
 * abap_memory, wp_detail. Companion endpoint /sap/bc/zmcp_diag.
+* Runs as the logged-on user, like ZCL_MCP_CUST_ENGINE (see there for the engine).
+* Project and full documentation: https://github.com/netweaver1970/abap-config-mcp.
 
   PUBLIC SECTION.
     INTERFACES if_http_extension.

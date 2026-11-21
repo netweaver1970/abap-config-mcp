@@ -77,7 +77,7 @@ function engineByOperation(req: string): string {
 }
 
 const ADT_REFUSAL = "Calling ADT for X on DEV stopped: this server runs in governed mode, which makes no ADT calls. " +
-  "Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=direct."
+  "Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=legacy-adt."
 
 function toolsOf(server: McpServer): Record<string, { handler: (args: unknown, extra: unknown) => Promise<{ content: { text: string }[] }> }> {
   return (server as unknown as { _registeredTools: never })._registeredTools
@@ -102,9 +102,16 @@ beforeEach(() => {
 afterEach(() => { setMode(undefined); vi.restoreAllMocks() })
 
 describe("mode switch", () => {
-  it("defaults to direct", () => {
+  it("defaults to governed", () => {
     setMode(undefined)
-    expect(serverMode()).toBe("direct")
+    expect(serverMode()).toBe("governed")
+  })
+
+  it("takes direct, the name before 2.1, as legacy-adt", () => {
+    setMode("direct")
+    expect(serverMode()).toBe("legacy-adt")
+    setMode("Legacy-ADT")
+    expect(serverMode()).toBe("legacy-adt")
   })
 
   it("reads ABAP_MCP_MODE", () => {
@@ -114,7 +121,7 @@ describe("mode switch", () => {
 
   it("refuses an unknown value with what, why and what to do", () => {
     setMode("sandbox")
-    expect(() => serverMode()).toThrow(/Reading the server mode stopped: ABAP_MCP_MODE is "sandbox", and the only modes are "direct" and "governed"\. Set it to/)
+    expect(() => serverMode()).toThrow(/Reading the server mode stopped: ABAP_MCP_MODE is "sandbox", and the only modes are "governed" and "legacy-adt"\. Set it to/)
   })
 
   it("lets the environment variable win over the config file", async () => {
@@ -124,9 +131,9 @@ describe("mode switch", () => {
     delete process.env.ABAP_MCP_MODE
     fresh.resetServerModeForTests()
     expect(fresh.serverMode()).toBe("governed")           // from the file
-    process.env.ABAP_MCP_MODE = "direct"
+    process.env.ABAP_MCP_MODE = "legacy-adt"
     fresh.resetServerModeForTests()
-    expect(fresh.serverMode()).toBe("direct")             // env wins
+    expect(fresh.serverMode()).toBe("legacy-adt")         // env wins
     vi.doUnmock("../src/config")
     vi.resetModules()
   })
@@ -140,19 +147,21 @@ describe("tool set", () => {
     expect([...GOVERNED_TOOLS].sort()).toEqual(GOVERNED)
   })
 
-  it("direct mode registers the full set, a superset of the governed one", () => {
-    setMode("direct")
+  it("legacy-adt mode registers the full set, a superset of the governed one", () => {
+    setMode("legacy-adt")
     const direct = Object.keys(toolsOf(createMcpServer()))
     expect(direct.length).toBeGreaterThan(50)
     for (const t of GOVERNED) expect(direct).toContain(t)
     for (const t of ["write_abap_object_source", "engine_deploy", "customizing_engine_bootstrap", "customizing_apply"]) expect(direct).toContain(t)
   })
 
-  it("direct mode registers the same tools as with the mode unset", () => {
+  it("governed mode is what an unset mode registers, and direct still means legacy-adt", () => {
     setMode(undefined)
-    const unset = Object.keys(toolsOf(createMcpServer())).sort()
+    expect(Object.keys(toolsOf(createMcpServer())).sort()).toEqual(GOVERNED)
+    setMode("legacy-adt")
+    const legacy = Object.keys(toolsOf(createMcpServer())).sort()
     setMode("direct")
-    expect(Object.keys(toolsOf(createMcpServer())).sort()).toEqual(unset)
+    expect(Object.keys(toolsOf(createMcpServer())).sort()).toEqual(legacy)
   })
 })
 
@@ -161,7 +170,7 @@ describe("ADT guard in governed mode", () => {
     setMode("governed")
     await expect(ensureConnected("DEV")).rejects.toThrow(
       "Calling ADT for this call on DEV stopped: this server runs in governed mode, which makes no ADT calls. " +
-      "Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=direct.")
+      "Use SAP's ADT MCP server for code work, or run this server with ABAP_MCP_MODE=legacy-adt.")
     expect(adtConstructed.n).toBe(0)
   })
 
@@ -220,8 +229,8 @@ describe("ADT guard in governed mode", () => {
     expect(engineReply.requests.length).toBeGreaterThan(0)   // they did reach the engine's endpoint
   })
 
-  it("a direct-mode run of an ADT tool does build a client", async () => {
-    setMode("direct")
+  it("a legacy-adt run of an ADT tool does build a client", async () => {
+    setMode("legacy-adt")
     await expect(ensureConnected("DEV")).rejects.toThrow("ADT client constructed")
     expect(adtConstructed.n).toBe(1)
   })
@@ -230,9 +239,9 @@ describe("ADT guard in governed mode", () => {
     setMode("governed")
     const r = await toolsOf(createMcpServer()).connected_systems.handler({}, { sessionId: "s1" })
     expect(r.content[0].text.split("\n")[0]).toMatch(/^Mode: governed/)
-    setMode("direct")
+    setMode("legacy-adt")
     const d = await toolsOf(createMcpServer()).connected_systems.handler({}, { sessionId: "s1" })
-    expect(d.content[0].text.split("\n")[0]).toMatch(/^Mode: direct/)
+    expect(d.content[0].text.split("\n")[0]).toMatch(/^Mode: legacy-adt/)
   })
 })
 
@@ -249,7 +258,7 @@ describe("engine installation in governed mode", () => {
     setMode("governed")
     engineReply.status = 404
     engineReply.body = "<html>Not found</html>"
-    await expect(callEngine("DEV", { operation: "ping" })).rejects.toThrow(/Install it with abapGit, or transport it from a system where it was deployed in direct mode/)
+    await expect(callEngine("DEV", { operation: "ping" })).rejects.toThrow(/Install it with abapGit, or transport it from a system where it was deployed in legacy-adt mode/)
   })
 
   it("the ping reports a wrong version with the two routes, not the bootstrap tool", async () => {
@@ -260,8 +269,8 @@ describe("engine installation in governed mode", () => {
     expect(r.content[0].text).not.toContain("customizing_engine_bootstrap")
   })
 
-  it("direct mode keeps the old wording for a missing engine", async () => {
-    setMode("direct")
+  it("legacy-adt mode keeps the old wording for a missing engine", async () => {
+    setMode("legacy-adt")
     engineReply.status = 404
     engineReply.body = "<html>Not found</html>"
     await expect(callEngine("DEV", { operation: "ping" })).rejects.toThrow(/^Engine HTTP 404: <html>Not found<\/html>$/)
@@ -281,8 +290,8 @@ describe("rule 4: own users only", () => {
     expect(() => assertGovernedLogon([{ id: "S4", logon: "per-user" }, { id: "CAR", logon: "per-user" }])).not.toThrow()
   })
 
-  it("does not apply in direct mode", () => {
-    setMode("direct")
+  it("does not apply in legacy-adt mode", () => {
+    setMode("legacy-adt")
     expect(() => assertGovernedLogon([{ id: "S4" }])).not.toThrow()
   })
 })

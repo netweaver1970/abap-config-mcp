@@ -3,6 +3,96 @@ CLASS zcl_mcp_cust_engine DEFINITION
   FINAL
   CREATE PUBLIC.
 
+  " ===========================================================================================
+  " ZCL_MCP_CUST_ENGINE: the in-system engine of abap-config-mcp
+  " Project and full documentation: https://github.com/netweaver1970/abap-config-mcp
+  " This block is written so a basis or security colleague can understand, check and run the
+  " engine from SAP alone. The GitHub README has the same facts in more detail.
+  " ===========================================================================================
+  "
+  " WHAT IT IS
+  "   An HTTP handler (IF_HTTP_EXTENSION) behind the SICF service /sap/bc/zmcp_cust. An MCP
+  "   server (abap-config-mcp, or SAP's MCP Gateway with the OpenAPI files under docs/gateway in
+  "   the repository) lets an AI assistant work in SAP by sending one JSON request per call:
+  "     POST /sap/bc/zmcp_cust            body {"operation":"<op>", ...parameters}
+  "     POST /sap/bc/zmcp_cust/<op>       body with the parameters only
+  "   The answer is JSON: STATUS (ok, error, ...), VERSION (C_VERSION), MESSAGES and DATA_JSON.
+  "
+  " WHO IT RUNS AS
+  "   Always the SAP user that logged on to the ICF service: basic authentication, SSO, or an
+  "   X.509 certificate from principal propagation (SAP MCP Gateway + Cloud Connector). There is
+  "   no technical user, no RFC destination and no stored password. SAP's own authorization
+  "   checks decide what a call may do; the engine adds explicit checks where an API has none:
+  "     S_TABU_DIS / S_TABU_NAM  reading and maintaining customizing tables
+  "     S_TRANSPRT               reading and changing transport requests
+  "     S_DEVELOP ACTVT 03       reading ABAP code (and OBJTYPE DEBUG for other users' dumps)
+  "     BW's own authorizations  for the BW objects
+  "   Restrict who may call the service at all with S_ICF on the SICF node if you need to.
+  "
+  " THE TWO MODES OF THE MCP SERVER (set on the server, not here)
+  "   governed    (default since 2.1) the server makes no ADT calls; everything goes through
+  "               this endpoint. Code changes stay with SAP's ADT MCP server or ADT in Eclipse.
+  "   legacy-adt  (called "direct" before 2.1) the server also works over ADT (/sap/bc/adt):
+  "               writing and activating code, ATC, unit tests, debugging, and it can install
+  "               this engine itself.
+  "
+  " OBJECTS (one package, for example $MCP_ENGINE or a transportable Z package)
+  "   ZCL_MCP_CUST_ENGINE  this class: request dispatch, customizing, transports, IMG, reports
+  "   ZMCP_CUST_WRITE      report run as a background job for every commit, so a write runs in
+  "                        its own LUW and the caller polls 'status' with the RUN_ID
+  "   ZCL_MCP_ABAP_ENGINE  optional: the abap_* operations, read-only ABAP code access
+  "   ZCL_MCP_BW_ENGINE    optional: the bw_* operations, only where BW is installed
+  "   ZCL_MCP_SCOPE_BATCH  optional, SAP_BASIS 7.50 and later: batched row counts
+  "   SICF /sap/bc/zmcp_cust  the service, handler ZCL_MCP_CUST_ENGINE
+  "   (ZCL_MCP_DIAG with /sap/bc/zmcp_diag is a separate read-only diagnostics service.)
+  "   The optional classes are called dynamically. When one is missing, its operations answer
+  "   with an error that says so, and everything else works. Release floor: SAP_BASIS 7.40.
+  "
+  " OPERATIONS (R = reads only, W = can write, always as a dry run unless COMMIT = 'X')
+  "   ping            R  version, user, client role (T000), release, features
+  "   whoami          R  the logged-on user and how they logged on
+  "   ddic_describe   R  fields, keys, delivery class and maintenance views of a table
+  "   read            R  rows of a customizing table (delivery class C, G or E; max 1000)
+  "   img_index_read  R  the IMG (SPRO) tree;  img_search: R, search it by text
+  "   transports      R  transport requests and their objects (E070/E071)
+  "   transport_info  R  which request an object is or would be recorded on
+  "   dependencies    R  what objects on a request depend on, and the release order
+  "   retest_scope    R  row counts per table for an org-unit copy (counts only, no data)
+  "   write           W  copy or delete rows through the SM30/SM34 maintenance runtime
+  "   create          W  create rows from explicit values, through the same runtime
+  "   delete          W  delete rows, through the same runtime
+  "   org_copy        W  copy an organisational unit (plant, sales org, ...) the EC01 way
+  "   listing         W  retail article listing (WLK1) for an assortment
+  "   transport_move  W  move objects between transport requests, with a dependency check
+  "   status          R  progress and result of a commit that runs in the background
+  "   selftest        R  checks the engine's own mechanics (typing, a sample read, keys)
+  "   hana_memory     R  HANA memory report;  abap_memory: R, ABAP memory per work process
+  "   abap_search abap_info abap_source abap_where_used abap_versions abap_package
+  "   abap_text_elements abap_inactive abap_tables abap_syntax abap_dumps
+  "                   R  read-only ABAP code access, in ZCL_MCP_ABAP_ENGINE
+  "   bw_capabilities bw_list bw_read bw_where_used  R;  bw_create bw_change bw_activate
+  "   bw_delete       W  BW modelling objects through BW's own APIs, in ZCL_MCP_BW_ENGINE
+  "
+  " HOW WRITES WORK
+  "   Every write is a dry run first: it returns what would change. Only COMMIT = 'X' writes.
+  "   Customizing goes through the standard maintenance-view runtime (VIEW_MAINTENANCE_SINGLE_
+  "   ENTRY, SM30/SM34), so foreign-key checks, change documents and transport recording happen
+  "   as in a manual change. The caller names the transport request; the engine never invents
+  "   one, and it respects the client's change settings (T000-CCCORACTIV, SCC4).
+  "
+  " INSTALL, CHECK, UPGRADE, REMOVE
+  "   Install with abapGit: link the GitHub repository as an online repository (its root
+  "   .abapgit.xml points to /abapgit/src/), or import the engine zip from a release, into
+  "   one package; pull; activate the SICF service zmcp_cust. Or transport it from a system
+  "   where it is installed. In legacy-adt mode the server can install it itself.
+  "   Check: operation ping. VERSION must match what the MCP server expects; the server says so.
+  "   Unit tests: ABAP Unit on this class (local test classes, no data changed).
+  "   Upgrade: pull the new version in abapGit, or transport it.
+  "   Remove: delete the package's objects and the SICF service. Nothing else is created
+  "   outside the package, except INDX entries (RELID ZP, ZR, ZJ) for background commits,
+  "   which the engine ages out itself.
+  " ===========================================================================================
+
   PUBLIC SECTION.
     INTERFACES if_http_extension.
     CONSTANTS c_version TYPE string VALUE '{{ENGINE_VERSION}}'.

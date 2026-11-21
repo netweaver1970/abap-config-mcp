@@ -154,7 +154,7 @@ async function resolveCustomizingTransport(
 
 /**
  * The table's delivery class and client dependency (DD02L) and the client's recording
- * settings (T000): SQL through ADT in direct mode, the engine's ddic_describe in governed mode.
+ * settings (T000): SQL through ADT in legacy-adt mode, the engine's ddic_describe in governed mode.
  */
 async function recordingFacts(connectionId: string | undefined, table: string, client: string):
     Promise<{ dd02?: Record<string, string>; t000?: Record<string, string> }> {
@@ -936,7 +936,7 @@ export async function handleOrgCopy(args: {
         const scopeArgs = {
           domain: orgUnit, sourceKey: args.sourceKey, targetKey: args.targetKey!, copiedSet, deadline,
           only: typeof args.retestScope === "string" ? args.retestScope : undefined }
-        // Governed mode counts in SAP through the engine; direct mode with SQL through ADT.
+        // Governed mode counts in SAP through the engine; legacy-adt mode with SQL through ADT.
         const scope = isGoverned()
           ? await buildOrgScopeViaEngine((req, timeout) => callEngine(args.connectionId, req, args.icfPath, timeout), scopeArgs)
           : await buildOrgScope(await ensureConnected(args.connectionId), scopeArgs)

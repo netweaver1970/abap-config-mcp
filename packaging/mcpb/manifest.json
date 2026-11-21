@@ -3,8 +3,8 @@
   "name": "abap-config-mcp",
   "display_name": "SAP ABAP & Customizing",
   "version": "{{VERSION}}",
-  "description": "ABAP development over ADT and SPRO/IMG customizing with governed transports, for SAP NetWeaver and S/4HANA.",
-  "long_description": "Connects Claude to your SAP system through the ABAP Development Tools (ADT) REST API. Search, read, write, activate, ATC, unit tests, debugging, transports, where-used, ST22 dumps and table queries — plus an in-system customizing engine that drives the SM30/SM34 maintenance runtime, so configuration changes get FK checks, change documents and transport recording like a manual SPRO change. Every action runs as the SAP user you configure; intended for DEV and UAT, read-only on Production (set Max risk tier to 0).",
+  "description": "SPRO/IMG customizing with governed transports, transports, BW and ABAP code for SAP NetWeaver and S/4HANA, through an engine in SAP or over ADT.",
+  "long_description": "Connects Claude to your SAP system. By default (governed mode) every call goes through a small engine inside SAP, installed with abapGit, and runs as your SAP user with your authorizations: customizing, transports, BW and reading ABAP code. In legacy-adt mode it works over the ABAP Development Tools (ADT) REST API as well: search, read, write, activate, ATC, unit tests, debugging, transports, where-used, ST22 dumps and table queries — plus an in-system customizing engine that drives the SM30/SM34 maintenance runtime, so configuration changes get FK checks, change documents and transport recording like a manual SPRO change. Every action runs as the SAP user you configure; intended for DEV and UAT, read-only on Production (set Max risk tier to 0).",
   "author": {
     "name": "Geert Steyaert",
     "url": "https://github.com/netweaver1970"
@@ -41,7 +41,8 @@
         "SAP_PASSWORD": "${user_config.sap_password}",
         "SAP_LANGUAGE": "${user_config.sap_language}",
         "SAP_ALLOW_SELF_SIGNED": "${user_config.allow_self_signed}",
-        "ABAP_MCP_MAX_TIER": "${user_config.max_tier}"
+        "ABAP_MCP_MAX_TIER": "${user_config.max_tier}",
+        "ABAP_MCP_MODE": "${user_config.mode}"
       }
     }
   },
@@ -96,6 +97,13 @@
       "type": "file",
       "title": "connections.json (several systems)",
       "description": "Optional. A connections.json with one or more systems; when set, the single-system fields above are ignored.",
+      "required": false
+    },
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "governed (default): no ADT calls, everything through the engine in SAP, which you install with abapGit. legacy-adt: everything over ADT, including writing code and installing the engine from here.",
+      "default": "governed",
       "required": false
     },
     "max_tier": {

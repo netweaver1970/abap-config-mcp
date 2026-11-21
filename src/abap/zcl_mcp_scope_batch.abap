@@ -4,6 +4,7 @@ CLASS zcl_mcp_scope_batch DEFINITION
   CREATE PUBLIC.
 
   "! Optional part of the MCP customizing engine, for SAP_BASIS 7.50 and later.
+  "! The engine itself: see ZCL_MCP_CUST_ENGINE. Project and full documentation: https://github.com/netweaver1970/abap-config-mcp.
   "! The engine's retest_scope counts rows of up to thousands of tables; one SQL
   "! statement per table spends most of its time preparing statements. This class
   "! counts eight tables in one statement, a UNION ALL of eight dynamic branches,

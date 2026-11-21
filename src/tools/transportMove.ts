@@ -283,7 +283,7 @@ async function whereUsedSql(c: Client, objs: Map<string, string>): Promise<Map<s
 /**
  * Where transport_move gets its facts: the requests and tasks, their entries, a
  * function group's modules, the where-used index and the open holders of names.
- * Direct mode: SQL through ADT. Governed mode: the engine's dependencies action.
+ * Legacy-adt mode: SQL through ADT. Governed mode: the engine's dependencies action.
  */
 export interface MoveFacts {
   readRequests(trkorrs: string[]): Promise<Map<string, TrReq>>
@@ -498,7 +498,7 @@ const describeReq = (r: TrReq) => `${r.trkorr}${r.text ? ` "${r.text}"` : ""} ($
 
 export async function handleTransportMove(args: MoveArgs) {
   const fromId0 = args.from.trim().toUpperCase(), toId0 = args.to.trim().toUpperCase()
-  // Governed mode reads through the engine; direct mode with SQL through ADT.
+  // Governed mode reads through the engine; legacy-adt mode with SQL through ADT.
   const facts: MoveFacts = isGoverned()
     ? new EngineMoveFacts(req => callEngine(args.connectionId, req), fromId0, toId0)
     : new AdtMoveFacts(await ensureConnected(args.connectionId))
