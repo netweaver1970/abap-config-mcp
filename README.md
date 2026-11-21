@@ -482,6 +482,8 @@ full deployment + capability-awareness story.
 
 ### 5a. Behind SAP's MCP Gateway, as the end user
 
+![abap-config-mcp behind SAP's MCP Gateway, next to SAP's own ABAP MCP server](docs/media/gateway-coexistence.png)
+
 The engine can sit behind SAP's MCP Gateway (Integration Suite) with principal propagation through
 Cloud Connector, so every call runs as the person who signed in to the agent. Each engine action
 has its own path (`/sap/bc/zmcp_cust/<action>`), the OpenAPI description the gateway imports is

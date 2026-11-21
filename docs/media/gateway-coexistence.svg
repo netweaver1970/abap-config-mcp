@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1500" viewBox="0 0 1200 1500" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1F4E79"/>
+    </marker>
+    <marker id="arrGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5A6472"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="1500" fill="#FFFFFF"/>
+
+  <!-- title -->
+  <text x="80" y="100" font-size="54" font-weight="700" fill="#14213D">Your AI agent in SAP. As you.</text>
+  <text x="80" y="148" font-size="26" fill="#4A5568">Next to SAP's own ABAP MCP server, behind SAP's MCP Gateway</text>
+
+  <!-- AI client -->
+  <rect x="80" y="190" width="1040" height="110" rx="18" fill="#14213D"/>
+  <text x="110" y="238" font-size="30" font-weight="700" fill="#FFFFFF">AI agent</text>
+  <text x="250" y="238" font-size="24" fill="#DCE6F0">Claude · Microsoft 365 Copilot · Cursor · any MCP client</text>
+  <text x="110" y="278" font-size="22" fill="#AFC3D9">You sign in once with your company identity (SAP Cloud Identity Services)</text>
+
+  <!-- column labels -->
+  <text x="80" y="362" font-size="18" font-weight="700" fill="#5A6472" letter-spacing="1.5">CODE CHANGES · SAP STANDARD</text>
+  <text x="640" y="362" font-size="18" font-weight="700" fill="#1F4E79" letter-spacing="1.5">EVERYTHING ELSE · ABAP-CONFIG-MCP</text>
+
+  <!-- left column: SAP's ABAP MCP server -->
+  <rect x="80" y="380" width="480" height="140" rx="18" fill="#F1F3F5" stroke="#5A6472" stroke-width="2"/>
+  <text x="110" y="428" font-size="28" font-weight="700" fill="#2D3748">SAP's ABAP MCP server</text>
+  <text x="110" y="466" font-size="22" fill="#4A5568">in ADT for Eclipse or VS Code</text>
+  <text x="110" y="498" font-size="22" fill="#4A5568">write, activate, ATC, unit tests</text>
+
+  <!-- right column: gateway + cloud connector -->
+  <rect x="640" y="380" width="480" height="140" rx="18" fill="#EEF3F8" stroke="#1F4E79" stroke-width="2"/>
+  <text x="670" y="428" font-size="28" font-weight="700" fill="#14213D">SAP MCP Gateway</text>
+  <text x="670" y="466" font-size="22" fill="#4A5568">Integration Suite · checks your token</text>
+  <text x="670" y="498" font-size="22" fill="#4A5568">35 tools from two OpenAPI files</text>
+
+  <rect x="640" y="590" width="480" height="120" rx="18" fill="#EEF3F8" stroke="#1F4E79" stroke-width="2"/>
+  <text x="670" y="638" font-size="28" font-weight="700" fill="#14213D">Cloud Connector</text>
+  <text x="670" y="676" font-size="22" fill="#4A5568">token → short-lived X.509 certificate</text>
+
+  <!-- arrows -->
+  <g stroke="#5A6472" stroke-width="4" fill="none" marker-end="url(#arrGrey)">
+    <line x1="530" y1="302" x2="530" y2="376"/>
+    <line x1="320" y1="522" x2="320" y2="776"/>
+  </g>
+  <g stroke="#1F4E79" stroke-width="4" fill="none" marker-end="url(#arr)">
+    <line x1="1090" y1="302" x2="1090" y2="376"/>
+    <line x1="880" y1="522" x2="880" y2="586"/>
+    <line x1="880" y1="712" x2="880" y2="776"/>
+  </g>
+  <g font-size="19" fill="#4A5568">
+    <text x="336" y="660">ADT</text>
+    <text x="896" y="562">OAuth token</text>
+    <text x="896" y="752">mTLS, your certificate</text>
+  </g>
+
+  <!-- SAP system -->
+  <rect x="80" y="780" width="1040" height="380" rx="20" fill="#1F4E79"/>
+  <text x="110" y="830" font-size="30" font-weight="700" fill="#FFFFFF">SAP system</text>
+  <text x="290" y="830" font-size="22" fill="#DCE6F0">S/4HANA · ECC · BW · IS-Retail, SAP_BASIS 7.40 and up</text>
+  <text x="110" y="866" font-size="22" fill="#DCE6F0">Logs you on: your user, your authorizations, your name on every change</text>
+
+  <rect x="110" y="896" width="420" height="234" rx="14" fill="#DCE6F0"/>
+  <text x="138" y="940" font-size="26" font-weight="700" fill="#14213D">ADT services</text>
+  <text x="138" y="974" font-size="20" fill="#2D3748">/sap/bc/adt</text>
+  <text x="138" y="1016" font-size="21" fill="#2D3748">Source code: write, activate</text>
+  <text x="138" y="1050" font-size="21" fill="#2D3748">Quality: ATC, ABAP Unit</text>
+  <text x="138" y="1084" font-size="21" fill="#2D3748">Debugging</text>
+
+  <rect x="560" y="896" width="530" height="234" rx="14" fill="#FFFFFF"/>
+  <text x="588" y="940" font-size="26" font-weight="700" fill="#14213D">abap-config-mcp engine</text>
+  <text x="588" y="974" font-size="20" fill="#2D3748">/sap/bc/zmcp_cust · installed with abapGit</text>
+  <g font-size="21" fill="#2D3748">
+    <text x="588" y="1016"><tspan fill="#1E7B45" font-weight="700">✓</tspan> Customizing through the SM30/SM34 runtime</text>
+    <text x="588" y="1050"><tspan fill="#1E7B45" font-weight="700">✓</tspan> Transports with dependency check</text>
+    <text x="588" y="1084"><tspan fill="#1E7B45" font-weight="700">✓</tspan> Org-unit copy · BW objects</text>
+    <text x="588" y="1118"><tspan fill="#1E7B45" font-weight="700">✓</tspan> Read-only ABAP, S_DEVELOP checked</text>
+  </g>
+
+  <!-- governed by design -->
+  <rect x="80" y="1200" width="1040" height="200" rx="18" fill="#FFF7E6" stroke="#C47F00" stroke-width="2"/>
+  <text x="110" y="1244" font-size="26" font-weight="700" fill="#7A4F00">Governed by design</text>
+  <g font-size="22" fill="#5C3D00">
+    <text x="110" y="1282">• No ADT calls from abap-config-mcp in its default mode</text>
+    <text x="110" y="1314">• Dry run first; then SAP's own checks, change documents and a transport</text>
+    <text x="110" y="1346">• No technical user and no stored password behind the gateway</text>
+    <text x="110" y="1378">• No BTP? Run it on your own machine: same engine, same checks</text>
+  </g>
+
+  <text x="80" y="1440" font-size="19" fill="#718096">Tested end to end on S/4HANA 2025 and CAR (gateway and Cloud Connector simulated)</text>
+  <text x="1120" y="1474" font-size="20" font-weight="700" fill="#1F4E79" text-anchor="end">Open source (MIT) · abap-config-mcp on GitHub</text>
+</svg>
